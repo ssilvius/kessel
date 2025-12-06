@@ -1,0 +1,48 @@
+[package]
+name = "kessel"
+version = "0.1.0"
+edition = "2021"
+description = "SWTOR data miner - extracts game objects from .tor archives"
+license = "MIT"
+
+[lib]
+name = "kessel"
+path = "src/lib.rs"
+
+[[bin]]
+name = "kessel"
+path = "src/main.rs"
+
+[dependencies]
+# Archive parsing
+flate2 = "1.0"           # zlib decompression
+
+# XML parsing
+quick-xml = "0.31"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Database
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# CLI
+clap = { version = "4.4", features = ["derive"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Progress bars for large file processing
+indicatif = "0.17"
+
+# Parallel processing
+rayon = "1.8"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
