@@ -1,5 +1,6 @@
 //! Schema definitions for SWTOR game objects
 
+use crate::pbuk::GomObject;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -23,6 +24,70 @@ pub struct GameObject {
 
     /// Full JSON representation of the object
     pub json: Value,
+}
+
+impl GameObject {
+    /// Create a GameObject from a GomObject (binary format)
+    ///
+    /// Since the payload is binary GOM format (not XML), we store:
+    /// - FQN directly from the object
+    /// - Kind extracted from FQN prefix
+    /// - GUID extracted from header bytes (first 8 bytes as hex)
+    /// - Payload stored as base64 in JSON for later parsing
+    pub fn from_gom(gom: &GomObject) -> Self {
+        // Extract kind from FQN prefix (e.g., "itm" from "itm.gen.lots...")
+        let kind = if let Some(pos) = gom.fqn.find('.') {
+            match &gom.fqn[..pos] {
+                "qst" | "mpn" => "Quest",
+                "abl" => "Ability",
+                "itm" => "Item",
+                "npc" => "Npc",
+                "cdx" => "Codex",
+                "ach" => "Achievement",
+                "cnv" => "Conversation",
+                "enc" => "Encounter",
+                "spn" => "Spawn",
+                "plc" => "Placeable",
+                "dyn" => "Dynamic",
+                "hyd" => "Hydra",
+                other => other,
+            }
+        } else {
+            "Unknown"
+        }.to_string();
+
+        // Extract GUID from header bytes 0-7 (little-endian u64)
+        let guid = if gom.header.len() >= 8 {
+            let guid_bytes = &gom.header[0..8];
+            let guid_u64 = u64::from_le_bytes([
+                guid_bytes[0], guid_bytes[1], guid_bytes[2], guid_bytes[3],
+                guid_bytes[4], guid_bytes[5], guid_bytes[6], guid_bytes[7],
+            ]);
+            format!("{:016X}", guid_u64)
+        } else {
+            String::new()
+        };
+
+        // Extract strings from payload for searchability
+        let strings = gom.extract_strings();
+
+        // Store metadata and payload reference in JSON
+        let json = serde_json::json!({
+            "fqn": gom.fqn,
+            "header_hex": hex::encode(&gom.header),
+            "payload_size": gom.payload.len(),
+            "strings": strings,
+        });
+
+        Self {
+            guid,
+            fqn: gom.fqn.clone(),
+            kind,
+            version: 1,
+            revision: 1,
+            json,
+        }
+    }
 }
 
 impl GameObject {

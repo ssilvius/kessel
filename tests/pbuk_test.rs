@@ -33,12 +33,12 @@ fn test_is_dblb_invalid() {
 }
 
 #[test]
-fn test_parse_empty_pbuk() {
-    // Minimal PBUK with 0 chunks
+fn test_parse_too_small_pbuk() {
+    // PBUK without required DBLB structures should fail
+    // Real SWTOR PBUK files require DBLB at offset 12 and 28
     let data = b"PBUK\x00\x00\x00\x00\x00\x00\x00\x00";
     let result = pbuk::parse(data);
-    assert!(result.is_ok());
-    assert!(result.unwrap().is_empty());
+    assert!(result.is_err()); // Too small, missing DBLB blocks
 }
 
 #[test]

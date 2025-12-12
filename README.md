@@ -1,163 +1,183 @@
 # Kessel
 
-SWTOR data miner - extracts game objects from .tor archives to SQLite.
+SWTOR data miner - extracts game objects and icons from .tor archives.
 
 Named after the spice mines of Kessel, continuing the Star Wars mining theme from [bespin](https://github.com/kbatten/bespin).
 
-## Project Context
+## What It Does
 
-### The Mission Tracker
+Kessel reads SWTOR's `.tor` archive files and extracts:
 
-Huttspawn needs a mission tracker for SWTOR players with 20+ characters scattered across different progress points. The goal:
+- **Game Objects** → SQLite database (265,664 objects extracted)
+- **Icons** → PNG files named by hash (69,553 icons extracted)
 
-1. **Visual GSAP timeline** showing Eras → Chapters → Missions hierarchy
-2. **"What's next?" recommendations** based on prerequisites and completed missions
-3. **Bulk operations** - mark entire eras complete, drill down to find exact stopping point
-4. **Static SVG** built at Astro SSR time, runtime fetches only user progress overlay
+## Extraction Results
 
-Reddit validated demand - hundreds of users want this feature.
+### Game Objects
 
-### Why Build a Dataminer?
+Object types by FQN prefix:
+- `qst.*` - Quests
+- `abl.*` - Abilities
+- `itm.*` - Items
+- `npc.*` - NPCs
+- `cnv.*` - Conversations
+- `cdx.*` - Codex entries
+- `ach.*` - Achievements
+- And many more...
 
-We considered two approaches:
+### Icons
 
-**Option A: CSV Import** (from community Google Sheets)
-- Faster initial implementation
-- BUT: Uses UUIDs, name-based dependency linking (fragile)
-- Missing: abilities, items, icons
-- Would require **complete rewrite** when switching to game IDs
+Icons are named by their hash (e.g., `C28BE968F7F1543C.png`) for CDN deployment. A mapping file links icon names to hashes.
 
-**Option B: Dataminer** (extract from game files)
-- More upfront work
-- Gets proper game IDs (GUID, FQN) from day 1
-- Complete dataset: missions, abilities, items, NPCs, icons
-- Build once, done forever
+## Binary Format Specifications
 
-The decision: **"Do you want to write it twice?"** - Building the dataminer is more work upfront but avoids rewriting the entire schema, APIs, graph algorithms, and frontend when inevitably needing the full dataset.
+SWTOR uses a layered container format. Understanding this is key to extracting game data.
 
-User context: Built SWTOR backend middleware in Erlang (2007-09), has domain expertise in game data systems. This is a passion project, not a startup - no rush, build it right.
-
-## Research Findings
-
-### Data Available (from Jedipedia)
-
-| Type | Count |
-|------|-------|
-| Quests | 7,498 |
-| Abilities | 32,391 |
-| Items | 118,965 |
-| NPCs | 42,021 |
-
-Example quest: Global ID `16141008193562682964`, FQN `qst.exp.seasons.01.ep_01_the_hunt`
-
-Quest data includes: objectives, steps, conversations, NPCs, patch versions, linked content.
-
-### File Format Specifications
-
-Found in [bespin](https://github.com/kbatten/bespin) (Python, 2012):
-
-**MYP Format** (.tor archives) - documented in `myp.py`:
-- 40-byte header: "MYP" magic + file tables
-- File table chain with 12-byte headers
-- 34-byte file entries: position, sizes, hash, compression flag
-- Compression: 0=none, 1=zlib
-
-**PBUK Format** (containers) - documented in `pbuk.py`:
-- 12-byte header: "PBUK" + chunk count + initial size
-- Multiple chunks, each with 4-byte size prefix
-- Contains DBLB chunks
-
-**DBLB Format** (GOM - Game Object Model) - the key format:
-- 8-byte header: "DBLB" + 4 unknown bytes
-- Objects with 42-byte headers: size, data type, offset
-- Type marker at byte 45: type 15 = zlib compressed
-- Each object has: label string + compressed XML payload
-
-**XML Structure** (game objects):
-```xml
-<Quest GUID="16141008193562682964" fqn="qst.exp.seasons.01.ep_01_the_hunt" Version="1" Revision="42">
-  <NameList>...</NameList>
-  <ObjectiveList>...</ObjectiveList>
-</Quest>
-```
-
-### Tools That Exist
-
-- **extracTOR** / **EasyMYP** / **tor-reader** - Extract .tor archives (MYP format)
-- **bespin** - Python 2, 2012, parses PBUK/DBLB/XML to SQLite
-- **Jedipedia File Reader** - Web tool, no public code
-
-### What Doesn't Exist
-
-- No modern GOM parser
-- No Rust implementation
-- No public DBLB specification (only bespin's code)
-
-## Architecture
-
-### Pipeline
+### Overview
 
 ```
-~/swtor/assets/*.tor     (game files)
-        ↓
-   kessel (Rust)         (this tool)
-        ↓
-   raw.sqlite            (everything extracted)
-        ↓
-   filter tools          (SQL queries, scripts)
-        ↓
-   clean.sqlite          (curated data)
-        ↓
-   wrangler d1 execute   (push to production)
-        ↓
-   Cloudflare D1         (huttspawn database)
+.tor file (MYP archive)
+  └── Contains many files, identified by hash
+        └── PBUK container (game object bundles)
+              └── DBLB wrapper (16 bytes)
+                    └── DBLB object block
+                          └── Individual GOM objects
+                                └── 42-byte header + FQN + ZSTD payload
 ```
 
-Extraction is a solved problem once built. Curation becomes the iterative part.
+### MYP Archive Format (.tor files)
 
-### The Crud Problem
-
-Raw game data contains garbage:
-- Test/QA content (`test.*`, `qa.*`, `deprecated.*` FQNs)
-- 13 years of removed content
-- Internal dev placeholders
-- Multiple versions (difficulty variants, localization)
-- Hidden/unused objects
-
-**Solution**: Separate extraction from curation. Parse everything to raw.sqlite, then build filter queries iteratively until data looks clean. Jedipedia's 7,498 quests (from 118k+ raw objects) shows the curation ratio.
-
-## Current Implementation
-
-### Files Created
+MYP is BioWare's archive format. Each `.tor` file contains thousands of compressed files.
 
 ```
-tools/kessel/
-├── Cargo.toml          # Dependencies: flate2, quick-xml, rusqlite, clap, etc.
-├── README.md           # This file
-└── src/
-    ├── main.rs         # CLI entry point
-    ├── myp.rs          # MYP archive reader
-    ├── pbuk.rs         # PBUK/DBLB parser
-    ├── xml_parser.rs   # XML → JSON conversion
-    ├── db.rs           # SQLite output
-    └── schema/
-        └── mod.rs      # GameObject struct
+Header (40 bytes):
+  bytes 0-3:   Magic "MYP\0"
+  bytes 4-7:   Version
+  bytes 8-15:  File table offset (u64)
+  bytes 16-23: File table size
+  bytes 24-31: File count
+  bytes 32-39: Reserved
+
+File Table Entry (34 bytes each):
+  bytes 0-7:   Data offset in archive (u64)
+  bytes 8-11:  Compressed size (u32)
+  bytes 12-15: Uncompressed size (u32)
+  bytes 16-23: Filename hash (u64) - used for lookup
+  bytes 24-27: CRC32
+  bytes 28-31: Compression type (0=none, 1=zlib, 2=zstd)
+  bytes 32-33: Flags
 ```
 
-### Status
+Files are identified by a 64-bit hash of their path. A hash dictionary (`hashes_filename.txt`) maps hashes back to paths.
 
-- **Scaffolded**: All modules written
-- **Not compiled**: Need Rust in PATH (restart session)
-- **Not tested**: Need actual .tor files to test against
+### PBUK Container Format
 
-## Next Steps
+PBUK ("Package Bundle"?) wraps collections of game objects.
 
-1. **Build kessel**: `cargo build --release`
-2. **Test with real .tor files**: Point at SWTOR install
-3. **Validate output**: Compare extracted quest count to Jedipedia's 7,498
-4. **Build filter queries**: Identify FQN patterns for real vs test content
-5. **Schema mapping**: Map extracted fields to huttspawn's D1 schema
-6. **Wrangler sync**: Push curated data to D1
+```
+PBUK Header (12 bytes):
+  bytes 0-3:   Magic "PBUK"
+  bytes 4-5:   Chunk count (u16) - typically 2
+  bytes 6-7:   Unknown (u16)
+  bytes 8-11:  Offset to first DBLB (always 12)
+
+At offset 12: DBLB Wrapper (16 bytes)
+At offset 28: Object DBLB block
+```
+
+### DBLB Format (Game Object Model)
+
+DBLB ("Database Block"?) contains the actual game objects.
+
+```
+DBLB Wrapper (16 bytes, at PBUK offset 12):
+  bytes 0-3:   Magic "DBLB"
+  bytes 4-7:   Version (u32, typically 2)
+  bytes 8-11:  Padding (zeros)
+  bytes 12-15: Total DBLB size (u32)
+
+Object DBLB (at PBUK offset 28):
+  bytes 0-3:   Magic "DBLB"
+  bytes 4-7:   Version (u32)
+  bytes 8-11:  First object size (u32) - important!
+  bytes 12-15: Padding
+  bytes 16+:   Object data begins
+```
+
+### GOM Object Format
+
+Each object within a DBLB block has this structure:
+
+```
+Object Structure:
+  bytes 0-7:   GUID (u64, little-endian)
+  bytes 8-41:  Header data (GUIDs, offsets, flags)
+  byte 42+:    FQN string (null-terminated ASCII)
+               Example: "itm.gen.lots.weapon.blaster_rifle..."
+  [padding]:   Align to next boundary
+  [ZSTD]:      Compressed payload (magic: 0x28 0xB5 0x2F 0xFD)
+  [8 bytes]:   Footer (next object link)
+```
+
+**Key insight**: The ZSTD frame ends 8 bytes before the next object. You must trim the last 8 bytes to get a valid ZSTD frame.
+
+### ZSTD Payload
+
+The compressed payload contains binary GOM data with:
+- Length-prefixed strings (1-byte length + ASCII)
+- Nested object references
+- Property values
+
+```
+String format in payload:
+  byte 0:      Length (0-255)
+  bytes 1-N:   ASCII string data
+```
+
+### Parsing Strategy
+
+1. **Open .tor archive** - Read MYP header and file table
+2. **Find PBUK files** - Check first 4 bytes for "PBUK" magic
+3. **Locate Object DBLB** - Always at offset 28 in PBUK
+4. **Read first object size** - From DBLB header bytes 8-11
+5. **Parse objects iteratively**:
+   - Read 42-byte header
+   - Find null-terminated FQN
+   - Locate ZSTD magic (0x28 0xB5 0x2F 0xFD)
+   - Try decompressing with increasing frame sizes
+   - On success, object ends 8 bytes after ZSTD frame
+   - Align to 8-byte boundary for next object
+
+### FQN Prefixes
+
+Common Fully Qualified Name prefixes:
+
+| Prefix | Type |
+|--------|------|
+| `qst.` | Quest |
+| `abl.` | Ability |
+| `itm.` | Item |
+| `npc.` | NPC |
+| `cnv.` | Conversation |
+| `cdx.` | Codex |
+| `ach.` | Achievement |
+| `enc.` | Encounter |
+| `loc.` | Location |
+| `mpn.` | Mission/Planet |
+| `dyn.` | Dynamic |
+| `spn.` | Spawn |
+| `plc.` | Placeable |
+| `cbt.` | Combat |
+| `veh.` | Vehicle |
+| `mtx.` | Cartel Market |
+
+### Icon Files
+
+Icons are stored as DDS (DirectDraw Surface) files:
+- Format: DXT1 (BC1) compressed
+- Typical size: 52x52 pixels
+- Path pattern: `/resources/gfx/icons/*.dds`
+- Found in: `swtor_main_gfx_*.tor` archives
 
 ## Usage
 
@@ -165,59 +185,64 @@ tools/kessel/
 # Build
 cargo build --release
 
-# Run
-./target/release/kessel --input ~/swtor/assets --output raw.sqlite
+# Extract game objects to SQLite
+./target/release/kessel \
+  --input ~/swtor/assets \
+  --output ~/swtor/data/kessel.sqlite \
+  --hashes ~/swtor/data/hashes_filename.txt
 
-# With verbose logging
-./target/release/kessel -i ~/swtor/assets -o raw.sqlite -v
+# Extract icons (example script)
+cargo run --release --example extract_icons
+```
+
+## Project Structure
+
+```
+tools/kessel/
+├── Cargo.toml
+├── README.md
+├── src/
+│   ├── main.rs         # CLI
+│   ├── lib.rs          # Library exports
+│   ├── myp.rs          # MYP archive reader
+│   ├── pbuk.rs         # PBUK/DBLB parser
+│   ├── xml_parser.rs   # XML → JSON
+│   ├── db.rs           # SQLite output
+│   └── schema/
+│       └── mod.rs      # GameObject struct
+└── examples/
+    ├── extract_icons.rs    # Bulk icon extraction
+    ├── extract_icon.rs     # Single icon test
+    ├── debug_header.rs     # Binary structure debugging
+    └── query_db.rs         # Database queries
 ```
 
 ## Output Schema
 
 ```sql
--- All extracted objects
-CREATE TABLE objects (
-    guid TEXT PRIMARY KEY,      -- Game's unique ID
-    fqn TEXT NOT NULL,          -- Fully qualified name
-    kind TEXT NOT NULL,         -- Object type (Quest, Ability, Item, Npc)
+CREATE TABLE objects (s
+    guid TEXT PRIMARY KEY,
+    fqn TEXT NOT NULL,
+    kind TEXT NOT NULL,
     version INTEGER,
     revision INTEGER,
-    json TEXT NOT NULL          -- Full object data as JSON
+    json TEXT NOT NULL
 );
 
--- Convenience views
-CREATE VIEW quests AS SELECT * FROM objects WHERE kind = 'Quest' OR fqn LIKE 'qst.%';
-CREATE VIEW abilities AS SELECT * FROM objects WHERE kind = 'Ability' OR fqn LIKE 'abl.%';
-CREATE VIEW items AS SELECT * FROM objects WHERE kind = 'Item' OR fqn LIKE 'itm.%';
-CREATE VIEW npcs AS SELECT * FROM objects WHERE kind = 'Npc' OR fqn LIKE 'npc.%';
+CREATE INDEX idx_objects_fqn ON objects(fqn);
+CREATE INDEX idx_objects_kind ON objects(kind);
 ```
 
-## Example Filter Queries
+## Dependencies
 
-```sql
--- Find real class story quests
-SELECT * FROM quests
-WHERE fqn LIKE 'qst.class.%'
-  AND fqn NOT LIKE '%test%'
-  AND fqn NOT LIKE '%deprecated%';
-
--- Count by kind
-SELECT kind, COUNT(*) FROM objects GROUP BY kind ORDER BY COUNT(*) DESC;
-
--- Find quests with objectives
-SELECT guid, fqn, json_extract(json, '$.Quest.ObjectiveList') as objectives
-FROM quests
-WHERE objectives IS NOT NULL;
-```
+- `zstd` - ZSTD decompression (current SWTOR format)
+- `flate2` - zlib decompression (legacy format)
+- `rusqlite` - SQLite output
+- `image` + `image_dds` - DDS → PNG conversion
+- `quick-xml` + `serde_json` - XML parsing
 
 ## References
 
-- **bespin**: https://github.com/kbatten/bespin (format specs)
-- **tor-reader**: https://github.com/SWTOR-Slicers/tor-reader (MYP reading)
-- **SWTOR-Slicers**: https://github.com/SWTOR-Slicers (community tools)
-- **Jedipedia**: https://swtor.jedipedia.net (reference database)
-- **TORCommunity**: https://torcommunity.com/database (alternative database)
-
-## Credits
-
-Format specifications derived from [bespin](https://github.com/kbatten/bespin) by kbatten (2012).
+- [bespin](https://github.com/kbatten/bespin) - Original format specs (Python, 2012)
+- [Jedipedia](https://swtor.jedipedia.net) - Reference database
+- [SWTOR-Slicers](https://github.com/SWTOR-Slicers) - Community tools

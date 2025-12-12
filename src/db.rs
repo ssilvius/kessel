@@ -5,6 +5,7 @@ use rusqlite::{params, Connection};
 use std::path::Path;
 
 use crate::schema::GameObject;
+use crate::stb::StbEntry;
 
 pub struct Database {
     conn: Connection,
@@ -15,6 +16,7 @@ pub struct Stats {
     pub abilities: u64,
     pub items: u64,
     pub npcs: u64,
+    pub strings: u64,
 }
 
 impl Database {
@@ -43,6 +45,18 @@ impl Database {
 
             CREATE INDEX IF NOT EXISTS idx_objects_fqn ON objects(fqn);
             CREATE INDEX IF NOT EXISTS idx_objects_kind ON objects(kind);
+
+            -- Localized strings table (from STB files)
+            CREATE TABLE IF NOT EXISTS strings (
+                fqn TEXT PRIMARY KEY,          -- Full FQN: "str.abl.sith_inquisitor.skill.corruption.innervate"
+                locale TEXT NOT NULL,          -- Locale: "en-us"
+                id1 INTEGER NOT NULL,          -- STB ID1
+                id2 INTEGER NOT NULL,          -- STB ID2
+                text TEXT NOT NULL,            -- Display text
+                version INTEGER DEFAULT 0
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_strings_locale ON strings(locale);
 
             -- Typed views for convenience
             CREATE VIEW IF NOT EXISTS quests AS
@@ -93,6 +107,30 @@ impl Database {
         Ok(())
     }
 
+    pub fn insert_string(
+        &self,
+        fqn: &str,
+        locale: &str,
+        entry: &StbEntry,
+    ) -> Result<()> {
+        self.conn.execute(
+            r#"
+            INSERT INTO strings (fqn, locale, id1, id2, text, version)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            ON CONFLICT(fqn) DO UPDATE SET
+                locale = excluded.locale,
+                id1 = excluded.id1,
+                id2 = excluded.id2,
+                text = excluded.text,
+                version = excluded.version
+            WHERE excluded.version > strings.version
+            "#,
+            params![fqn, locale, entry.id1, entry.id2, entry.text, entry.version],
+        )?;
+
+        Ok(())
+    }
+
     pub fn stats(&self) -> Result<Stats> {
         let quests: u64 = self
             .conn
@@ -106,12 +144,16 @@ impl Database {
         let npcs: u64 = self
             .conn
             .query_row("SELECT COUNT(*) FROM npcs", [], |row| row.get(0))?;
+        let strings: u64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM strings", [], |row| row.get(0))?;
 
         Ok(Stats {
             quests,
             abilities,
             items,
             npcs,
+            strings,
         })
     }
 

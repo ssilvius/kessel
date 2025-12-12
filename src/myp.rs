@@ -4,28 +4,33 @@
 //!
 //! Header (40 bytes):
 //!   - bytes 0-2: "MYP" identifier
-//!   - bytes 3-10: offset to first file table (u64)
-//!   - bytes 11-14: max files in first table (u32)
-//!   - bytes 15-18: total file count (u32)
-//!   - bytes 19-22: number of file tables (u32)
+//!   - bytes 3-11: padding (9 bytes)
+//!   - bytes 12-19: offset to first file table (u64 LE)
+//!   - bytes 20-23: max files in first table (u32 LE)
+//!   - bytes 24-27: total file count (u32 LE)
+//!   - bytes 28-31: number of file tables (u32 LE)
+//!   - bytes 32-39: padding (8 bytes)
 //!
 //! File Table Header (12 bytes):
-//!   - bytes 0-3: max files in this table (u32)
-//!   - bytes 4-11: offset to next table or 0 (u64)
+//!   - bytes 0-3: max files in this table (u32 LE)
+//!   - bytes 4-11: offset to next table or 0 (u64 LE)
 //!
 //! File Entry (34 bytes):
-//!   - bytes 0-7: position in archive (u64)
-//!   - bytes 8-11: header size (u32)
-//!   - bytes 12-15: compressed size (u32)
-//!   - bytes 16-19: uncompressed size (u32)
-//!   - bytes 20-27: filename hash (u64)
-//!   - bytes 28-31: crc32 (u32)
-//!   - bytes 32-33: compression flag (u16) - 0=none, 1=zlib
+//!   - bytes 0-7: position in archive (u64 LE)
+//!   - bytes 8-11: header size (u32 LE)
+//!   - bytes 12-15: compressed size (u32 LE)
+//!   - bytes 16-19: uncompressed size (u32 LE)
+//!   - bytes 20-27: filename hash (u64 LE)
+//!   - bytes 28-31: crc32 (u32 LE)
+//!   - bytes 32-33: compression flag (u16 LE) - 0=none, 1=zlib
 
 use anyhow::{bail, Context, Result};
 use flate2::read::ZlibDecoder;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
+
+/// Zstandard magic number (28 B5 2F FD)
+const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
 use std::path::Path;
 
 const MYP_MAGIC: [u8; 3] = [b'M', b'Y', b'P'];
@@ -62,11 +67,11 @@ impl Archive {
             bail!("Invalid MYP file: bad magic number");
         }
 
-        // Parse header fields
-        let first_table_offset = u64::from_le_bytes(header[3..11].try_into()?);
-        let _first_max_files = u32::from_le_bytes(header[11..15].try_into()?);
-        let total_files = u32::from_le_bytes(header[15..19].try_into()?);
-        let _num_tables = u32::from_le_bytes(header[19..23].try_into()?);
+        // Parse header fields (corrected offsets per bespin spec)
+        let first_table_offset = u64::from_le_bytes(header[12..20].try_into()?);
+        let _first_max_files = u32::from_le_bytes(header[20..24].try_into()?);
+        let total_files = u32::from_le_bytes(header[24..28].try_into()?);
+        let _num_tables = u32::from_le_bytes(header[28..32].try_into()?);
 
         tracing::debug!("MYP header: {} files, first table at {}", total_files, first_table_offset);
 
@@ -130,13 +135,21 @@ impl Archive {
         self.reader.read_exact(&mut compressed)?;
 
         // Decompress if needed
-        if entry.compression == 1 {
-            let mut decoder = ZlibDecoder::new(&compressed[..]);
-            let mut decompressed = Vec::with_capacity(entry.uncompressed_size as usize);
-            decoder.read_to_end(&mut decompressed)?;
-            Ok(decompressed)
-        } else {
+        if entry.compression == 0 {
+            // Uncompressed
             Ok(compressed)
+        } else {
+            // Check for zstd magic (current SWTOR format)
+            if compressed.len() >= 4 && compressed[0..4] == ZSTD_MAGIC {
+                let decompressed = zstd::decode_all(&compressed[..])?;
+                Ok(decompressed)
+            } else {
+                // Fallback to zlib (legacy format)
+                let mut decoder = ZlibDecoder::new(&compressed[..]);
+                let mut decompressed = Vec::with_capacity(entry.uncompressed_size as usize);
+                decoder.read_to_end(&mut decompressed)?;
+                Ok(decompressed)
+            }
         }
     }
 }
