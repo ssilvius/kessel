@@ -199,6 +199,98 @@ These appear in the `strings` array extracted from GOM payloads.
 1. **Conversations** - Extract `cnv.*` GOM objects + link to `str/cnv/` STB dialogue
 2. **Icons** - Link icon hashes to abilities/items
 
+## GOM Binary Property Format (Abilities)
+
+The GOM payload contains properties in `[u16 propId] [f32 value]` format.
+Property IDs are in the 0x04xx range.
+
+### Confirmed Property IDs (100% Verified)
+
+| ID | Name | Description | Verification |
+|----|------|-------------|--------------|
+| `0x0401` | **Cooldown** | Ability cooldown in seconds | force_charge=15, force_leap=15, force_push=60, intimidating_roar=60, unload=15, crushing_darkness=15 |
+| `0x041b` | **Cast/Channel Time** | Activation time in seconds | snipe=1.5, unload=3.0, lightning_strike=1.5, mortar_volley=3.0 |
+| `0x0406` | **Channel Duration** | Duration of channeled abilities | unload=3.0, force_lightning=3.0, mortar_volley=3.0 (matches 0x041b for channels) |
+| `0x0403` | **Force Cost (Ranged)** | Force cost for Sorcerer/Sage abilities | crushing_darkness=40, lightning_strike=40, reanimation=30, dark_heal=85 |
+| `0x041e` | **Resource Cost** | Energy/Heat cost for Tech; Force cost for melee Force users | shiv=15, rocket_punch=15, rail_shot=15, maul=40, lacerate=20 |
+| `0x041a` | **Cast Time (Hard Cast)** | Alternative cast time property | crushing_darkness=2.0 (2s cast) |
+
+### Confirmed Range Properties
+
+| ID | Name | Description | Verification |
+|----|------|-------------|--------------|
+| `0x041f` | **Melee Range** | Max range for melee abilities (meters) | force_scream=4, smash=3 |
+| `0x041d` | **AoE Radius** | Radius for PBAoE abilities (meters) | overload=10 |
+
+Note: Standard 30m ranged abilities do NOT store range explicitly (default assumed).
+
+### Unknown Property IDs (Seen but Purpose Unclear)
+
+| ID | Values Seen | Hypothesis | Evidence |
+|----|-------------|------------|----------|
+| `0x0402` | 90, 120, 180, 270, 360 | Internal coefficient/scaling | saber_ward=180, recklessness=90, polarity_shift=120 |
+| `0x0404` | 3, 20 | Tick count or damage modifier | affliction=3, snipe=20 |
+| `0x0442` | 2 | Tick interval or DoT coefficient | affliction=2, crushing_darkness=2 |
+| `0x0420` | 1 | Gap closer flag | force_charge=1, force_leap=1 |
+| `0x0421` | 1 | Knockback flag | force_push=1 |
+
+### Verified Examples
+
+```
+abl.agent.snipe:
+  0x041b = 1.50  (cast time: 1.5 seconds ✓)
+  0x0404 = 20.00 (damage modifier?)
+  (no 0x0401 - Snipe has no cooldown ✓)
+
+abl.agent.shiv:
+  0x0401 = 6.00  (cooldown: 6 seconds ✓)
+  0x041e = 15.00 (energy cost: 15 ✓)
+
+abl.bounty_hunter.unload:
+  0x0401 = 15.00 (cooldown: 15 seconds ✓)
+  0x041b = 3.00  (channel time: 3 seconds ✓)
+  0x0406 = 3.00  (channel duration: 3 seconds ✓)
+
+abl.sith_warrior.force_charge:
+  0x0401 = 15.00 (cooldown: 15 seconds ✓)
+  0x0420 = 1.00  (gap closer flag)
+
+abl.sith_warrior.force_push:
+  0x0401 = 60.00 (cooldown: 60 seconds ✓)
+  0x0421 = 1.00  (knockback flag)
+
+abl.sith_warrior.force_scream:
+  0x0401 = 12.00 (cooldown: 12 seconds ✓)
+  0x041f = 4.00  (melee range: 4 meters ✓)
+
+abl.sith_inquisitor.crushing_darkness:
+  0x0401 = 15.00 (cooldown: 15 seconds ✓)
+  0x041a = 2.00  (cast time: 2 seconds ✓)
+  0x0403 = 40.00 (force cost: 40 ✓)
+
+abl.sith_inquisitor.lightning_strike:
+  0x041b = 1.50  (cast time: 1.5 seconds ✓)
+  0x0403 = 40.00 (force cost: 40 ✓)
+  (no 0x0401 - no cooldown ✓)
+
+abl.sith_inquisitor.maul:
+  0x041e = 40.00 (force cost: 40 - melee ability uses 0x041e ✓)
+
+abl.sith_inquisitor.overload:
+  0x041d = 10.00 (AoE radius: 10 meters ✓)
+```
+
+### Extraction Method
+
+```python
+# Scan for [u16 propId] [f32 value] patterns
+for i in range(len(payload) - 6):
+    prop_id = struct.unpack_from('<H', payload, i)[0]
+    if 0x0400 <= prop_id <= 0x0500:
+        value = struct.unpack_from('<f', payload, i + 2)[0]
+        # value is likely a game stat
+```
+
 ## Open Questions
 
 1. **~~Where are most ability names?~~** ✅ RESOLVED

@@ -71,11 +71,16 @@ impl GameObject {
         // Extract strings from payload for searchability
         let strings = gom.extract_strings();
 
+        // Encode raw payload as base64 for later analysis
+        use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+        let payload_b64 = BASE64.encode(&gom.payload);
+
         // Store metadata and payload reference in JSON
         let json = serde_json::json!({
             "fqn": gom.fqn,
             "header_hex": hex::encode(&gom.header),
             "payload_size": gom.payload.len(),
+            "payload_b64": payload_b64,
             "strings": strings,
         });
 

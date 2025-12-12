@@ -35,6 +35,7 @@ thiserror = "1.0"
 
 # Encoding
 hex = "0.4"
+base64 = "0.22"
 
 # Logging
 tracing = "0.1"
