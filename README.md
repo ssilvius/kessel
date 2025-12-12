@@ -8,26 +8,26 @@ Named after the spice mines of Kessel, continuing the Star Wars mining theme fro
 
 Kessel reads SWTOR's `.tor` archive files and extracts:
 
-- **Game Objects** → SQLite database (265,664 objects extracted)
-- **Icons** → PNG files named by hash (69,553 icons extracted)
+- **Game Objects** → SQLite database (164,492 quality-filtered objects)
+- **Strings** → Localized text from STB files (554,980 strings)
 
 ## Extraction Results
 
-### Game Objects
+Quality-filtered extraction (see `docs/STATUS.md` for details):
 
-Object types by FQN prefix:
-- `qst.*` - Quests
-- `abl.*` - Abilities
-- `itm.*` - Items
-- `npc.*` - NPCs
-- `cnv.*` - Conversations
-- `cdx.*` - Codex entries
-- `ach.*` - Achievements
-- And many more...
+| Type | Count | Notes |
+|------|-------|-------|
+| Items | 94,011 | Gear, mods, tacticals, consumables |
+| NPCs | 34,582 | Companions, quest NPCs, vendors |
+| Schematics | 13,773 | Crafting recipes |
+| Quests | 10,130 | Story, side, daily quests |
+| Achievements | 6,107 | All achievement types |
+| Codex | 3,152 | Lore entries |
+| Abilities | 2,712 | Class, companion, legacy abilities |
+| **Total** | **164,492** | |
+| Strings | 554,980 | Localized text (en-us) |
 
-### Icons
-
-Icons are named by their hash (e.g., `C28BE968F7F1543C.png`) for CDN deployment. A mapping file links icon names to hashes.
+Object types kept (by FQN prefix): `abl`, `itm`, `npc`, `schem`, `qst`, `cdx`, `ach`, `mpn`
 
 ## Binary Format Specifications
 
@@ -201,36 +201,43 @@ cargo run --release --example extract_icons
 tools/kessel/
 ├── Cargo.toml
 ├── README.md
+├── docs/
+│   ├── STATUS.md       # Current extraction results
+│   └── MAPPINGS.md     # File format mappings reference
 ├── src/
-│   ├── main.rs         # CLI
+│   ├── main.rs         # CLI + quality filters
 │   ├── lib.rs          # Library exports
 │   ├── myp.rs          # MYP archive reader
-│   ├── pbuk.rs         # PBUK/DBLB parser
-│   ├── xml_parser.rs   # XML → JSON
+│   ├── pbuk.rs         # PBUK/DBLB/ZSTD parser
+│   ├── stb.rs          # STB string table parser
+│   ├── hash.rs         # Hash dictionary loader
 │   ├── db.rs           # SQLite output
 │   └── schema/
 │       └── mod.rs      # GameObject struct
-└── examples/
-    ├── extract_icons.rs    # Bulk icon extraction
-    ├── extract_icon.rs     # Single icon test
-    ├── debug_header.rs     # Binary structure debugging
-    └── query_db.rs         # Database queries
+└── tests/              # Integration tests
 ```
 
 ## Output Schema
 
 ```sql
-CREATE TABLE objects (s
-    guid TEXT PRIMARY KEY,
-    fqn TEXT NOT NULL,
+CREATE TABLE objects (
+    fqn TEXT PRIMARY KEY,
     kind TEXT NOT NULL,
-    version INTEGER,
-    revision INTEGER,
-    json TEXT NOT NULL
+    guid TEXT,
+    payload BLOB
 );
 
-CREATE INDEX idx_objects_fqn ON objects(fqn);
+CREATE TABLE strings (
+    fqn TEXT PRIMARY KEY,
+    locale TEXT NOT NULL,
+    id1 INTEGER,
+    id2 INTEGER,
+    version INTEGER,
+    text TEXT NOT NULL
+);
+
 CREATE INDEX idx_objects_kind ON objects(kind);
+CREATE INDEX idx_strings_locale ON strings(locale);
 ```
 
 ## Dependencies

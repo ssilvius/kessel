@@ -153,35 +153,41 @@ These appear in the `strings` array extracted from GOM payloads.
 
 ## Extraction Priority
 
-### Extraction Filter (Applied in Kessel)
+### Current Filter (Applied in Kessel)
 
-**GOM Objects - KEEP:**
-| Prefix | Count | Purpose |
-|--------|-------|---------|
-| `abl.*` | 56k | Abilities |
-| `itm.*` | 52k | Items |
-| `npc.*` | 21k | NPCs |
-| `qst.*` | 5k | Quests |
-| `cdx.*` | 1.5k | Codex |
-| `ach.*` | 3k | Achievements |
-| **Total** | **~139k** | |
+**GOM Objects - KEEP (with quality filters):**
+| Prefix | Post-Filter | Purpose |
+|--------|-------------|---------|
+| `itm.*` | 94,011 | Items (gear, mods, consumables) |
+| `npc.*` | 34,582 | NPCs (companions, vendors, quest givers) |
+| `schem.*` | 13,773 | Schematics (crafting recipes) |
+| `qst.*` | 10,130 | Quests |
+| `ach.*` | 6,107 | Achievements |
+| `cdx.*` | 3,152 | Codex entries |
+| `abl.*` | 2,712 | Abilities (class, companion, legacy) |
+| `mpn.*` | 25 | Mission/planet markers |
+| **Total** | **164,492** | |
+
+**Quality Filters Applied:**
+- Skip versioned duplicates (`abl.foo.bar/17/5` → keep only `abl.foo.bar`)
+- Skip test/debug/deprecated content
+- Skip 34 internal ability prefixes (npc, qtr, operation, etc.)
+- Skip 10 internal item prefixes (has_item, irating, etc.)
+- Skip 5 internal NPC prefixes (blueprints, ability, etc.)
 
 **GOM Objects - SKIP:**
-| Prefix | Count | Reason |
-|--------|-------|--------|
-| `spn.*` | 32k | Spawn points (internal) |
-| `hyd.*` | 13k | Hydra system (internal) |
-| `plc.*` | 9k | Placeables (world objects) |
-| `epp.*` | 8k | Effects/particles |
-| `cnd.*` | 8k | Conditions (internal) |
-| `npp.*` | 8k | NPC prototypes |
-| `schem.*` | 7k | Schematics |
-| `dyn.*` | 5k | Dynamic objects |
-| `enc.*` | 5k | Encounters |
-| Others | ~15k | Various internal |
-| **Total** | **~126k** | |
+| Prefix | Reason |
+|--------|--------|
+| `spn.*` | Spawn points (internal) |
+| `hyd.*` | Hydra system (internal) |
+| `plc.*` | Placeables (world objects) |
+| `epp.*` | Effects/particles |
+| `cnd.*` | Conditions (internal) |
+| `npp.*` | NPC prototypes |
+| `dyn.*` | Dynamic objects |
+| `enc.*` | Encounters |
 
-**STB Files - KEEP (6 files):**
+**STB Files - KEEP (6 root files):**
 - `abl.stb`, `itm.stb`, `npc.stb`, `qst.stb`, `cdx.stb`, `ach.stb`
 
 **STB Files - SKIP (~17k files):**
