@@ -1,14 +1,37 @@
-//! SWTOR Filename Hash Algorithm
+//! Hash utilities for SWTOR data
 //!
-//! Computes the 64-bit filename hash used in MYP archives.
-//! Based on EasyMYP's SWTORHash implementation.
-//!
-//! Hash format: (ph << 32) | sh where ph=primary hash, sh=secondary hash
+//! - SWTOR filename hash: 64-bit hash used in MYP archives
+//! - Compound ID: sha256(fqn:guid)[0:16] for deterministic object IDs
+//! - Icon ID: sha256(name)[0:16] for deterministic icon filenames
 
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+
+/// Compute compound ID from FQN and GUID
+/// Returns 16-character hex string: sha256(fqn:guid)[0:16]
+///
+/// Deterministic and collision-resistant - if either FQN or GUID changes,
+/// the ID changes. Useful for detecting data corruption/reuse.
+pub fn compute_game_id(fqn: &str, guid: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(format!("{}:{}", fqn, guid));
+    let result = hasher.finalize();
+    hex::encode(&result[..8]) // 8 bytes = 16 hex chars
+}
+
+/// Compute icon ID from icon name
+/// Returns 16-character hex string: sha256(name)[0:16]
+///
+/// Used for cache-friendly icon filenames.
+pub fn compute_icon_id(name: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(name);
+    let result = hasher.finalize();
+    hex::encode(&result[..8])
+}
 
 /// Compute SWTOR filename hash
 /// Returns (primary_hash, secondary_hash)

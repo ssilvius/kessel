@@ -3,6 +3,7 @@
 //! Extracts game objects from .tor archives to SQLite.
 
 pub mod db;
+pub mod dds;
 pub mod hash;
 pub mod myp;
 pub mod pbuk;
