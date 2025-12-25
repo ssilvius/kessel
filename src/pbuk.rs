@@ -42,81 +42,6 @@ const MIN_OBJECT_SIZE: usize = 50;
 const MAX_OBJECT_SIZE: usize = 50000;
 // Safety limit to prevent infinite loops
 const MAX_OBJECTS_PER_DBLB: usize = 10000;
-// Search range for ZSTD frame size detection (expanding rings from content size estimate)
-const ZSTD_SEARCH_RANGE: usize = 2000;
-
-/// Parse ZSTD frame header to get decompressed content size.
-/// Returns None if frame header is invalid or doesn't contain size info.
-///
-/// ZSTD frame header format:
-/// - Magic (4 bytes): 28 B5 2F FD
-/// - Frame_Header_Descriptor (1 byte):
-///   - Bits 7-6: Frame_Content_Size_flag
-///   - Bit 5: Single_Segment_flag
-///   - Bit 4: Unused
-///   - Bit 3: Reserved
-///   - Bit 2: Content_Checksum_flag
-///   - Bits 1-0: Dictionary_ID_flag
-/// - Window_Descriptor (0-1 bytes): present if !Single_Segment
-/// - Dictionary_ID (0-4 bytes)
-/// - Frame_Content_Size (0-8 bytes)
-fn get_zstd_content_size(data: &[u8]) -> Option<usize> {
-    if data.len() < 8 || data[0..4] != ZSTD_MAGIC {
-        return None;
-    }
-
-    // Frame Header Descriptor at byte 4
-    let fhd = data[4];
-    let fcs_flag = (fhd >> 6) & 0x03;
-    let single_seg = (fhd >> 5) & 0x01;
-    let dict_id_flag = fhd & 0x03;
-
-    // Calculate sizes of optional fields
-    let window_desc_size = if single_seg == 0 { 1 } else { 0 };
-    let dict_id_size = match dict_id_flag {
-        0 => 0,
-        1 => 1,
-        2 => 2,
-        3 => 4,
-        _ => 0,
-    };
-    let fcs_size = match fcs_flag {
-        0 => {
-            if single_seg == 1 {
-                1
-            } else {
-                0
-            }
-        }
-        1 => 2,
-        2 => 4,
-        3 => 8,
-        _ => 0,
-    };
-
-    if fcs_size == 0 {
-        return None;
-    }
-
-    let fcs_offset = 5 + window_desc_size + dict_id_size;
-    if data.len() < fcs_offset + fcs_size {
-        return None;
-    }
-
-    let fcs_bytes = &data[fcs_offset..fcs_offset + fcs_size];
-    let content_size = match fcs_size {
-        1 => fcs_bytes[0] as usize,
-        2 => u16::from_le_bytes([fcs_bytes[0], fcs_bytes[1]]) as usize + 256,
-        4 => u32::from_le_bytes([fcs_bytes[0], fcs_bytes[1], fcs_bytes[2], fcs_bytes[3]]) as usize,
-        8 => {
-            let v = u64::from_le_bytes(fcs_bytes.try_into().ok()?);
-            v as usize
-        }
-        _ => return None,
-    };
-
-    Some(content_size)
-}
 
 /// Check if data starts with PBUK magic
 pub fn is_pbuk(data: &[u8]) -> bool {
@@ -324,23 +249,13 @@ fn parse_object_dblb(data: &[u8]) -> Result<Vec<GomObject>> {
         }
 
         if let Some(zstd_start) = zstd_pos {
-            // Get content size hint from ZSTD header
-            let estimate = get_zstd_content_size(&data[zstd_start..]).unwrap_or(300);
-
-            // Search outward from estimate (expanding rings)
-            let mut found = false;
-            for delta in 0..ZSTD_SEARCH_RANGE {
-                for &candidate in &[estimate + delta, estimate.saturating_sub(delta)] {
-                    if candidate < 20 || candidate > MAX_OBJECT_SIZE {
-                        continue;
-                    }
-                    let payload_end = zstd_start + candidate;
-                    if payload_end > data.len() {
-                        continue;
-                    }
-
-                    if let Ok(decoded) = zstd::decode_all(&data[zstd_start..payload_end]) {
-                        let obj_end = payload_end + 8;
+            // Use ZSTD's frame size detection - O(1) instead of probing
+            let zstd_data = &data[zstd_start..];
+            if let Ok(frame_size) = zstd_safe::find_frame_compressed_size(zstd_data) {
+                let frame_size = frame_size as usize;
+                if frame_size > 0 && zstd_start + frame_size <= data.len() {
+                    if let Ok(decoded) = zstd::decode_all(&zstd_data[..frame_size]) {
+                        let obj_end = zstd_start + frame_size + 8;
                         let fqn = String::from_utf8_lossy(&data[fqn_pos..fqn_end]).to_string();
                         let header = data[offset..offset.saturating_add(42).min(data.len())].to_vec();
 
@@ -354,15 +269,13 @@ fn parse_object_dblb(data: &[u8]) -> Result<Vec<GomObject>> {
                         if offset % 8 != 0 {
                             offset += 8 - (offset % 8);
                         }
-                        found = true;
-                        break;
+                    } else {
+                        offset = fqn_end + 8;
                     }
+                } else {
+                    offset = fqn_end + 8;
                 }
-                if found {
-                    break;
-                }
-            }
-            if !found {
+            } else {
                 offset = fqn_end + 8;
             }
         } else {

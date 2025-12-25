@@ -17,6 +17,7 @@ path = "src/main.rs"
 # Archive parsing
 flate2 = "1.0"           # zlib decompression (legacy)
 zstd = "0.13"            # zstandard decompression (current SWTOR format)
+zstd-safe = "7.2"        # low-level ZSTD for frame size detection
 
 # XML parsing
 quick-xml = "0.31"

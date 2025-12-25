@@ -14,17 +14,22 @@ This document records the relationships between file types, FQN patterns, and da
 
 ## GOM Object Types (from FQN prefix)
 
-### Kessel v2 Extraction Results (7.8b)
+### Kessel v3 Extraction Results (7.8b)
 
 | FQN Prefix | Kind | Count | Description | Extracted |
 |------------|------|-------|-------------|-----------|
 | `itm.*` | Item | 94,021 | Equipment, consumables, etc | ✅ |
 | `npc.*` | Npc | 34,583 | Non-player characters | ✅ |
+| `schem.*` | Schematic | 13,774 | Crafting schematics | ✅ |
 | `mpn.*` | Quest | 9,852 | Mission points (objectives, waypoints) | ✅ |
+| `ach.*` | Achievement | 6,110 | Achievements | ✅ |
 | `cdx.*` | Codex | 3,152 | Codex entries | ✅ |
 | `abl.*` | Ability | 2,713 | Player abilities (filtered) | ✅ |
+| `tal.*` | Talent | 971 | Talents/passives | ✅ |
 | `qst.*` | Quest | 278 | Quest definitions | ✅ |
-| **Total** | | **165,454** | (with quality filters applied) | |
+| `loot.*` | Loot | 89 | Loot tables (junk, lockboxes) | ✅ NEW |
+| `pkg.*` | Package | 6 | Trainer packages (schematic lists) | ✅ NEW |
+| **Total** | | **165,549** | (with quality filters applied) | |
 
 ### String Tables (STB)
 
@@ -943,37 +948,50 @@ def decode_schematic_materials(payload):
 
 ## Hub-Spoke Data Model
 
-### Current State (7.8b Extraction)
+### Current State (7.8b v3 Extraction)
 
 | Entity | Count | Contains Refs To | Status |
 |--------|-------|------------------|--------|
 | Items (`itm.*`) | 94,021 | - | ✅ Extracted |
 | Schematics (`schem.*`) | 13,774 | Materials, Output Items | ✅ Decoded |
 | NPCs (`npc.*`) | 34,583 | - | ✅ Extracted |
+| Trainer Packages (`pkg.*`) | 6 | Schematic lists | ✅ NEW |
+| Loot Tables (`loot.*`) | 89 | Junk items, lockboxes | ✅ NEW |
 | NPC Vendors | 1,272 | (inventory elsewhere) | ⚠️ No item refs |
-| Reward Items | 278 | - | ✅ Extracted |
-| Loot Items | 1,543 | - | ✅ Extracted |
 | Box Items | 2,227 | (contents elsewhere) | ⚠️ Not decoded |
 
-### Missing Connections
+### New in v3: Trainer Packages
+
+`pkg.profession_trainer.*` objects contain lists of schematics taught by trainers:
+
+```
+pkg.profession_trainer.synthweaving_base   → 232 schematic refs
+pkg.profession_trainer.armormech_base      → trainer schematics
+pkg.profession_trainer.armstech_base       → trainer schematics
+pkg.profession_trainer.artifice_base       → trainer schematics
+pkg.profession_trainer.biochem_base        → trainer schematics
+pkg.profession_trainer.cybertech_base      → trainer schematics
+```
+
+**Decoding**: Uses same `cf e0 00 [6-byte guid]` pattern as schematics.
+
+### New in v3: Loot Tables
+
+`loot.*` objects define mob drops and lockbox contents:
+
+```
+loot.global.junk.beastamphibian.level_030   → junk drops by mob type/level
+loot.global.junk.droidprotocol.level_010    → droid junk
+loot.lockbox.artifact_advanced_018          → lockbox definitions
+```
+
+**Note**: Lockboxes reference items via string IDs, not embedded refs.
+
+### Still Missing
 
 1. **Vendor Inventories**: NPC vendor payloads don't contain item refs
-   - Likely stored in `pkg.*` prefix (not extracted)
-   - Need to add prefix to kessel filter
-
-2. **Quest Rewards**: Quest objects don't contain reward item refs
-   - Rewards likely in separate loot/reward tables
-   - May be `loot.*`, `pkg.reward.*` prefixes
-
-3. **Box Contents**: Box/crate items don't show contents in extracted data
-   - Contents likely in separate lookup tables
-
-### Recommended Additional Prefixes
-
-To complete the hub-spoke model, consider extracting:
-- `pkg.*` - Package/inventory definitions
-- `loot.*` - Loot tables
-- `rew.*` - Reward definitions
+2. **Quest Rewards**: Quest objects don't embed reward item refs
+3. **Box Contents**: Contents determined at runtime, not in GOM
 
 ## Open Questions
 

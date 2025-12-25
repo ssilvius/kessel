@@ -1,14 +1,38 @@
-//! SQLite database output
+//! SQLite database output with batched inserts
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use std::path::Path;
+use std::sync::Mutex;
 
 use crate::schema::GameObject;
 use crate::stb::StbEntry;
 
+/// Serialized object ready for batch insert
+struct PendingObject {
+    guid: String,
+    fqn: String,
+    kind: String,
+    version: u32,
+    revision: u32,
+    json: String,
+}
+
+/// Serialized string ready for batch insert
+struct PendingString {
+    fqn: String,
+    locale: String,
+    id1: u32,
+    id2: u32,
+    text: String,
+    version: u32,
+}
+
 pub struct Database {
-    conn: Connection,
+    conn: Mutex<Connection>,
+    batch_size: usize,
+    pending_objects: Mutex<Vec<PendingObject>>,
+    pending_strings: Mutex<Vec<PendingString>>,
 }
 
 pub struct Stats {
@@ -23,14 +47,23 @@ impl Database {
     pub fn new(path: &Path) -> Result<Self> {
         let conn = Connection::open(path).context("Failed to create database")?;
 
-        // Enable WAL mode for better write performance
+        // Performance optimizations
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        conn.pragma_update(None, "cache_size", "-64000")?; // 64MB cache
+        conn.pragma_update(None, "temp_store", "MEMORY")?;
 
-        Ok(Self { conn })
+        Ok(Self {
+            conn: Mutex::new(conn),
+            batch_size: 5000,
+            pending_objects: Mutex::new(Vec::with_capacity(5000)),
+            pending_strings: Mutex::new(Vec::with_capacity(5000)),
+        })
     }
 
     pub fn init_schema(&self) -> Result<()> {
-        self.conn.execute_batch(
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch(
             r#"
             -- Raw game objects table (everything we extract)
             CREATE TABLE IF NOT EXISTS objects (
@@ -82,71 +115,160 @@ impl Database {
         Ok(())
     }
 
+    /// Queue an object for batch insert
     pub fn insert_object(&self, obj: &GameObject) -> Result<()> {
         if obj.guid.is_empty() {
             return Ok(()); // Skip objects without GUID
         }
 
         let json_str = serde_json::to_string(&obj.json)?;
+        let pending = PendingObject {
+            guid: obj.guid.clone(),
+            fqn: obj.fqn.clone(),
+            kind: obj.kind.clone(),
+            version: obj.version,
+            revision: obj.revision,
+            json: json_str,
+        };
 
-        self.conn.execute(
-            r#"
-            INSERT INTO objects (guid, fqn, kind, version, revision, json)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-            ON CONFLICT(guid) DO UPDATE SET
-                fqn = excluded.fqn,
-                kind = excluded.kind,
-                version = excluded.version,
-                revision = excluded.revision,
-                json = excluded.json
-            WHERE excluded.revision > objects.revision
-            "#,
-            params![obj.guid, obj.fqn, obj.kind, obj.version, obj.revision, json_str],
-        )?;
+        let mut objects = self.pending_objects.lock().unwrap();
+        objects.push(pending);
+
+        if objects.len() >= self.batch_size {
+            let batch: Vec<_> = objects.drain(..).collect();
+            drop(objects); // Release lock before flushing
+            self.flush_objects(batch)?;
+        }
 
         Ok(())
     }
 
-    pub fn insert_string(
-        &self,
-        fqn: &str,
-        locale: &str,
-        entry: &StbEntry,
-    ) -> Result<()> {
-        self.conn.execute(
-            r#"
-            INSERT INTO strings (fqn, locale, id1, id2, text, version)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-            ON CONFLICT(fqn) DO UPDATE SET
-                locale = excluded.locale,
-                id1 = excluded.id1,
-                id2 = excluded.id2,
-                text = excluded.text,
-                version = excluded.version
-            WHERE excluded.version > strings.version
-            "#,
-            params![fqn, locale, entry.id1, entry.id2, entry.text, entry.version],
-        )?;
+    /// Queue a string for batch insert
+    pub fn insert_string(&self, fqn: &str, locale: &str, entry: &StbEntry) -> Result<()> {
+        let pending = PendingString {
+            fqn: fqn.to_string(),
+            locale: locale.to_string(),
+            id1: entry.id1,
+            id2: entry.id2,
+            text: entry.text.clone(),
+            version: entry.version,
+        };
+
+        let mut strings = self.pending_strings.lock().unwrap();
+        strings.push(pending);
+
+        if strings.len() >= self.batch_size {
+            let batch: Vec<_> = strings.drain(..).collect();
+            drop(strings); // Release lock before flushing
+            self.flush_strings(batch)?;
+        }
+
+        Ok(())
+    }
+
+    /// Flush pending objects to database in a single transaction
+    fn flush_objects(&self, batch: Vec<PendingObject>) -> Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        {
+            let mut stmt = tx.prepare_cached(
+                r#"
+                INSERT INTO objects (guid, fqn, kind, version, revision, json)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                ON CONFLICT(guid) DO UPDATE SET
+                    fqn = excluded.fqn,
+                    kind = excluded.kind,
+                    version = excluded.version,
+                    revision = excluded.revision,
+                    json = excluded.json
+                WHERE excluded.revision > objects.revision
+                "#,
+            )?;
+
+            for obj in &batch {
+                stmt.execute(params![
+                    obj.guid,
+                    obj.fqn,
+                    obj.kind,
+                    obj.version,
+                    obj.revision,
+                    obj.json
+                ])?;
+            }
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Flush pending strings to database in a single transaction
+    fn flush_strings(&self, batch: Vec<PendingString>) -> Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        {
+            let mut stmt = tx.prepare_cached(
+                r#"
+                INSERT INTO strings (fqn, locale, id1, id2, text, version)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                ON CONFLICT(fqn) DO UPDATE SET
+                    locale = excluded.locale,
+                    id1 = excluded.id1,
+                    id2 = excluded.id2,
+                    text = excluded.text,
+                    version = excluded.version
+                WHERE excluded.version > strings.version
+                "#,
+            )?;
+
+            for s in &batch {
+                stmt.execute(params![s.fqn, s.locale, s.id1, s.id2, s.text, s.version])?;
+            }
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Flush any remaining pending inserts
+    pub fn flush(&self) -> Result<()> {
+        // Flush objects
+        let objects: Vec<_> = {
+            let mut pending = self.pending_objects.lock().unwrap();
+            pending.drain(..).collect()
+        };
+        self.flush_objects(objects)?;
+
+        // Flush strings
+        let strings: Vec<_> = {
+            let mut pending = self.pending_strings.lock().unwrap();
+            pending.drain(..).collect()
+        };
+        self.flush_strings(strings)?;
 
         Ok(())
     }
 
     pub fn stats(&self) -> Result<Stats> {
-        let quests: u64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM quests", [], |row| row.get(0))?;
-        let abilities: u64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM abilities", [], |row| row.get(0))?;
-        let items: u64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))?;
-        let npcs: u64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM npcs", [], |row| row.get(0))?;
-        let strings: u64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM strings", [], |row| row.get(0))?;
+        // Ensure all pending data is flushed before counting
+        self.flush()?;
+
+        let conn = self.conn.lock().unwrap();
+        let quests: u64 = conn.query_row("SELECT COUNT(*) FROM quests", [], |row| row.get(0))?;
+        let abilities: u64 =
+            conn.query_row("SELECT COUNT(*) FROM abilities", [], |row| row.get(0))?;
+        let items: u64 = conn.query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))?;
+        let npcs: u64 = conn.query_row("SELECT COUNT(*) FROM npcs", [], |row| row.get(0))?;
+        let strings: u64 = conn.query_row("SELECT COUNT(*) FROM strings", [], |row| row.get(0))?;
 
         Ok(Stats {
             quests,
@@ -158,7 +280,8 @@ impl Database {
     }
 
     pub fn set_meta(&self, key: &str, value: &str) -> Result<()> {
-        self.conn.execute(
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
             params![key, value],
         )?;

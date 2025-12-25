@@ -216,6 +216,7 @@ pub fn should_extract_stb(path: &str) -> bool {
         // Check for our target files
         let target_files = [
             "abl.stb",
+            "tal.stb",
             "itm.stb",
             "npc.stb",
             "qst.stb",
