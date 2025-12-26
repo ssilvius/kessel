@@ -12,8 +12,10 @@ use crate::stb::StbEntry;
 struct PendingObject {
     guid: String,
     fqn: String,
+    game_id: String,
     kind: String,
     icon_name: Option<String>,
+    string_id: Option<u32>,
     for_export: bool,
     version: u32,
     revision: u32,
@@ -112,8 +114,10 @@ impl Database {
             CREATE TABLE IF NOT EXISTS objects (
                 guid TEXT PRIMARY KEY,
                 fqn TEXT NOT NULL,
+                game_id TEXT NOT NULL,
                 kind TEXT NOT NULL,
                 icon_name TEXT,
+                string_id INTEGER,
                 for_export INTEGER NOT NULL DEFAULT 1,
                 version INTEGER NOT NULL DEFAULT 0,
                 revision INTEGER NOT NULL DEFAULT 0,
@@ -122,20 +126,24 @@ impl Database {
             );
 
             CREATE INDEX IF NOT EXISTS idx_objects_fqn ON objects(fqn);
+            CREATE INDEX IF NOT EXISTS idx_objects_game_id ON objects(game_id);
             CREATE INDEX IF NOT EXISTS idx_objects_kind ON objects(kind);
             CREATE INDEX IF NOT EXISTS idx_objects_for_export ON objects(for_export);
+            CREATE INDEX IF NOT EXISTS idx_objects_string_id ON objects(string_id);
+            CREATE INDEX IF NOT EXISTS idx_objects_icon_name ON objects(icon_name);
 
             -- Localized strings table (from STB files)
             CREATE TABLE IF NOT EXISTS strings (
                 fqn TEXT PRIMARY KEY,          -- Full FQN: "str.abl.sith_inquisitor.skill.corruption.innervate"
                 locale TEXT NOT NULL,          -- Locale: "en-us"
                 id1 INTEGER NOT NULL,          -- STB ID1
-                id2 INTEGER NOT NULL,          -- STB ID2
+                id2 INTEGER NOT NULL,          -- STB ID2 (links to objects.string_id)
                 text TEXT NOT NULL,            -- Display text
                 version INTEGER DEFAULT 0
             );
 
             CREATE INDEX IF NOT EXISTS idx_strings_locale ON strings(locale);
+            CREATE INDEX IF NOT EXISTS idx_strings_id2 ON strings(id2);
 
             -- Typed views for convenience
             CREATE VIEW IF NOT EXISTS quests AS
@@ -171,8 +179,10 @@ impl Database {
         let pending = PendingObject {
             guid: obj.guid.clone(),
             fqn: obj.fqn.clone(),
+            game_id: obj.game_id.clone(),
             kind: obj.kind.clone(),
             icon_name: obj.icon_name.clone(),
+            string_id: obj.string_id,
             for_export: should_export(&obj.fqn),
             version: obj.version,
             revision: obj.revision,
@@ -226,12 +236,14 @@ impl Database {
         {
             let mut stmt = tx.prepare_cached(
                 r#"
-                INSERT INTO objects (guid, fqn, kind, icon_name, for_export, version, revision, json)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                INSERT INTO objects (guid, fqn, game_id, kind, icon_name, string_id, for_export, version, revision, json)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                 ON CONFLICT(guid) DO UPDATE SET
                     fqn = excluded.fqn,
+                    game_id = excluded.game_id,
                     kind = excluded.kind,
                     icon_name = excluded.icon_name,
+                    string_id = excluded.string_id,
                     for_export = excluded.for_export,
                     version = excluded.version,
                     revision = excluded.revision,
@@ -244,8 +256,10 @@ impl Database {
                 stmt.execute(params![
                     obj.guid,
                     obj.fqn,
+                    obj.game_id,
                     obj.kind,
                     obj.icon_name,
+                    obj.string_id,
                     obj.for_export,
                     obj.version,
                     obj.revision,
@@ -338,5 +352,29 @@ impl Database {
             params![key, value],
         )?;
         Ok(())
+    }
+
+    /// Build mapping from icon_name → game_id for all objects with icons.
+    /// Used to name icon files by their owner's game_id instead of SWTOR's arbitrary naming.
+    pub fn get_icon_mapping(&self) -> Result<std::collections::HashMap<String, String>> {
+        self.flush()?; // Ensure all pending objects are written
+
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT icon_name, game_id FROM objects WHERE icon_name IS NOT NULL"
+        )?;
+
+        let mut mapping = std::collections::HashMap::new();
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+
+        for row in rows {
+            let (icon_name, game_id) = row?;
+            // First object wins - most specific FQN gets the icon
+            mapping.entry(icon_name).or_insert(game_id);
+        }
+
+        Ok(mapping)
     }
 }

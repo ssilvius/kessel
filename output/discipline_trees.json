@@ -1,0 +1,4883 @@
+{
+	"disciplines": {
+		"agent.concealment": {
+			"name": "Concealment",
+			"mirror": "Scrapper",
+			"class": "Imperial Agent",
+			"faction": "Empire",
+			"talents": [
+				{
+					"fqn": "tal.agent.skill.concealment.critical_stimulants",
+					"guid": "E00084CAEECCF677",
+					"name": "Critical Stimulants",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "stimulants"]
+				},
+				{
+					"fqn": "tal.agent.skill.concealment.deadly_toxins",
+					"guid": "E0000A2D40722FEE",
+					"name": "Deadly Toxins",
+					"effect_levels": [122, 123],
+					"abilities": [
+						{
+							"guid": "E00033CF4275841A",
+							"fqn": "abl.agent.noxious_knives"
+						},
+						{
+							"guid": "E00033CF4275841A",
+							"fqn": "abl.agent.noxious_knives"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "virulentpoison"]
+				},
+				{
+					"fqn": "tal.agent.skill.concealment.enhanced_chemicals",
+					"guid": "E00037E824B67D1A",
+					"name": "Enhanced Chemicals",
+					"effect_levels": [79, 135],
+					"abilities": [
+						{
+							"guid": "E0007D2018D4700B",
+							"fqn": "abl.agent.skill.concealment.volatile_substance"
+						},
+						{
+							"guid": "E0007D2018D4700B",
+							"fqn": "abl.agent.skill.concealment.volatile_substance"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_ag_op_enhance_chem"]
+				},
+				{
+					"fqn": "tal.agent.skill.concealment.imperial_ammunition",
+					"guid": "E00013F0691C641D",
+					"name": "Imperial Ammunition",
+					"effect_levels": [122, 123],
+					"abilities": [
+						{
+							"guid": "E000769792597F6D",
+							"fqn": "abl.agent.carbine_burst"
+						},
+						{
+							"guid": "E000769792597F6D",
+							"fqn": "abl.agent.carbine_burst"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_ag_op_imp_ammo"]
+				},
+				{
+					"fqn": "tal.agent.skill.concealment.meticulously_kept_blades",
+					"guid": "E000ADF0DCBF1261",
+					"name": "Meticulously Kept Blades",
+					"effect_levels": [136, 136, 136, 136],
+					"abilities": [
+						{
+							"guid": "E00006EA69396F3B",
+							"fqn": "abl.agent.backstab"
+						},
+						{
+							"guid": "E00023D1480824E9",
+							"fqn": "abl.agent.skill.concealment.laceration"
+						},
+						{
+							"guid": "E000D86A611A57D9",
+							"fqn": "abl.agent.skill.concealment.veiled_strike"
+						},
+						{
+							"guid": "E0007D2018D4700B",
+							"fqn": "abl.agent.skill.concealment.volatile_substance"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "trickblades"]
+				},
+				{
+					"fqn": "tal.agent.skill.concealment.prey_on_the_weak",
+					"guid": "E0001694DADCBBD3",
+					"name": "Prey On The Weak",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "op_pass_prey_on_the_weak"]
+				},
+				{
+					"fqn": "tal.agent.skill.concealment.revealing_weakness",
+					"guid": "E000FA80CAD5A598",
+					"name": "Revealing Weakness",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_ag_op_mutilating_methods"]
+				},
+				{
+					"fqn": "tal.agent.skill.concealment.scouting",
+					"guid": "E0005B2DBDE1350C",
+					"name": "Scouting",
+					"effect_levels": [50, 115, 121],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "tacticalmap"]
+				},
+				{
+					"fqn": "tal.agent.skill.concealment.surgical_strikes",
+					"guid": "E0004B0E4027A35C",
+					"name": "Surgical Strikes",
+					"effect_levels": [79, 79],
+					"abilities": [
+						{
+							"guid": "E000D86A611A57D9",
+							"fqn": "abl.agent.skill.concealment.veiled_strike"
+						},
+						{
+							"guid": "E0007B35A0966081",
+							"fqn": "abl.agent.overload_shot"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "perforatingshot"]
+				},
+				{
+					"fqn": "tal.agent.skill.concealment.waylay",
+					"guid": "E000FC1656E1FCC4",
+					"name": "Waylay",
+					"effect_levels": [79, 69],
+					"abilities": [
+						{
+							"guid": "E00006EA69396F3B",
+							"fqn": "abl.agent.backstab"
+						},
+						{
+							"guid": "E00006EA69396F3B",
+							"fqn": "abl.agent.backstab"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "criticalblade"]
+				}
+			]
+		},
+		"agent.engineering": {
+			"name": "Engineering",
+			"mirror": "Saboteur",
+			"class": "Imperial Agent",
+			"faction": "Empire",
+			"talents": [
+				{
+					"fqn": "tal.agent.skill.engineering.electrified_blast",
+					"guid": "E000150EB5C5CE29",
+					"name": "Electrified Blast",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "shockround"]
+				},
+				{
+					"fqn": "tal.agent.skill.engineering.experimental_explosives",
+					"guid": "E000E41709AC1428",
+					"name": "Experimental Explosives",
+					"effect_levels": [136, 123, 136, 136, 136],
+					"abilities": [
+						{
+							"guid": "E000A5599BBBE4FB",
+							"fqn": "abl.agent.skill.engineering.explosive_probe"
+						},
+						{
+							"guid": "E000BB23F0EC2136",
+							"fqn": "abl.agent.skill.engineering.interrogation_probe"
+						},
+						{
+							"guid": "E0008F2BDF4A5745",
+							"fqn": "abl.agent.skill.engineering.emp_discharge"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "thermaldetonation"]
+				},
+				{
+					"fqn": "tal.agent.skill.engineering.explosive_engineering",
+					"guid": "E00077D7E7F1A372",
+					"name": "Explosive Engineering",
+					"effect_levels": [79],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "x8", "explosiveprobe"]
+				},
+				{
+					"fqn": "tal.agent.skill.engineering.field_command",
+					"guid": "E00038E6D6327EFF",
+					"name": "Field Command",
+					"effect_levels": [122, 135],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "snipe_pass_field_command"]
+				},
+				{
+					"fqn": "tal.agent.skill.engineering.imperial_auto_loader",
+					"guid": "E00088A55733DEDC",
+					"name": "Imperial Auto Loader",
+					"effect_levels": [64, 69],
+					"abilities": [
+						{
+							"guid": "E0004B502CE1B27A",
+							"fqn": "abl.agent.series_of_shots"
+						},
+						{
+							"guid": "E0001D9CFD531B26",
+							"fqn": "abl.agent.snipe"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "bombardmentsniper"]
+				},
+				{
+					"fqn": "tal.agent.skill.engineering.sector_ranger",
+					"guid": "E0009F17BC513343",
+					"name": "Sector Ranger",
+					"effect_levels": [64, 62],
+					"abilities": [
+						{
+							"guid": "E0009899A1614952",
+							"fqn": "abl.agent.orbital_strike"
+						},
+						{
+							"guid": "E0009899A1614952",
+							"fqn": "abl.agent.orbital_strike"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "iamilitaryofficer"]
+				}
+			]
+		},
+		"agent.lethality": {
+			"name": "Lethality",
+			"mirror": "Ruffian",
+			"class": "Imperial Agent",
+			"faction": "Empire",
+			"talents": [
+				{
+					"fqn": "tal.agent.skill.lethality.acidic_compounds",
+					"guid": "E000688560071BA6",
+					"name": "Acidic Compounds",
+					"effect_levels": [79],
+					"abilities": [
+						{
+							"guid": "E0002BC49D5A45A7",
+							"fqn": "abl.agent.skill.lethality.toxic_blast"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "op_pass_acidic_compounds"]
+				},
+				{
+					"fqn": "tal.agent.skill.lethality.adhesive_corrosives",
+					"guid": "E000487AC0BD26E8",
+					"name": "Adhesive Corrosives",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "movementslowed"]
+				},
+				{
+					"fqn": "tal.agent.skill.lethality.corrosive_microbes",
+					"guid": "E000DF59DB302C6C",
+					"name": "Corrosive Microbes",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "fungalsample1"]
+				},
+				{
+					"fqn": "tal.agent.skill.lethality.cut_down",
+					"guid": "E00021FB1B3A8407",
+					"name": "Cut Down",
+					"effect_levels": [79, 79, 79],
+					"abilities": [
+						{
+							"guid": "E0007B35A0966081",
+							"fqn": "abl.agent.overload_shot"
+						},
+						{
+							"guid": "E00033CF4275841A",
+							"fqn": "abl.agent.noxious_knives"
+						},
+						{
+							"guid": "E0006EC45C9AF651",
+							"fqn": "abl.agent.skill.lethality.lethal_strike"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "linetheshot"]
+				},
+				{
+					"fqn": "tal.agent.skill.lethality.devouring_microbes",
+					"guid": "E000FF0A1EEDD779",
+					"name": "Devouring Microbes",
+					"effect_levels": [200],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "wither"]
+				},
+				{
+					"fqn": "tal.agent.skill.lethality.lethal_dose",
+					"guid": "E0003C3C2BBD6227",
+					"name": "Lethal Dose",
+					"effect_levels": [122, 135, 135],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "creepingterror"]
+				},
+				{
+					"fqn": "tal.agent.skill.lethality.lethal_injectors",
+					"guid": "E000AA86A905BE1F",
+					"name": "Lethal Injectors",
+					"effect_levels": [65],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "hypo4"]
+				},
+				{
+					"fqn": "tal.agent.skill.lethality.lethal_proliferation",
+					"guid": "E000FA90E7129B58",
+					"name": "Lethal Proliferation",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "op_pass_prey_on_the_weak"]
+				},
+				{
+					"fqn": "tal.agent.skill.lethality.license_to_kill",
+					"guid": "E000542F4E3BB022",
+					"name": "License To Kill",
+					"effect_levels": [69],
+					"abilities": [
+						{
+							"guid": "E00054654789DB85",
+							"fqn": "abl.agent.skill.lethality.corrosive_assault"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "imperialagent"]
+				},
+				{
+					"fqn": "tal.agent.skill.lethality.toxic_regulators",
+					"guid": "E0006552D74334FE",
+					"name": "Toxic Regulators",
+					"effect_levels": [46],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "advanced_shield"]
+				}
+			]
+		},
+		"agent.marksmanship": {
+			"name": "Marksmanship",
+			"mirror": "Sharpshooter",
+			"class": "Imperial Agent",
+			"faction": "Empire",
+			"talents": [
+				{
+					"fqn": "tal.agent.skill.marksmanship.between_the_eyes",
+					"guid": "E0001E8CDE2FCE6A",
+					"name": "Between The Eyes",
+					"effect_levels": [166, 122, 122],
+					"abilities": [
+						{
+							"guid": "E0001D9CFD531B26",
+							"fqn": "abl.agent.snipe"
+						},
+						{
+							"guid": "E000E721D72DB83F",
+							"fqn": "abl.agent.skill.marksmanship.followthrough"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "snipe"]
+				},
+				{
+					"fqn": "tal.agent.skill.marksmanship.heavy_diversion",
+					"guid": "E000073763B41F36",
+					"name": "Heavy Diversion",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "accuracyreduced"]
+				},
+				{
+					"fqn": "tal.agent.skill.marksmanship.imperial_assassin",
+					"guid": "E000A2C2C1DED7D8",
+					"name": "Imperial Assassin",
+					"effect_levels": [123, 123, 123, 123, 123],
+					"abilities": [
+						{
+							"guid": "E000279FD62F3B1E",
+							"fqn": "abl.agent.skill.marksmanship.penetrating_blasts"
+						},
+						{
+							"guid": "E000E721D72DB83F",
+							"fqn": "abl.agent.skill.marksmanship.followthrough"
+						},
+						{
+							"guid": "E000815AC5005DC9",
+							"fqn": null
+						},
+						{
+							"guid": "E000BE4BF130ED6B",
+							"fqn": "abl.agent.skill.marksmanship.ambush"
+						},
+						{
+							"guid": "E0001D9CFD531B26",
+							"fqn": "abl.agent.snipe"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "imperialagent"]
+				},
+				{
+					"fqn": "tal.agent.skill.marksmanship.portable_bunker",
+					"guid": "E00088C27412C07D",
+					"name": "Portable Bunker",
+					"effect_levels": [65],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "portablebunker"]
+				},
+				{
+					"fqn": "tal.agent.skill.marksmanship.precision_ambush",
+					"guid": "E000F564A9A41C11",
+					"name": "Precision Ambush",
+					"effect_levels": [166],
+					"abilities": [
+						{
+							"guid": "E000BE4BF130ED6B",
+							"fqn": "abl.agent.skill.marksmanship.ambush"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "blasterhugescope"]
+				},
+				{
+					"fqn": "tal.agent.skill.marksmanship.rapid_fire",
+					"guid": "E0006645E1226884",
+					"name": "Rapid Fire",
+					"effect_levels": [64, 64],
+					"abilities": [
+						{
+							"guid": "E000BE4BF130ED6B",
+							"fqn": "abl.agent.skill.marksmanship.ambush"
+						},
+						{
+							"guid": "E000279FD62F3B1E",
+							"fqn": "abl.agent.skill.marksmanship.penetrating_blasts"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "blindfire"]
+				},
+				{
+					"fqn": "tal.agent.skill.marksmanship.snipers_nest",
+					"guid": "E000DB06F0743AD8",
+					"name": "Snipers Nest",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "takecover"]
+				}
+			]
+		},
+		"agent.virulence": {
+			"name": "Virulence",
+			"mirror": "Dirty Fighting",
+			"class": "Imperial Agent",
+			"faction": "Empire",
+			"talents": [
+				{
+					"fqn": "tal.agent.skill.virulence.caustic_substances",
+					"guid": "E000C3F3D57DB03D",
+					"name": "Caustic Substances",
+					"effect_levels": [79],
+					"abilities": [
+						{
+							"guid": "E00062E74DC8B690",
+							"fqn": "abl.agent.skill.virulence.weakening_blast"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "snipe_pass_caustic_substances"]
+				},
+				{
+					"fqn": "tal.agent.skill.virulence.corrosive_dispersion",
+					"guid": "E000CB3E53507732",
+					"name": "Corrosive Dispersion",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_ag_sn_corrosive_dispersion"]
+				},
+				{
+					"fqn": "tal.agent.skill.virulence.decay",
+					"guid": "E0001E4C232CD247",
+					"name": "Decay",
+					"effect_levels": [79, 79, 79],
+					"abilities": [
+						{
+							"guid": "E0001D9CFD531B26",
+							"fqn": "abl.agent.snipe"
+						},
+						{
+							"guid": "E0000F0D634DB04A",
+							"fqn": "abl.agent.skill.virulence.cull"
+						},
+						{
+							"guid": "E0009FD14B63D40D",
+							"fqn": "abl.agent.skill.virulence.lethal_shot"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "sacrifice"]
+				},
+				{
+					"fqn": "tal.agent.skill.virulence.devouring_microbes",
+					"guid": "E0000C087CB5EDFF",
+					"name": "Devouring Microbes",
+					"effect_levels": [200],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "wither"]
+				},
+				{
+					"fqn": "tal.agent.skill.virulence.razor_rounds",
+					"guid": "E0000397F0905110",
+					"name": "Razor Rounds",
+					"effect_levels": [135, 122, 122],
+					"abilities": [
+						{
+							"guid": "E0000F0D634DB04A",
+							"fqn": "abl.agent.skill.virulence.cull"
+						},
+						{
+							"guid": "E0000F0D634DB04A",
+							"fqn": "abl.agent.skill.virulence.cull"
+						},
+						{
+							"guid": "E0004B502CE1B27A",
+							"fqn": "abl.agent.series_of_shots"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "ammobelt"]
+				},
+				{
+					"fqn": "tal.agent.skill.virulence.targeted_demolition",
+					"guid": "E0002667894E845B",
+					"name": "Targeted Demolition",
+					"effect_levels": [79],
+					"abilities": [
+						{
+							"guid": "E0009878DC600F2F",
+							"fqn": "abl.agent.skill.lethality.corrosive_grenade"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "security"]
+				}
+			]
+		},
+		"bounty_hunter.advanced_prototype": {
+			"name": "Advanced Prototype",
+			"mirror": "Tactics",
+			"class": "Bounty Hunter",
+			"faction": "Empire",
+			"talents": [
+				{
+					"fqn": "tal.bounty_hunter.skill.advanced_prototype.critical_ventilation",
+					"guid": "E00091A7A95D7DE6",
+					"name": "Critical Ventilation",
+					"effect_levels": [122, 135, 64],
+					"abilities": [
+						{
+							"guid": "E0001CEF53F392B9",
+							"fqn": "abl.bounty_hunter.vent_heat"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "vent"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.advanced_prototype.infrared_sensors",
+					"guid": "E000A3616A8D12AE",
+					"name": "Infrared Sensors",
+					"effect_levels": [50, 115, 121],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "bloodthirst"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.advanced_prototype.power_bracer",
+					"guid": "E0005669E3FE0DE0",
+					"name": "Power Bracer",
+					"effect_levels": [79, 79, 79, 79, 79, 79, 79, 79],
+					"abilities": [
+						{
+							"guid": "E000A731AD3DBA53",
+							"fqn": "abl.bounty_hunter.rocket_punch"
+						},
+						{
+							"guid": "E000C0B53106C5ED",
+							"fqn": "abl.bounty_hunter.rail_shot"
+						},
+						{
+							"guid": "E000E5BC34E35B4F",
+							"fqn": "abl.bounty_hunter.skill.advanced_prototype.magnetic_blast"
+						},
+						{
+							"guid": "E000B15AF71F0D04",
+							"fqn": "abl.bounty_hunter.flame_sweep"
+						},
+						{
+							"guid": "E0006D3F933519D0",
+							"fqn": null
+						},
+						{
+							"guid": "E0003FC51B291E11",
+							"fqn": "abl.bounty_hunter.skill.advanced_prototype.thermal_detonator"
+						},
+						{
+							"guid": "E000F01ACA482DA5",
+							"fqn": "abl.bounty_hunter.flame_burst"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "bracercharge"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.advanced_prototype.power_loaders",
+					"guid": "E00039972C88EEF8",
+					"name": "Power Loaders",
+					"effect_levels": [79, 79, 61, 135, 135],
+					"abilities": [
+						{
+							"guid": "E000CEEB85AD3C10",
+							"fqn": "abl.bounty_hunter.shoulder_cannon"
+						},
+						{
+							"guid": "E000CEEB85AD3C10",
+							"fqn": "abl.bounty_hunter.shoulder_cannon"
+						},
+						{
+							"guid": "E000A731AD3DBA53",
+							"fqn": "abl.bounty_hunter.rocket_punch"
+						},
+						{
+							"guid": "E0003FC51B291E11",
+							"fqn": "abl.bounty_hunter.skill.advanced_prototype.thermal_detonator"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "powerloaders"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.advanced_prototype.prototype_missile_silos",
+					"guid": "E000CC5C41601F08",
+					"name": "Prototype Missile Silos",
+					"effect_levels": [64, 64, 79],
+					"abilities": [
+						{
+							"guid": "E000300ED63EFC81",
+							"fqn": "abl.bounty_hunter.deadly_onslaught"
+						},
+						{
+							"guid": "E0001D3AADA35CC6",
+							"fqn": null
+						},
+						{
+							"guid": "E0001D3AADA35CC6",
+							"fqn": null
+						}
+					],
+					"strings": ["str.tal", "str.tal", " abl_b"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.advanced_prototype.prototype_weapon_systems",
+					"guid": "E0001BF1BC91ADA5",
+					"name": "Prototype Weapon Systems",
+					"effect_levels": [136, 123, 136, 136, 136, 136],
+					"abilities": [
+						{
+							"guid": "E000A731AD3DBA53",
+							"fqn": "abl.bounty_hunter.rocket_punch"
+						},
+						{
+							"guid": "E000C0B53106C5ED",
+							"fqn": "abl.bounty_hunter.rail_shot"
+						},
+						{
+							"guid": "E000E5BC34E35B4F",
+							"fqn": "abl.bounty_hunter.skill.advanced_prototype.magnetic_blast"
+						},
+						{
+							"guid": "E0006D3F933519D0",
+							"fqn": null
+						},
+						{
+							"guid": "E0003FC51B291E11",
+							"fqn": "abl.bounty_hunter.skill.advanced_prototype.thermal_detonator"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "armament2"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.advanced_prototype.serrated_blades",
+					"guid": "E000D88C07090A27",
+					"name": "Serrated Blades",
+					"effect_levels": [79],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "criticalblade"]
+				}
+			]
+		},
+		"bounty_hunter.arsenal": {
+			"name": "Arsenal",
+			"mirror": "Gunnery",
+			"class": "Bounty Hunter",
+			"faction": "Empire",
+			"talents": [
+				{
+					"fqn": "tal.bounty_hunter.skill.arsenal.blazing_barrels",
+					"guid": "E000E7FCB3DA830E",
+					"name": "Blazing Barrels",
+					"effect_levels": [122, 123],
+					"abilities": [
+						{
+							"guid": "E0005B3494C8C8E4",
+							"fqn": null
+						},
+						{
+							"guid": "E0005B3494C8C8E4",
+							"fqn": null
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_bh_me_blazing_barrels"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.arsenal.burst_mode",
+					"guid": "E00010B6B5762E7E",
+					"name": "Burst Mode",
+					"effect_levels": [61],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_bhtr_meco_burst_mode"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.arsenal.mods.customized_warhead",
+					"guid": "E00024A8CE272C7A",
+					"name": "Customized Warhead",
+					"effect_levels": [135, 136],
+					"abilities": [
+						{
+							"guid": "E000700840154EAB",
+							"fqn": "abl.bounty_hunter.skill.arsenal.heatseeker_missiles"
+						},
+						{
+							"guid": "E000700840154EAB",
+							"fqn": "abl.bounty_hunter.skill.arsenal.heatseeker_missiles"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "spvp_cruisemissile"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.arsenal.ironsights",
+					"guid": "E00059B99E9FC3E6",
+					"name": "Ironsights",
+					"effect_levels": [79, 79, 79],
+					"abilities": [
+						{
+							"guid": "E0003BD05D030E76",
+							"fqn": null
+						}
+					],
+					"strings": ["str.tal", "str.tal", "assaultcannonironsight"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.arsenal.light_em_up",
+					"guid": "E0005E5396D27605",
+					"name": "Light Em Up",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "orbitalmultistrikes"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.arsenal.pinning_fire",
+					"guid": "E000E3720759F4FE",
+					"name": "Pinning Fire",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "cripplingfire"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.arsenal.power_launcher",
+					"guid": "E000F8CFB76A16A7",
+					"name": "Power Launcher",
+					"effect_levels": [79, 79, 79, 79],
+					"abilities": [
+						{
+							"guid": "E000B1B9C960CDF4",
+							"fqn": null
+						},
+						{
+							"guid": "E00090EA9B6AC120",
+							"fqn": "abl.bounty_hunter.skill.arsenal.tracer_missile"
+						},
+						{
+							"guid": "E000700840154EAB",
+							"fqn": "abl.bounty_hunter.skill.arsenal.heatseeker_missiles"
+						},
+						{
+							"guid": "E000C0B53106C5ED",
+							"fqn": "abl.bounty_hunter.rail_shot"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "powerednet"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.arsenal.mods.proficient_tracing",
+					"guid": "E00079D52B8AE1EA",
+					"name": "Proficient Tracing",
+					"effect_levels": [62, 69, 66],
+					"abilities": [
+						{
+							"guid": "E00090EA9B6AC120",
+							"fqn": "abl.bounty_hunter.skill.arsenal.tracer_missile"
+						},
+						{
+							"guid": "E00090EA9B6AC120",
+							"fqn": "abl.bounty_hunter.skill.arsenal.tracer_missile"
+						},
+						{
+							"guid": "E00090EA9B6AC120",
+							"fqn": "abl.bounty_hunter.skill.arsenal.tracer_missile"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "powerednet"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.arsenal.riddle",
+					"guid": "E000328B30083D93",
+					"name": "Riddle",
+					"effect_levels": [122, 122],
+					"abilities": [
+						{
+							"guid": "E00086EAFD3C632A",
+							"fqn": "abl.bounty_hunter.skill.arsenal.blazing_bolts"
+						},
+						{
+							"guid": "E0003BD05D030E76",
+							"fqn": null
+						}
+					],
+					"strings": ["str.tal", "str.tal", "unload"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.arsenal.target_tracking",
+					"guid": "E000EF93EDEAB174",
+					"name": "Target Tracking",
+					"effect_levels": [136, 123, 123],
+					"abilities": [
+						{
+							"guid": "E000700840154EAB",
+							"fqn": "abl.bounty_hunter.skill.arsenal.heatseeker_missiles"
+						},
+						{
+							"guid": "E000C0B53106C5ED",
+							"fqn": "abl.bounty_hunter.rail_shot"
+						},
+						{
+							"guid": "E0003BD05D030E76",
+							"fqn": null
+						}
+					],
+					"strings": ["str.tal", "str.tal", "missilefan"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.arsenal.mods.tracing_residue",
+					"guid": "E0009D71A653CB88",
+					"name": "Tracing Residue",
+					"effect_levels": [79],
+					"abilities": [
+						{
+							"guid": "E00090EA9B6AC120",
+							"fqn": "abl.bounty_hunter.skill.arsenal.tracer_missile"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "spvp_communicationjammed1"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.arsenal.mods.triple_trace",
+					"guid": "E0003C40CCEA2115",
+					"name": "Triple Trace",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "missilesalvo"]
+				}
+			]
+		},
+		"bounty_hunter.bodyguard": {
+			"name": "Bodyguard",
+			"mirror": "Combat Medic",
+			"class": "Bounty Hunter",
+			"faction": "Empire",
+			"talents": [
+				{
+					"fqn": "tal.bounty_hunter.skill.bodyguard.bodyguard",
+					"guid": "E0009CE2D8A34274",
+					"name": "Bodyguard",
+					"effect_levels": [83, 61, 60, 200],
+					"abilities": [
+						{
+							"guid": "E0006E72D51A2D55",
+							"fqn": "abl.bounty_hunter.skill.bodyguard.kolto_shell"
+						},
+						{
+							"guid": "E0006E72D51A2D55",
+							"fqn": "abl.bounty_hunter.skill.bodyguard.kolto_shell"
+						},
+						{
+							"guid": "E0006E72D51A2D55",
+							"fqn": "abl.bounty_hunter.skill.bodyguard.kolto_shell"
+						},
+						{
+							"guid": "E0006E72D51A2D55",
+							"fqn": "abl.bounty_hunter.skill.bodyguard.kolto_shell"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "rangedtankunlock"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.bodyguard.mods.critical_scanning",
+					"guid": "E000557A9029BB2F",
+					"name": "Critical Scanning",
+					"effect_levels": [135],
+					"abilities": [
+						{
+							"guid": "E000D8E3E890BF73",
+							"fqn": "abl.bounty_hunter.skill.bodyguard.healing_scan"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_bh_me_kolto_shot"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.bodyguard.empowered_scans",
+					"guid": "E000743DAE8C6C6A",
+					"name": "Empowered Scans",
+					"effect_levels": [83, 83, 63, 67],
+					"abilities": [
+						{
+							"guid": "E000E7349C275B48",
+							"fqn": "abl.bounty_hunter.rapid_scan"
+						},
+						{
+							"guid": "E00000A84E68F156",
+							"fqn": "abl.bounty_hunter.emergency_scan"
+						},
+						{
+							"guid": "E0002AFF0BDEDD2F",
+							"fqn": "abl.bounty_hunter.skill.bodyguard.progressive_scan"
+						},
+						{
+							"guid": "E0002AFF0BDEDD2F",
+							"fqn": "abl.bounty_hunter.skill.bodyguard.progressive_scan"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_bh_me_kolto_shot"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.bodyguard.med_tech",
+					"guid": "E000E1A9B9C7ADE0",
+					"name": "Med Tech",
+					"effect_levels": [135],
+					"abilities": [
+						{
+							"guid": "E000E7349C275B48",
+							"fqn": "abl.bounty_hunter.rapid_scan"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "medicalcrate"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.bodyguard.peacekeeper",
+					"guid": "E000AC0862C25380",
+					"name": "Peacekeeper",
+					"effect_levels": [83, 83, 83],
+					"abilities": [
+						{
+							"guid": "E00095FFD3CC01DD",
+							"fqn": "abl.bounty_hunter.skill.bodyguard.kolto_missile"
+						},
+						{
+							"guid": "E0002AFF0BDEDD2F",
+							"fqn": "abl.bounty_hunter.skill.bodyguard.progressive_scan"
+						},
+						{
+							"guid": "E000C17EC99C1215",
+							"fqn": null
+						}
+					],
+					"strings": ["str.tal", "str.tal", "merc_pass_peacekeeper"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.bodyguard.surgical_precision_system",
+					"guid": "E00010BD5BEA24A6",
+					"name": "Surgical Precision System",
+					"effect_levels": [200, 81],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "333?", "cyberneticexperiement"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.bodyguard.warden",
+					"guid": "E0006204890E6CE2",
+					"name": "Warden",
+					"effect_levels": [136],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "souterrimpirate"]
+				}
+			]
+		},
+		"bounty_hunter.innovative_ordnance": {
+			"name": "Innovative Ordnance",
+			"mirror": "Assault Specialist",
+			"class": "Bounty Hunter",
+			"faction": "Empire",
+			"talents": [
+				{
+					"fqn": "tal.bounty_hunter.skill.innovative_ordnance.collateral_damage",
+					"guid": "E00030A36959763E",
+					"name": "Collateral Damage",
+					"effect_levels": [79],
+					"abilities": [
+						{
+							"guid": "E000A3321C145A22",
+							"fqn": "abl.bounty_hunter.fusion_missile"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_bh_me_collateral_damage"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.innovative_ordnance.mods.eruptive_flames",
+					"guid": "E00089F7773E62C0",
+					"name": "Eruptive Flames",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "mercom_eruptive_flames_imp"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.innovative_ordnance.mods.incendiary_ignition",
+					"guid": "E000952CE17DBB6E",
+					"name": "Incendiary Ignition",
+					"effect_levels": [79],
+					"abilities": [
+						{
+							"guid": "E00049BAC6BFF6CA",
+							"fqn": "abl.bounty_hunter.combustible_gas_cylinder"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "burned"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.innovative_ordnance.ordnance_expert",
+					"guid": "E000EAE3FD07FA6E",
+					"name": "Ordnance Expert",
+					"effect_levels": [122, 123, 123, 136, 123],
+					"abilities": [
+						{
+							"guid": "E000F5587355A10E",
+							"fqn": "abl.bounty_hunter.unload"
+						},
+						{
+							"guid": "E000ECC860A5C8B0",
+							"fqn": "abl.bounty_hunter.power_shot"
+						},
+						{
+							"guid": "E0003FC51B291E11",
+							"fqn": "abl.bounty_hunter.skill.advanced_prototype.thermal_detonator"
+						},
+						{
+							"guid": "E000D319EFB8CB4F",
+							"fqn": "abl.bounty_hunter.skill.innovative_ordnance.mag_shot"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "elementaloverload"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.innovative_ordnance.power_barrels",
+					"guid": "E0007645839F3133",
+					"name": "Power Barrels",
+					"effect_levels": [64, 69],
+					"abilities": [
+						{
+							"guid": "E000A3321C145A22",
+							"fqn": "abl.bounty_hunter.fusion_missile"
+						},
+						{
+							"guid": "E000A3321C145A22",
+							"fqn": "abl.bounty_hunter.fusion_missile"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "shockround"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.innovative_ordnance.rapid_venting",
+					"guid": "E0009F2B5E8AE178",
+					"name": "Rapid Venting",
+					"effect_levels": [64, 69],
+					"abilities": [
+						{
+							"guid": "E0001CEF53F392B9",
+							"fqn": "abl.bounty_hunter.vent_heat"
+						},
+						{
+							"guid": "E000E7349C275B48",
+							"fqn": "abl.bounty_hunter.rapid_scan"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "vent"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.innovative_ordnance.relentless_ordnance",
+					"guid": "E000B4A8D17B413D",
+					"name": "Relentless Ordnance",
+					"effect_levels": [200],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "forcecrush"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.innovative_ordnance.mods.slow_burn",
+					"guid": "E000CD90F2DC0622",
+					"name": "Slow Burn",
+					"effect_levels": [79, 65],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "decoyarsenal"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.innovative_ordnance.sweltering_heat",
+					"guid": "E0009B2CA152B64B",
+					"name": "Sweltering Heat",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "creepingterror"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.innovative_ordnance.mods.volatile_cinders",
+					"guid": "E000C21536876025",
+					"name": "Volatile Cinders",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_bh_me_anticipatory_ignition"]
+				}
+			]
+		},
+		"bounty_hunter.shield_tech": {
+			"name": "Shield Tech",
+			"mirror": "Shield Specialist",
+			"class": "Bounty Hunter",
+			"faction": "Empire",
+			"talents": [
+				{
+					"fqn": "tal.bounty_hunter.skill.shield_tech.ablative_upgrades",
+					"guid": "E000B5CC39710FCE",
+					"name": "Ablative Upgrades",
+					"effect_levels": [119, 125, 201, 201],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "bioelectricshieldenhancer"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.shield_tech.deflective_plating",
+					"guid": "E00033ED0A252CA3",
+					"name": "Deflective Plating",
+					"effect_levels": [121, 115, 21, 24, 22, 23],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "block"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.shield_tech.flame_surge_dmg_increase",
+					"guid": "E000C92739682EFB",
+					"name": "Flame Surge Dmg Increase",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "flamingsweep"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.shield_tech.ion_screen",
+					"guid": "E000CCA84618915E",
+					"name": "Ion Screen",
+					"effect_levels": [21, 24, 22, 23],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "disturbance"]
+				},
+				{
+					"fqn": "tal.bounty_hunter.skill.shield_tech.power_armor",
+					"guid": "E00004C004D4C4C4",
+					"name": "Power Armor",
+					"effect_levels": [21, 24, 22, 23, 48, 79],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "powerarmor"]
+				}
+			]
+		},
+		"jedi_consular.balance": {
+			"name": "Balance",
+			"mirror": "Madness",
+			"class": "Jedi Consular",
+			"faction": "Republic",
+			"talents": [
+				{
+					"fqn": "tal.jedi_consular.skill.balance.abundant_justice",
+					"guid": "E000898FF595C5B3",
+					"name": "Abundant Justice",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_jc_sa_abundant_justice"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.balance.critical_kinesis",
+					"guid": "E000B64688B53A5B",
+					"name": "Critical Kinesis",
+					"effect_levels": [133, 133],
+					"abilities": [
+						{
+							"guid": "E000B076E7777F2C",
+							"fqn": "abl.jedi_consular.skill.balance.force_serenity"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "railshot"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.balance.drain_thoughts",
+					"guid": "E000FB7317B3236A",
+					"name": "Drain Thoughts",
+					"effect_levels": [79],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "drainingforce"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.balance.focused_insight",
+					"guid": "E000E05F24CC3DCD",
+					"name": "Focused Insight",
+					"effect_levels": [201, 201, 201, 201, 201],
+					"abilities": [
+						{
+							"guid": "E000B076E7777F2C",
+							"fqn": "abl.jedi_consular.skill.balance.force_serenity"
+						},
+						{
+							"guid": "E000E2E6137D4F20",
+							"fqn": null
+						},
+						{
+							"guid": "E0001555F969BCD3",
+							"fqn": "abl.jedi_consular.weaken_mind"
+						},
+						{
+							"guid": "E00089DBBB2A0D0A",
+							"fqn": "abl.jedi_consular.skill.balance.sever_force"
+						},
+						{
+							"guid": "E000A7E8A6CB4F75",
+							"fqn": "abl.jedi_consular.skill.balance.mods.tier1.shifted_balance"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "salvation"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.balance.mental_scarring",
+					"guid": "E00077F4CD6C06A3",
+					"name": "Mental Scarring",
+					"effect_levels": [200],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "soothe"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.balance.mind_warp",
+					"guid": "E000DE686C26E0AA",
+					"name": "Mind Warp",
+					"effect_levels": [65, 65, 65],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "mindcrush"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.balance.minds_eye",
+					"guid": "E0002761F68D3EC0",
+					"name": "Minds Eye",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "jkmiralukansurvivor"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.balance.telekinetic_regeneration",
+					"guid": "E000F613E2E04B5A",
+					"name": "Telekinetic Regeneration",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "forcedrain"]
+				}
+			]
+		},
+		"jedi_consular.combat": {
+			"name": "Combat",
+			"mirror": "Carnage",
+			"class": "Jedi Consular",
+			"faction": "Republic",
+			"talents": [
+				{
+					"fqn": "tal.jedi_consular.skill.combat.bombardment",
+					"guid": "E000610F03419266",
+					"name": "Bombardment",
+					"effect_levels": [79, 68],
+					"abilities": [
+						{
+							"guid": "E0008DFC7ED44333",
+							"fqn": "abl.jedi_consular.project"
+						},
+						{
+							"guid": "E0008DFC7ED44333",
+							"fqn": "abl.jedi_consular.project"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "pileofrubble"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.combat.elusiveness",
+					"guid": "E000CBC858EF9CCE",
+					"name": "Elusiveness",
+					"effect_levels": [21, 24, 22, 23, 48],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "bhoutlaw"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.combat.force_break",
+					"guid": "E000753764A5E1B6",
+					"name": "Force Break",
+					"effect_levels": [79, 79],
+					"abilities": [
+						{
+							"guid": "E000E4E036A41184",
+							"fqn": "abl.jedi_consular.skill.combat.slow_time"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "disable"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.combat.kinetic_bulwark",
+					"guid": "E000CA14FFDA9A3F",
+					"name": "Kinetic Bulwark",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "handdeflect"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.combat.one_with_the_force",
+					"guid": "E0007C8C1AFCC870",
+					"name": "One With The Force",
+					"effect_levels": [140, 21, 22],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "energydrain"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.combat.psychokinesis",
+					"guid": "E00085DA4F58068B",
+					"name": "Psychokinesis",
+					"effect_levels": [201],
+					"abilities": [
+						{
+							"guid": "E000CB502E9F38D2",
+							"fqn": "abl.jedi_consular.whirling_blow"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_jc_sh_psychokinesis"]
+				}
+			]
+		},
+		"jedi_consular.infiltration": {
+			"name": "Infiltration",
+			"mirror": "Deception",
+			"class": "Jedi Consular",
+			"faction": "Republic",
+			"talents": [
+				{
+					"fqn": "tal.jedi_consular.skill.infiltration.deep_impact",
+					"guid": "E000B42BDA24A76C",
+					"name": "Deep Impact",
+					"effect_levels": [134, 134],
+					"abilities": [
+						{
+							"guid": "E0006FFC4AA7C9F3",
+							"fqn": "abl.jedi_consular.skill.infiltration.psychokinetic_blast"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "shrapnelburst"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.infiltration.fracturing_force",
+					"guid": "E00054D10F94882A",
+					"name": "Fracturing Force",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "shad_uti_fracturing_force"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.infiltration.judgement",
+					"guid": "E0007CB531D5B866",
+					"name": "Judgement",
+					"effect_levels": [200, 68],
+					"abilities": [
+						{
+							"guid": "E000A776AE78917E",
+							"fqn": "abl.jedi_consular.spinning_strike"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "twirl"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.infiltration.shadows_mark",
+					"guid": "E0003F41A379890E",
+					"name": "Shadows Mark",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "linetheshot"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.infiltration.shadows_respite",
+					"guid": "E00066AF4D12EA20",
+					"name": "Shadows Respite",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "jkwilderfugitive"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.infiltration.upheaval",
+					"guid": "E000F0F973D3B54F",
+					"name": "Upheaval",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "upheaval"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.infiltration.whirling_edge",
+					"guid": "E000889746B23372",
+					"name": "Whirling Edge",
+					"effect_levels": [166, 116, 117],
+					"abilities": [
+						{
+							"guid": "E000CB502E9F38D2",
+							"fqn": "abl.jedi_consular.whirling_blow"
+						},
+						{
+							"guid": "E000CB502E9F38D2",
+							"fqn": "abl.jedi_consular.whirling_blow"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_sijc_assh_whirling_edge"]
+				}
+			]
+		},
+		"jedi_consular.seer": {
+			"name": "Seer",
+			"mirror": "Corruption",
+			"class": "Jedi Consular",
+			"faction": "Republic",
+			"talents": [
+				{
+					"fqn": "tal.jedi_consular.skill.seer.amnesty",
+					"guid": "E000D7B3FF3F6ACC",
+					"name": "Amnesty",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "sharedbenevolence"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.seer.clairvoyance",
+					"guid": "E000C8CA126AE0FD",
+					"name": "Clairvoyance",
+					"effect_levels": [133],
+					"abilities": [
+						{
+							"guid": "E00041221FF5BA58",
+							"fqn": "abl.jedi_consular.benevolence"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "drainingpresence"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.seer.erudite_mender",
+					"guid": "E000676FB244860C",
+					"name": "Erudite Mender",
+					"effect_levels": [83, 83],
+					"abilities": [
+						{
+							"guid": "E0008FDCAD37C4E4",
+							"fqn": "abl.jedi_consular.rejuvenate"
+						},
+						{
+							"guid": "E000CE01F7F51D58",
+							"fqn": "abl.jedi_consular.skill.seer.renewal"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "sage_pass_erudite_mender"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.seer.force_shelter",
+					"guid": "E000CDDEE667B125",
+					"name": "Force Shelter",
+					"effect_levels": [65, 68],
+					"abilities": [
+						{
+							"guid": "E0008FDCAD37C4E4",
+							"fqn": "abl.jedi_consular.rejuvenate"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "mediumarmors"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.seer.foresight",
+					"guid": "E0006DABE97A273B",
+					"name": "Foresight",
+					"effect_levels": [200, 81],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "bhoutlaw"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.seer.immutable_force",
+					"guid": "E0007D61E7006977",
+					"name": "Immutable Force",
+					"effect_levels": [62, 68, 62],
+					"abilities": [
+						{
+							"guid": "E000417919608E92",
+							"fqn": "abl.jedi_consular.skill.seer.deliverance"
+						},
+						{
+							"guid": "E00041221FF5BA58",
+							"fqn": "abl.jedi_consular.benevolence"
+						},
+						{
+							"guid": "E00056E45F97F641",
+							"fqn": "abl.jedi_consular.skill.seer.mods.tier1.keeper_of_peace"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "comm_pass_frontline_medic"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.seer.preservation",
+					"guid": "E00066E71E3B67CB",
+					"name": "Preservation",
+					"effect_levels": [68, 65, 77],
+					"abilities": [
+						{
+							"guid": "E000EBDFE85341CE",
+							"fqn": "abl.jedi_consular.force_armor"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "forcearmor"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.seer.serenity",
+					"guid": "E000DA65C48AECE3",
+					"name": "Serenity",
+					"effect_levels": [21, 22, 23, 24, 133],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "jkforcesensitiveorphan"]
+				}
+			]
+		},
+		"jedi_consular.serenity": {
+			"name": "Serenity",
+			"mirror": "Hatred",
+			"class": "Jedi Consular",
+			"faction": "Republic",
+			"talents": [
+				{
+					"fqn": "tal.jedi_consular.skill.serenity.aching_mind",
+					"guid": "E000FE52C5EF4D36",
+					"name": "Aching Mind",
+					"effect_levels": [200, 200, 200],
+					"abilities": [
+						{
+							"guid": "E000E2E6137D4F20",
+							"fqn": null
+						}
+					],
+					"strings": ["str.tal", "str.tal", "creepingterror"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.serenity.adjudication",
+					"guid": "E0007AB8E6F7639C",
+					"name": "Adjudication",
+					"effect_levels": [117, 117, 117, 68],
+					"abilities": [
+						{
+							"guid": "E000C5C446ED836D",
+							"fqn": "abl.jedi_consular.double_strike"
+						},
+						{
+							"guid": "E000A776AE78917E",
+							"fqn": "abl.jedi_consular.spinning_strike"
+						},
+						{
+							"guid": "E0004C243FDC1DDC",
+							"fqn": "abl.jedi_consular.skill.serenity.serenity_strike"
+						},
+						{
+							"guid": "E000A776AE78917E",
+							"fqn": "abl.jedi_consular.spinning_strike"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "zabrakswordsman"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.serenity.drain_mind",
+					"guid": "E000701B6472E176",
+					"name": "Drain Mind",
+					"effect_levels": [79],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "drainingforce"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.serenity.force_focus",
+					"guid": "E000FE8A61544F30",
+					"name": "Force Focus",
+					"effect_levels": [79, 133],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "railshot"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.serenity.mind_and_body",
+					"guid": "E0008AD9F60D7CCD",
+					"name": "Mind And Body",
+					"effect_levels": [46],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_jc_sh_MindandBody"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.serenity.mind_quell",
+					"guid": "E0003D4299AC631C",
+					"name": "Mind Quell",
+					"effect_levels": [79],
+					"abilities": [
+						{
+							"guid": "E000AA1423920CA9",
+							"fqn": "abl.jedi_consular.skill.serenity.squelch"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "introspection"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.serenity.prolific_justice",
+					"guid": "E000753C6A33EB83",
+					"name": "Prolific Justice",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_jc_sh_prolific_justice"]
+				}
+			]
+		},
+		"jedi_consular.telekinetics": {
+			"name": "Telekinetics",
+			"mirror": "Lightning",
+			"class": "Jedi Consular",
+			"faction": "Republic",
+			"talents": [
+				{
+					"fqn": "tal.jedi_consular.skill.telekinetics.enhanced_force_armor",
+					"guid": "E000A450E6E6C022",
+					"name": "Enhanced Force Armor",
+					"effect_levels": [44, 77],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "!sorcs"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.telekinetics.flowing_force",
+					"guid": "E000A0721692116E",
+					"name": "Flowing Force",
+					"effect_levels": [65, 64],
+					"abilities": [
+						{
+							"guid": "E00053E952013D95",
+							"fqn": "abl.jedi_consular.mental_alacrity"
+						},
+						{
+							"guid": "E00053E952013D95",
+							"fqn": "abl.jedi_consular.mental_alacrity"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "mentalacuity"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.telekinetics.magnifying_vibrations",
+					"guid": "E000070E5D29C560",
+					"name": "Magnifying Vibrations",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_jc_sa_magnifying_vibrations"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.telekinetics.resonating_vibrations",
+					"guid": "E00062DB5F8DDC24",
+					"name": "Resonating Vibrations",
+					"effect_levels": [133, 134],
+					"abilities": [
+						{
+							"guid": "E00064D227F080F2",
+							"fqn": "abl.jedi_consular.forcequake"
+						},
+						{
+							"guid": "E00064D227F080F2",
+							"fqn": "abl.jedi_consular.forcequake"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_jc_sa_resonating_vibrations"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.telekinetics.reverberation",
+					"guid": "E0005144F3E45406",
+					"name": "Reverberation",
+					"effect_levels": [134, 134, 134, 134, 134],
+					"abilities": [
+						{
+							"guid": "E0005B66FE260B19",
+							"fqn": "abl.jedi_consular.mind_blast"
+						},
+						{
+							"guid": "E00040420722B280",
+							"fqn": "abl.jedi_consular.skill.telekinetics.mods.tier1.power_of_the_force"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "energyrebounder"]
+				},
+				{
+					"fqn": "tal.jedi_consular.skill.telekinetics.turbulence_double_proc",
+					"guid": "E000A6FE1841029A",
+					"name": "Turbulence Double Proc",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "cc_follow"]
+				}
+			]
+		},
+		"jedi_knight.combat": {
+			"name": "Combat",
+			"mirror": "Carnage",
+			"class": "Jedi Knight",
+			"faction": "Republic",
+			"talents": [
+				{
+					"fqn": "tal.jedi_knight.skill.combat.ataru_mastery",
+					"guid": "E000317731B620F7",
+					"name": "Ataru Mastery",
+					"effect_levels": [79],
+					"abilities": [
+						{
+							"guid": "E0003A2ABACE594B",
+							"fqn": null
+						}
+					],
+					"strings": ["str.tal", "str.tal", "duelwield"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.combat.ataru_savvy",
+					"guid": "E0006E8426A41CC5",
+					"name": "Ataru Savvy",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_swjk_mase_ataru_savvy"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.combat.combat_trance",
+					"guid": "E000B75B45EA2334",
+					"name": "Combat Trance",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_jk_se_CombatTrance"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.combat.efficient_strikes",
+					"guid": "E000857C0A8483DA",
+					"name": "Efficient Strikes",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_swjk_mase_efficent_strikes"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.combat.excise",
+					"guid": "E00014EA4418C1C8",
+					"name": "Excise",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_jk_se_excise"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.combat.immaculate_force",
+					"guid": "E000EE9181136084",
+					"name": "Immaculate Force",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "whirling_blow"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.combat.righteous_zeal",
+					"guid": "E000A6D4779B9283",
+					"name": "Righteous Zeal",
+					"effect_levels": [64],
+					"abilities": [
+						{
+							"guid": "E0000D3095541F2D",
+							"fqn": null
+						}
+					],
+					"strings": ["str.tal", "str.tal", "momentousblow"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.combat.saber_storm",
+					"guid": "E000A298A170C4AE",
+					"name": "Saber Storm",
+					"effect_levels": [134, 117],
+					"abilities": [
+						{
+							"guid": "E000EF443EFFB7A0",
+							"fqn": "abl.jedi_knight.skill.combat.clashing_blast"
+						},
+						{
+							"guid": "E000C35A3A3B2FC8",
+							"fqn": "abl.jedi_knight.skill.combat.blade_rush"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "saberstorm"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.combat.swift_blades",
+					"guid": "E000FE10863EBF67",
+					"name": "Swift Blades",
+					"effect_levels": [64, 70, 64, 70],
+					"abilities": [
+						{
+							"guid": "E0003B420E4DB7BC",
+							"fqn": "abl.jedi_knight.blade_storm"
+						},
+						{
+							"guid": "E0003B420E4DB7BC",
+							"fqn": "abl.jedi_knight.blade_storm"
+						},
+						{
+							"guid": "E000EF443EFFB7A0",
+							"fqn": "abl.jedi_knight.skill.combat.clashing_blast"
+						},
+						{
+							"guid": "E000EF443EFFB7A0",
+							"fqn": "abl.jedi_knight.skill.combat.clashing_blast"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "railshot"]
+				}
+			]
+		},
+		"jedi_knight.concentration": {
+			"name": "Concentration",
+			"mirror": "Fury",
+			"class": "Jedi Knight",
+			"faction": "Republic",
+			"talents": [
+				{
+					"fqn": "tal.jedi_knight.skill.concentration.decisive_slashes",
+					"guid": "E000EBFCB76858ED",
+					"name": "Decisive Slashes",
+					"effect_levels": [116, 116, 116, 116],
+					"abilities": [
+						{
+							"guid": "E000D502B6E6BB8B",
+							"fqn": "abl.jedi_knight.slash"
+						},
+						{
+							"guid": "E00068D313265C3D",
+							"fqn": "abl.jedi_knight.dispatch"
+						},
+						{
+							"guid": "E0005108263F7E3B",
+							"fqn": "abl.jedi_knight.cyclone_slash"
+						},
+						{
+							"guid": "E0000AEDF53113A5",
+							"fqn": null
+						}
+					],
+					"strings": ["str.tal", "str.tal", "slash"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.concentration.fervor",
+					"guid": "E000DF3AD8FB8984",
+					"name": "Fervor",
+					"effect_levels": [134, 117],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "jcforceprodigy"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.concentration.gravity_defiance",
+					"guid": "E000D9D26655A767",
+					"name": "Gravity Defiance",
+					"effect_levels": [70, 70],
+					"abilities": [
+						{
+							"guid": "E000167FE933521E",
+							"fqn": "abl.jedi_knight.skill.focus.zealous_leap"
+						},
+						{
+							"guid": "E000E86D81BE4E99",
+							"fqn": "abl.jedi_knight.skill.focus.force_exhaustion"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "forceactivate"]
+				}
+			]
+		},
+		"jedi_knight.defense": {
+			"name": "Defense",
+			"mirror": "Immortal",
+			"class": "Jedi Knight",
+			"faction": "Republic",
+			"talents": [
+				{
+					"fqn": "tal.jedi_knight.skill.defense.abating_defense",
+					"guid": "E0007B8E54A104FC",
+					"name": "Abating Defense",
+					"effect_levels": [118, 124, 201, 201, 64, 79],
+					"abilities": [
+						{
+							"guid": "E000472FC2C8C8D7",
+							"fqn": "abl.jedi_knight.saber_ward"
+						},
+						{
+							"guid": "E000339C839F146C",
+							"fqn": "abl.jedi_knight.skill.defense.guardian_slash"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "poweredforcebarrier"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.defense.cyclonic_sweeps",
+					"guid": "E0004C4705F81FAA",
+					"name": "Cyclonic Sweeps",
+					"effect_levels": [200, 70, 70, 70, 70],
+					"abilities": [
+						{
+							"guid": "E000364B5B8350F5",
+							"fqn": "abl.jedi_knight.visionary"
+						},
+						{
+							"guid": "E0003B420E4DB7BC",
+							"fqn": "abl.jedi_knight.blade_storm"
+						},
+						{
+							"guid": "E000D502B6E6BB8B",
+							"fqn": "abl.jedi_knight.slash"
+						},
+						{
+							"guid": "E000339C839F146C",
+							"fqn": "abl.jedi_knight.skill.defense.guardian_slash"
+						},
+						{
+							"guid": "E0005108263F7E3B",
+							"fqn": "abl.jedi_knight.cyclone_slash"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "spinningslash"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.defense.inner_peace",
+					"guid": "E000F8CC1C15C904",
+					"name": "Inner Peace",
+					"effect_levels": [21, 22, 65],
+					"abilities": [
+						{
+							"guid": "E000835EB904EA8C",
+							"fqn": "abl.jedi_knight.enure"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "jkforcesensitiveorphan"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.defense.lunge",
+					"guid": "E0002AD599EE48BD",
+					"name": "Lunge",
+					"effect_levels": [115, 121, 70, 66, 79],
+					"abilities": [
+						{
+							"guid": "E000E1A68B5625AF",
+							"fqn": "abl.jedi_knight.riposte"
+						},
+						{
+							"guid": "E000E1A68B5625AF",
+							"fqn": "abl.jedi_knight.riposte"
+						},
+						{
+							"guid": "E000E1A68B5625AF",
+							"fqn": "abl.jedi_knight.riposte"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "riposte"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.defense.stasis_mastery",
+					"guid": "E00074483E28F11D",
+					"name": "Stasis Mastery",
+					"effect_levels": [63, 79, 81],
+					"abilities": [
+						{
+							"guid": "E000E2F1476CD1A7",
+							"fqn": "abl.jedi_knight.force_stasis"
+						},
+						{
+							"guid": "E000E2F1476CD1A7",
+							"fqn": "abl.jedi_knight.force_stasis"
+						},
+						{
+							"guid": "E000E2F1476CD1A7",
+							"fqn": "abl.jedi_knight.force_stasis"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "carbonized"]
+				}
+			]
+		},
+		"jedi_knight.focus": {
+			"name": "Focus",
+			"mirror": "Rage",
+			"class": "Jedi Knight",
+			"faction": "Republic",
+			"talents": [
+				{
+					"fqn": "tal.jedi_knight.skill.focus.concentrated_power",
+					"guid": "E0000DC1A6D83528",
+					"name": "Concentrated Power",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_jk_gu_concentrated_power"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.focus.focused_resonance",
+					"guid": "E0007EF170409615",
+					"name": "Focused Resonance",
+					"effect_levels": [134, 117],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "jcforceprodigy"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.focus.focused_vision",
+					"guid": "E0005078C588C0D9",
+					"name": "Focused Vision",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_jk_gu_auspicious_acumen"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.focus.gravity_defiance",
+					"guid": "E000979C130CF765",
+					"name": "Gravity Defiance",
+					"effect_levels": [70, 70],
+					"abilities": [
+						{
+							"guid": "E000167FE933521E",
+							"fqn": "abl.jedi_knight.skill.focus.zealous_leap"
+						},
+						{
+							"guid": "E000E86D81BE4E99",
+							"fqn": "abl.jedi_knight.skill.focus.force_exhaustion"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "forceactivate"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.focus.saber_strength",
+					"guid": "E000DD17B3B0DC40",
+					"name": "Saber Strength",
+					"effect_levels": [201],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "forceleap_old"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.focus.shiicho_mastery",
+					"guid": "E00047C8D92B9388",
+					"name": "Shiicho Mastery",
+					"effect_levels": [166, 201],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_jk_gu_ShiiChoMastery"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.focus.swelling_winds",
+					"guid": "E000B7361C22F2A4",
+					"name": "Swelling Winds",
+					"effect_levels": [79, 64, 64],
+					"abilities": [
+						{
+							"guid": "E00053505171B700",
+							"fqn": "abl.jedi_knight.sweep"
+						},
+						{
+							"guid": "E00053505171B700",
+							"fqn": "abl.jedi_knight.sweep"
+						},
+						{
+							"guid": "E00029FEAFC07E12",
+							"fqn": "abl.jedi_knight.skill.focus.focused_burst"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "cycloneattack"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.focus.swift_slash",
+					"guid": "E000995302196F0D",
+					"name": "Swift Slash",
+					"effect_levels": [116, 116],
+					"abilities": [
+						{
+							"guid": "E00068D313265C3D",
+							"fqn": "abl.jedi_knight.dispatch"
+						},
+						{
+							"guid": "E0000AEDF53113A5",
+							"fqn": null
+						}
+					],
+					"strings": ["str.tal", "str.tal", "jediknight"]
+				}
+			]
+		},
+		"jedi_knight.vigilance": {
+			"name": "Vigilance",
+			"mirror": "Vengeance",
+			"class": "Jedi Knight",
+			"faction": "Republic",
+			"talents": [
+				{
+					"fqn": "tal.jedi_knight.skill.vigilance.burning_storm",
+					"guid": "E0009D19343BC87C",
+					"name": "Burning Storm",
+					"effect_levels": [200],
+					"abilities": [
+						{
+							"guid": "E0005108263F7E3B",
+							"fqn": "abl.jedi_knight.cyclone_slash"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_jk_gu_burning_storm"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.vigilance.burnmaster",
+					"guid": "E000AA05F98DF948",
+					"name": "Burnmaster",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "guard_pass_burnmaster"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.vigilance.commanding_awe",
+					"guid": "E00023C7FBD23180",
+					"name": "Commanding Awe",
+					"effect_levels": [24, 21, 22, 23],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "salvation"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.vigilance.effluence",
+					"guid": "E00036FE12B83C26",
+					"name": "Effluence",
+					"effect_levels": [70, 70, 64, 64],
+					"abilities": [
+						{
+							"guid": "E00053505171B700",
+							"fqn": "abl.jedi_knight.sweep"
+						},
+						{
+							"guid": "E0004F59F50364FD",
+							"fqn": "abl.jedi_knight.skill.vigilance.vigilant_thrust"
+						},
+						{
+							"guid": "E00053505171B700",
+							"fqn": "abl.jedi_knight.sweep"
+						},
+						{
+							"guid": "E0004F59F50364FD",
+							"fqn": "abl.jedi_knight.skill.vigilance.vigilant_thrust"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "telekineticblast"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.vigilance.master_focus",
+					"guid": "E000AAEBAD711AE5",
+					"name": "Master Focus",
+					"effect_levels": [201, 79],
+					"abilities": [
+						{
+							"guid": "E000015143F071C4",
+							"fqn": "abl.jedi_knight.blade_barrage"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "mentalacuity"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.vigilance.smoldering_saber",
+					"guid": "E000296B08515D7C",
+					"name": "Smoldering Saber",
+					"effect_levels": [133, 133, 133],
+					"abilities": [
+						{
+							"guid": "E0004F59F50364FD",
+							"fqn": "abl.jedi_knight.skill.vigilance.vigilant_thrust"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_jk_gu_smoldering_saber"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.vigilance.vigilance",
+					"guid": "E000BE0C8552F74A",
+					"name": "Vigilance",
+					"effect_levels": [64, 64, 64, 133],
+					"abilities": [
+						{
+							"guid": "E000B7231C9B16D3",
+							"fqn": null
+						},
+						{
+							"guid": "E0003B420E4DB7BC",
+							"fqn": "abl.jedi_knight.blade_storm"
+						},
+						{
+							"guid": "E0000CD83D3DAA3F",
+							"fqn": "abl.jedi_knight.skill.vigilance.mods.tier3.leaping_strike"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "auraofcertainty"]
+				}
+			]
+		},
+		"jedi_knight.watchman": {
+			"name": "Watchman",
+			"mirror": "Annihilation",
+			"class": "Jedi Knight",
+			"faction": "Republic",
+			"talents": [
+				{
+					"fqn": "tal.jedi_knight.skill.watchman.accelerating_victory",
+					"guid": "E000FCAED1A1836E",
+					"name": "Accelerating Victory",
+					"effect_levels": [79],
+					"abilities": [
+						{
+							"guid": "E00068D313265C3D",
+							"fqn": "abl.jedi_knight.dispatch"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_jk_se_accelerating_victory"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.watchman.burning_sweep",
+					"guid": "E000DF6C2B394B2F",
+					"name": "Burning Sweep",
+					"effect_levels": [64, 70, 79],
+					"abilities": [
+						{
+							"guid": "E00053505171B700",
+							"fqn": "abl.jedi_knight.sweep"
+						},
+						{
+							"guid": "E00053505171B700",
+							"fqn": "abl.jedi_knight.sweep"
+						},
+						{
+							"guid": "E00053505171B700",
+							"fqn": "abl.jedi_knight.sweep"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_jk_se_burning_sweep"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.watchman.focused_melt",
+					"guid": "E00071AFE71E0669",
+					"name": "Focused Melt",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_bh_me_collateral_damage"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.watchman.hastened_melt",
+					"guid": "E000C993E5D9893F",
+					"name": "Hastened Melt",
+					"effect_levels": [64],
+					"abilities": [
+						{
+							"guid": "E0001D99E09E41D8",
+							"fqn": null
+						}
+					],
+					"strings": ["str.tal", "str.tal", "sithescape"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.watchman.inexhaustible_zeal",
+					"guid": "E0009FB6443048C0",
+					"name": "Inexhaustible Zeal",
+					"effect_levels": [61, 61],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "intimidatingpresence"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.watchman.juyo_mastery",
+					"guid": "E0002B3A9CFDA8B2",
+					"name": "Juyo Mastery",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "shrapround"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.watchman.repelling_blows",
+					"guid": "E000AC09ADEDC722",
+					"name": "Repelling Blows",
+					"effect_levels": [79],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "slash"]
+				},
+				{
+					"fqn": "tal.jedi_knight.skill.watchman.searing_saber",
+					"guid": "E0001A5E4318678D",
+					"name": "Searing Saber",
+					"effect_levels": [134],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "explosivefuel"]
+				}
+			]
+		},
+		"sith_inquisitor.corruption": {
+			"name": "Corruption",
+			"mirror": "Seer",
+			"class": "Sith Inquisitor",
+			"faction": "Empire",
+			"talents": [
+				{
+					"fqn": "tal.sith_inquisitor.skill.corruption.dark_mending",
+					"guid": "E00029279738F7F8",
+					"name": "Dark Mending",
+					"effect_levels": [62, 68, 62],
+					"abilities": [
+						{
+							"guid": "E00069888D5F3263",
+							"fqn": "abl.sith_inquisitor.skill.corruption.dark_infusion"
+						},
+						{
+							"guid": "E000FBA79666D299",
+							"fqn": "abl.sith_inquisitor.dark_heal"
+						},
+						{
+							"guid": "E0001A56DE388F61",
+							"fqn": "abl.sith_inquisitor.skill.corruption.mods.tier1.rally"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "sorcererhaste"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.corruption.efficacious_currents",
+					"guid": "E0002142729942E3",
+					"name": "Efficacious Currents",
+					"effect_levels": [68, 65, 77],
+					"abilities": [
+						{
+							"guid": "E000F214AFF1E3FB",
+							"fqn": "abl.sith_inquisitor.static_barrier"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "electricshield"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.corruption.life_surge",
+					"guid": "E000F773420F897F",
+					"name": "Life Surge",
+					"effect_levels": [21, 22, 23, 24, 133],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "rejuvinate"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.corruption.lucidity",
+					"guid": "E0005A79A75354D6",
+					"name": "Lucidity",
+					"effect_levels": [200, 81],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "shadowcloak"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.corruption.reconstruct",
+					"guid": "E0005E85692822EF",
+					"name": "Reconstruct",
+					"effect_levels": [65, 68],
+					"abilities": [
+						{
+							"guid": "E0000D6BD111E54C",
+							"fqn": "abl.sith_inquisitor.resurgence"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "recuperativenanotech"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.corruption.reverse_corruptions",
+					"guid": "E000B31897F0E2AF",
+					"name": "Reverse Corruptions",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "consumption"]
+				}
+			]
+		},
+		"sith_inquisitor.darkness": {
+			"name": "Darkness",
+			"mirror": "Kinetic Combat",
+			"class": "Sith Inquisitor",
+			"faction": "Empire",
+			"talents": [
+				{
+					"fqn": "tal.sith_inquisitor.skill.darkness.blood_of_sith",
+					"guid": "E000D5F1D27B3E92",
+					"name": "Blood Of Sith",
+					"effect_levels": [140, 21, 22],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "swsithpureblood"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.darkness.dark_bulwark",
+					"guid": "E000DFB8A73D896F",
+					"name": "Dark Bulwark",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "handdeflect"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.darkness.electrify",
+					"guid": "E00034F4B92EFDB5",
+					"name": "Electrify",
+					"effect_levels": [79, 68],
+					"abilities": [
+						{
+							"guid": "E0000E5C9702DB07",
+							"fqn": null
+						},
+						{
+							"guid": "E0000E5C9702DB07",
+							"fqn": null
+						}
+					],
+					"strings": ["str.tal", "str.tal", "lightningstrike"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.darkness.swelling_shadows",
+					"guid": "E000FC7940CD2179",
+					"name": "Swelling Shadows",
+					"effect_levels": [21, 24, 22, 23, 48],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "forcecharge"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.darkness.torment",
+					"guid": "E000A33D633A96A1",
+					"name": "Torment",
+					"effect_levels": [201],
+					"abilities": [
+						{
+							"guid": "E00054FC2168326C",
+							"fqn": "abl.sith_inquisitor.lacerate"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_si_as_torment"]
+				}
+			]
+		},
+		"sith_inquisitor.deception": {
+			"name": "Deception",
+			"mirror": "Infiltration",
+			"class": "Sith Inquisitor",
+			"faction": "Empire",
+			"talents": [
+				{
+					"fqn": "tal.sith_inquisitor.skill.deception.amped_voltage",
+					"guid": "E0006FE1C1F0537C",
+					"name": "Amped Voltage",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "ass_pass_amped_voltage"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.deception.assassins_mark",
+					"guid": "E00062ED7821925B",
+					"name": "Assassins Mark",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "linetheshot"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.deception.crackling_blasts",
+					"guid": "E000AB87BD0BA6E4",
+					"name": "Crackling Blasts",
+					"effect_levels": [134, 134],
+					"abilities": [
+						{
+							"guid": "E000A1D15F85A198",
+							"fqn": "abl.sith_inquisitor.skill.deception.ball_lightning"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_si_sa_CracklingBlasts"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.deception.dominating_slashes",
+					"guid": "E000250EC7528149",
+					"name": "Dominating Slashes",
+					"effect_levels": [79, 79, 79],
+					"abilities": [
+						{
+							"guid": "E00054FC2168326C",
+							"fqn": "abl.sith_inquisitor.lacerate"
+						},
+						{
+							"guid": "E000EF0F4A50EA69",
+							"fqn": "abl.sith_inquisitor.skill.deception.voltaic_slash"
+						},
+						{
+							"guid": "E000C5155F858F1A",
+							"fqn": "abl.sith_inquisitor.skill.deception.reaping_strike"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_si_as_dominating_slashes"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.deception.sith_executioner",
+					"guid": "E000AD3D26CE31A5",
+					"name": "Sith Executioner",
+					"effect_levels": [200, 68],
+					"abilities": [
+						{
+							"guid": "E000634958DA805A",
+							"fqn": "abl.sith_inquisitor.assassinate"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "disorientingblow"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.deception.twin_surge",
+					"guid": "E0009E3EEC62DB6A",
+					"name": "Twin Surge",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "thundering_blast"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.deception.whirling_edge",
+					"guid": "E0007C5CBE37CA28",
+					"name": "Whirling Edge",
+					"effect_levels": [166, 116, 117],
+					"abilities": [
+						{
+							"guid": "E00054FC2168326C",
+							"fqn": "abl.sith_inquisitor.lacerate"
+						},
+						{
+							"guid": "E00054FC2168326C",
+							"fqn": "abl.sith_inquisitor.lacerate"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_sijc_assh_whirling_edge"]
+				}
+			]
+		},
+		"sith_inquisitor.hatred": {
+			"name": "Hatred",
+			"mirror": "Serenity",
+			"class": "Sith Inquisitor",
+			"faction": "Empire",
+			"talents": [
+				{
+					"fqn": "tal.sith_inquisitor.skill.hatred.crackling_charge",
+					"guid": "E00049C205E8EAEE",
+					"name": "Crackling Charge",
+					"effect_levels": [79, 133],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "shocked"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.hatred.dreadful_nightmares",
+					"guid": "E00046C250E12ACF",
+					"name": "Dreadful Nightmares",
+					"effect_levels": [79],
+					"abilities": [
+						{
+							"guid": "E000CDF78E6FF7D4",
+							"fqn": "abl.sith_inquisitor.skill.hatred.eradicate"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "dark_embrace"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.hatred.fanatacism",
+					"guid": "E0004EA7668EBFA8",
+					"name": "Fanatacism",
+					"effect_levels": [68],
+					"abilities": [
+						{
+							"guid": "E000B6A548225F23",
+							"fqn": "abl.sith_inquisitor.skill.madness.death_field"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "frenzy"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.hatred.imbibe",
+					"guid": "E000241F254DB90D",
+					"name": "Imbibe",
+					"effect_levels": [201, 201, 201, 201],
+					"abilities": [
+						{
+							"guid": "E000296DD8F7B25B",
+							"fqn": "abl.sith_inquisitor.skill.hatred.leeching_strike"
+						},
+						{
+							"guid": "E000B6A548225F23",
+							"fqn": "abl.sith_inquisitor.skill.madness.death_field"
+						},
+						{
+							"guid": "E00089E38AB081B6",
+							"fqn": null
+						}
+					],
+					"strings": ["str.tal", "str.tal", "venomsackrecolor"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.hatred.inevitable_demise",
+					"guid": "E000D8DF7F2A16DF",
+					"name": "Inevitable Demise",
+					"effect_levels": [200, 200, 200],
+					"abilities": [
+						{
+							"guid": "E000B6A548225F23",
+							"fqn": "abl.sith_inquisitor.skill.madness.death_field"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "forcecrush"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.hatred.leeching_hunger",
+					"guid": "E000524F89E57BEA",
+					"name": "Leeching Hunger",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_si_as_sinister_succor"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.hatred.nefarious_methods",
+					"guid": "E000018F9AD03C1B",
+					"name": "Nefarious Methods",
+					"effect_levels": [46],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "lightningstorm"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.hatred.profuse_horror",
+					"guid": "E000974ABDF02F42",
+					"name": "Profuse Horror",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_si_as_profuse_horror"]
+				}
+			]
+		},
+		"sith_inquisitor.lightning": {
+			"name": "Lightning",
+			"mirror": "Telekinetics",
+			"class": "Sith Inquisitor",
+			"faction": "Empire",
+			"talents": [
+				{
+					"fqn": "tal.sith_inquisitor.skill.lightning.chaos_nexus",
+					"guid": "E00087A26C54E6F1",
+					"name": "Chaos Nexus",
+					"effect_levels": [65, 64],
+					"abilities": [
+						{
+							"guid": "E000414808F5E280",
+							"fqn": "abl.sith_inquisitor.polarity_shift"
+						},
+						{
+							"guid": "E000414808F5E280",
+							"fqn": "abl.sith_inquisitor.polarity_shift"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "chaosnexus"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.lightning.convulsing_currents",
+					"guid": "E000CFCF7503B94B",
+					"name": "Convulsing Currents",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_si_so_convulsing_currents"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.lightning.reverberating_force",
+					"guid": "E0004CC9A2362FC4",
+					"name": "Reverberating Force",
+					"effect_levels": [134, 134, 134, 134, 134],
+					"abilities": [
+						{
+							"guid": "E0004BAD9E5CDACF",
+							"fqn": "abl.sith_inquisitor.crushing_darkness"
+						},
+						{
+							"guid": "E00033E49D204306",
+							"fqn": "abl.sith_inquisitor.skill.lightning.mods.tier1.halted_offensive"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "energyrebounder"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.lightning.storm_brewing",
+					"guid": "E0005A1799C067C3",
+					"name": "Storm Brewing",
+					"effect_levels": [133, 134],
+					"abilities": [
+						{
+							"guid": "E000A6C0C1C1F0C2",
+							"fqn": "abl.sith_inquisitor.force_storm"
+						},
+						{
+							"guid": "E000A6C0C1C1F0C2",
+							"fqn": "abl.sith_inquisitor.force_storm"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_si_so_storm_brewing"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.lightning.thundering_blast_forked_darkness",
+					"guid": "E0007754327497D1",
+					"name": "Thundering Blast Forked Darkness",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "Volt_Flux_6_0"]
+				}
+			]
+		},
+		"sith_inquisitor.madness": {
+			"name": "Madness",
+			"mirror": "Balance",
+			"class": "Sith Inquisitor",
+			"faction": "Empire",
+			"talents": [
+				{
+					"fqn": "tal.sith_inquisitor.skill.madness.creeping_death",
+					"guid": "E000F2CBC7ACC9B3",
+					"name": "Creeping Death",
+					"effect_levels": [200],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "forcecrush"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.madness.devour",
+					"guid": "E00033C557324891",
+					"name": "Devour",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "suffocate"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.madness.disintegration",
+					"guid": "E000022E36EC6399",
+					"name": "Disintegration",
+					"effect_levels": [133, 133],
+					"abilities": [
+						{
+							"guid": "E00014A61AAEEDC6",
+							"fqn": "abl.sith_inquisitor.skill.madness.force_leech"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "crushingdarkness"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.madness.force_horrors",
+					"guid": "E000377D37726FA6",
+					"name": "Force Horrors",
+					"effect_levels": [79],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "forcehorrors"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.madness.lightning_efficacy",
+					"guid": "E000846576E93A74",
+					"name": "Lightning Efficacy",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "hatred"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.madness.lingering_nightmares",
+					"guid": "E00000AEA0B48482",
+					"name": "Lingering Nightmares",
+					"effect_levels": [65, 65, 65],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "dark_embrace"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.madness.madness",
+					"guid": "E0003B923EF468D2",
+					"name": "Madness",
+					"effect_levels": [64],
+					"abilities": [
+						{
+							"guid": "E0009EB5CD7850CC",
+							"fqn": "abl.sith_inquisitor.force_lightning"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "instantdeathdevice"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.madness.parasitism",
+					"guid": "E00094AF0EDAE1B1",
+					"name": "Parasitism",
+					"effect_levels": [201, 201, 201, 201, 201],
+					"abilities": [
+						{
+							"guid": "E00014A61AAEEDC6",
+							"fqn": "abl.sith_inquisitor.skill.madness.force_leech"
+						},
+						{
+							"guid": "E000B6A548225F23",
+							"fqn": "abl.sith_inquisitor.skill.madness.death_field"
+						},
+						{
+							"guid": "E000892C91A4F3EA",
+							"fqn": "abl.sith_inquisitor.affliction"
+						},
+						{
+							"guid": "E00089E38AB081B6",
+							"fqn": null
+						},
+						{
+							"guid": "E0003C255475A42A",
+							"fqn": "abl.sith_inquisitor.skill.madness.mods.tier1.death_brand"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "animalinsectmouthpart"]
+				},
+				{
+					"fqn": "tal.sith_inquisitor.skill.madness.pestilence",
+					"guid": "E0001A079638E67F",
+					"name": "Pestilence",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_si_so_pestilence"]
+				}
+			]
+		},
+		"sith_warrior.annihilation": {
+			"name": "Annihilation",
+			"mirror": "Watchman",
+			"class": "Sith Warrior",
+			"faction": "Empire",
+			"talents": [
+				{
+					"fqn": "tal.sith_warrior.skill.annihilation.bleedout",
+					"guid": "E000B1091255DB6C",
+					"name": "Bleedout",
+					"effect_levels": [134],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "bloomingshot"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.annihilation.deep_wound",
+					"guid": "E00031463D4CFF73",
+					"name": "Deep Wound",
+					"effect_levels": [79],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "hamstring"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.annihilation.enraged_rend",
+					"guid": "E00085A8AD42E858",
+					"name": "Enraged Rend",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_sw_ju_gushing_veins"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.annihilation.hastened_rend",
+					"guid": "E00067D56A9743B2",
+					"name": "Hastened Rend",
+					"effect_levels": [64],
+					"abilities": [
+						{
+							"guid": "E000C0E4981D64A3",
+							"fqn": "abl.sith_warrior.skill.annihilation.force_gash"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "sithescape"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.annihilation.hemorrhaging_smash",
+					"guid": "E0009563FF33083E",
+					"name": "Hemorrhaging Smash",
+					"effect_levels": [64, 70, 79],
+					"abilities": [
+						{
+							"guid": "E000E4856D6CC510",
+							"fqn": "abl.sith_warrior.smash"
+						},
+						{
+							"guid": "E000E4856D6CC510",
+							"fqn": "abl.sith_warrior.smash"
+						},
+						{
+							"guid": "E000E4856D6CC510",
+							"fqn": "abl.sith_warrior.smash"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_sw_ma_hemorrhaging_smash"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.annihilation.indefatigable_onslaught",
+					"guid": "E0003EE41F5F1879",
+					"name": "Indefatigable Onslaught",
+					"effect_levels": [61, 61],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "intimidatingpresence"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.annihilation.juyo_mastery",
+					"guid": "E0004A76D294050A",
+					"name": "Juyo Mastery",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_tr_co_forced_march"]
+				}
+			]
+		},
+		"sith_warrior.carnage": {
+			"name": "Carnage",
+			"mirror": "Combat",
+			"class": "Sith Warrior",
+			"faction": "Empire",
+			"talents": [
+				{
+					"fqn": "tal.sith_warrior.skill.carnage.ataru_mastery",
+					"guid": "E0004BA8B41A968A",
+					"name": "Ataru Mastery",
+					"effect_levels": [79],
+					"abilities": [
+						{
+							"guid": "E0004DA84D7EAC1F",
+							"fqn": "abl.sith_warrior.skill.carnage.ataru_form"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "vicioussaber"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.carnage.ataru_savvy",
+					"guid": "E0003E5B6AE09993",
+					"name": "Ataru Savvy",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_swjk_mase_ataru_savvy"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.carnage.blood_frenzy",
+					"guid": "E0008FB7192A3093",
+					"name": "Blood Frenzy",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "cc_attack"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.carnage.disembowel",
+					"guid": "E0002977771B6C63",
+					"name": "Disembowel",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_sw_ma_disembowel"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.carnage.dual_wield_mastery",
+					"guid": "E0009A069B13CA06",
+					"name": "Dual Wield Mastery",
+					"effect_levels": [127],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "dualmastery"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.carnage.efficient_strikes",
+					"guid": "E00066AF380BB1B5",
+					"name": "Efficient Strikes",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_swjk_mase_efficent_strikes"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.carnage.enraged_assault",
+					"guid": "E000AF0C54AC8B31",
+					"name": "Enraged Assault",
+					"effect_levels": [64],
+					"abilities": [
+						{
+							"guid": "E000CD343EE72A75",
+							"fqn": null
+						}
+					],
+					"strings": ["str.tal", "str.tal", "batteringAssault"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.carnage.sever",
+					"guid": "E000C7B3A92687A8",
+					"name": "Sever",
+					"effect_levels": [134, 117],
+					"abilities": [
+						{
+							"guid": "E000DAA697978EA8",
+							"fqn": "abl.sith_warrior.skill.carnage.devastating_blast"
+						},
+						{
+							"guid": "E00093B244620865",
+							"fqn": "abl.sith_warrior.skill.carnage.massacre"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "sunderingassault"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.carnage.shriek",
+					"guid": "E000497018BA7098",
+					"name": "Shriek",
+					"effect_levels": [64, 70, 64, 70],
+					"abilities": [
+						{
+							"guid": "E000601A69FF7702",
+							"fqn": "abl.sith_warrior.force_scream"
+						},
+						{
+							"guid": "E000601A69FF7702",
+							"fqn": "abl.sith_warrior.force_scream"
+						},
+						{
+							"guid": "E000DAA697978EA8",
+							"fqn": "abl.sith_warrior.skill.carnage.devastating_blast"
+						},
+						{
+							"guid": "E000DAA697978EA8",
+							"fqn": "abl.sith_warrior.skill.carnage.devastating_blast"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "empoweredscream"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.carnage.towering_rage",
+					"guid": "E000A3F56CEA4E1E",
+					"name": "Towering Rage",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "childoftheempire"]
+				}
+			]
+		},
+		"sith_warrior.fury": {
+			"name": "Fury",
+			"mirror": "Concentration",
+			"class": "Sith Warrior",
+			"faction": "Empire",
+			"talents": [
+				{
+					"fqn": "tal.sith_warrior.skill.fury.cruelty",
+					"guid": "E000091620E9378A",
+					"name": "Cruelty",
+					"effect_levels": [116, 116, 116, 116],
+					"abilities": [
+						{
+							"guid": "E0001C6851EA8574",
+							"fqn": null
+						},
+						{
+							"guid": "E000C61B1845702D",
+							"fqn": "abl.sith_warrior.vicious_throw"
+						},
+						{
+							"guid": "E000345C809C4538",
+							"fqn": null
+						},
+						{
+							"guid": "E0004FC27B3C4909",
+							"fqn": "abl.sith_warrior.skill.rage.furious_strike"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "slash"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.fury.gravity_manipulation",
+					"guid": "E0000BBD00DA9592",
+					"name": "Gravity Manipulation",
+					"effect_levels": [70, 70],
+					"abilities": [
+						{
+							"guid": "E000C1B01E7A14C0",
+							"fqn": "abl.sith_warrior.skill.rage.obliterate"
+						},
+						{
+							"guid": "E0007DBC3BB4C92B",
+							"fqn": "abl.sith_warrior.skill.rage.force_crush"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "forceactivate"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.fury.vehemence",
+					"guid": "E00081448DE59987",
+					"name": "Vehemence",
+					"effect_levels": [134, 117],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "doom_aura"]
+				}
+			]
+		},
+		"sith_warrior.immortal": {
+			"name": "Immortal",
+			"mirror": "Defense",
+			"class": "Sith Warrior",
+			"faction": "Empire",
+			"talents": [
+				{
+					"fqn": "tal.sith_warrior.skill.immortal.conquering_defense",
+					"guid": "E0007A888E6433FA",
+					"name": "Conquering Defense",
+					"effect_levels": [118, 124, 201, 201, 64, 79],
+					"abilities": [
+						{
+							"guid": "E00035F29C16106E",
+							"fqn": "abl.sith_warrior.saber_ward"
+						},
+						{
+							"guid": "E00070B8BC922458",
+							"fqn": "abl.sith_warrior.skill.immortal.crushing_blow"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "defensereduced"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.immortal.consuming_power",
+					"guid": "E0002551F52DCA22",
+					"name": "Consuming Power",
+					"effect_levels": [133, 79, 116],
+					"abilities": [
+						{
+							"guid": "E000E4856D6CC510",
+							"fqn": "abl.sith_warrior.smash"
+						},
+						{
+							"guid": "E00094297C1CB847",
+							"fqn": "abl.sith_warrior.skill.immortal.aegis_assault"
+						},
+						{
+							"guid": "E00070B8BC922458",
+							"fqn": "abl.sith_warrior.skill.immortal.crushing_blow"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_sw_ju_consuming_power"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.immortal.force_grip",
+					"guid": "E000264039FEFE41",
+					"name": "Force Grip",
+					"effect_levels": [63, 79, 81],
+					"abilities": [
+						{
+							"guid": "E0006E55371C6F9B",
+							"fqn": null
+						},
+						{
+							"guid": "E0006E55371C6F9B",
+							"fqn": null
+						},
+						{
+							"guid": "E0006E55371C6F9B",
+							"fqn": null
+						}
+					],
+					"strings": ["str.tal", "str.tal", "choke"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.immortal.heavy_handed",
+					"guid": "E0001F402C853322",
+					"name": "Heavy Handed",
+					"effect_levels": [79, 70, 116, 116],
+					"abilities": [
+						{
+							"guid": "E000E4856D6CC510",
+							"fqn": "abl.sith_warrior.smash"
+						},
+						{
+							"guid": "E000E4856D6CC510",
+							"fqn": "abl.sith_warrior.smash"
+						},
+						{
+							"guid": "E000345C809C4538",
+							"fqn": null
+						},
+						{
+							"guid": "E000082944AFA2A5",
+							"fqn": "abl.sith_warrior.ravage"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_sw_ju_heavy_handed"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.immortal.lash_out",
+					"guid": "E000120E514611D5",
+					"name": "Lash Out",
+					"effect_levels": [115, 121, 70, 66, 79],
+					"abilities": [
+						{
+							"guid": "E0005B16E686495E",
+							"fqn": "abl.sith_warrior.retaliation"
+						},
+						{
+							"guid": "E0005B16E686495E",
+							"fqn": "abl.sith_warrior.retaliation"
+						},
+						{
+							"guid": "E0005B16E686495E",
+							"fqn": "abl.sith_warrior.retaliation"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "vicious_slash"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.immortal.pillar_of_strength",
+					"guid": "E000EB374559C2F5",
+					"name": "Pillar Of Strength",
+					"effect_levels": [64, 79, 79, 79],
+					"abilities": [
+						{
+							"guid": "E00098F043F675E1",
+							"fqn": "abl.sith_warrior.skill.immortal.invincible"
+						},
+						{
+							"guid": "E00070B8BC922458",
+							"fqn": "abl.sith_warrior.skill.immortal.crushing_blow"
+						},
+						{
+							"guid": "E0000BB7A75C4D4C",
+							"fqn": "abl.sith_warrior.skill.immortal.backhand"
+						},
+						{
+							"guid": "E000082944AFA2A5",
+							"fqn": "abl.sith_warrior.ravage"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "bravado"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.immortal.rule_of_two",
+					"guid": "E0003AA4B8A73C78",
+					"name": "Rule Of Two",
+					"effect_levels": [48],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "hustle"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.immortal.sweeping_fury",
+					"guid": "E00058D98AFBFA61",
+					"name": "Sweeping Fury",
+					"effect_levels": [200, 70, 70, 70, 70],
+					"abilities": [
+						{
+							"guid": "E0003F0B618C64E8",
+							"fqn": "abl.sith_warrior.endless_rage"
+						},
+						{
+							"guid": "E000601A69FF7702",
+							"fqn": "abl.sith_warrior.force_scream"
+						},
+						{
+							"guid": "E000345C809C4538",
+							"fqn": null
+						},
+						{
+							"guid": "E00070B8BC922458",
+							"fqn": "abl.sith_warrior.skill.immortal.crushing_blow"
+						},
+						{
+							"guid": "E0001C6851EA8574",
+							"fqn": null
+						}
+					],
+					"strings": ["str.tal", "str.tal", "whirlingassault"]
+				}
+			]
+		},
+		"sith_warrior.rage": {
+			"name": "Rage",
+			"mirror": "Focus",
+			"class": "Sith Warrior",
+			"faction": "Empire",
+			"talents": [
+				{
+					"fqn": "tal.sith_warrior.skill.rage.dark_resonance",
+					"guid": "E00040C7CD7597F5",
+					"name": "Dark Resonance",
+					"effect_levels": [134, 117],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "doom_aura"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.rage.decimate",
+					"guid": "E00075850C709F76",
+					"name": "Decimate",
+					"effect_levels": [79, 64, 64],
+					"abilities": [
+						{
+							"guid": "E000E4856D6CC510",
+							"fqn": "abl.sith_warrior.smash"
+						},
+						{
+							"guid": "E000E4856D6CC510",
+							"fqn": "abl.sith_warrior.smash"
+						},
+						{
+							"guid": "E000AE7688365CAE",
+							"fqn": "abl.sith_warrior.skill.rage.raging_burst"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "thunderfist"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.rage.fuming_rage",
+					"guid": "E000C5680E72624E",
+					"name": "Fuming Rage",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_sw_ju_enkindling_agony"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.rage.furious_power",
+					"guid": "E0003123737D6618",
+					"name": "Furious Power",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_sw_ju_furious_power"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.rage.gravity_manipulation",
+					"guid": "E00027AF74A1724E",
+					"name": "Gravity Manipulation",
+					"effect_levels": [70, 70],
+					"abilities": [
+						{
+							"guid": "E000C1B01E7A14C0",
+							"fqn": "abl.sith_warrior.skill.rage.obliterate"
+						},
+						{
+							"guid": "E0007DBC3BB4C92B",
+							"fqn": "abl.sith_warrior.skill.rage.force_crush"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "forceactivate"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.rage.shiicho_mastery",
+					"guid": "E00042F079AD9F10",
+					"name": "Shiicho Mastery",
+					"effect_levels": [166, 201],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "spike"]
+				}
+			]
+		},
+		"sith_warrior.vengeance": {
+			"name": "Vengeance",
+			"mirror": "Vigilance",
+			"class": "Sith Warrior",
+			"faction": "Empire",
+			"talents": [
+				{
+					"fqn": "tal.sith_warrior.skill.vengeance.bloodbath",
+					"guid": "E000414334113C87",
+					"name": "Bloodbath",
+					"effect_levels": [200],
+					"abilities": [
+						{
+							"guid": "E000345C809C4538",
+							"fqn": null
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_sw_ju_bloodbath"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.vengeance.bloodmaster",
+					"guid": "E000A0648B1D1754",
+					"name": "Bloodmaster",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "jugg_pass_bloodmaster"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.vengeance.deafening_defense",
+					"guid": "E000EA65FA530F4A",
+					"name": "Deafening Defense",
+					"effect_levels": [24, 21, 22, 23],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "berserk"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.vengeance.gushing_veins",
+					"guid": "E000D2698E3A8B92",
+					"name": "Gushing Veins",
+					"effect_levels": [133, 133, 133],
+					"abilities": [
+						{
+							"guid": "E00001E802866C14",
+							"fqn": "abl.sith_warrior.skill.vengeance.vengeful_slam"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_sw_ju_gushing_veins"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.vengeance.ravager",
+					"guid": "E000F5CFB3CB2F79",
+					"name": "Ravager",
+					"effect_levels": [201, 79],
+					"abilities": [
+						{
+							"guid": "E000082944AFA2A5",
+							"fqn": "abl.sith_warrior.ravage"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "rattatakiacolyte"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.vengeance.ruin",
+					"guid": "E00062F65A1F4FDD",
+					"name": "Ruin",
+					"effect_levels": [70, 70, 64, 64],
+					"abilities": [
+						{
+							"guid": "E000E4856D6CC510",
+							"fqn": "abl.sith_warrior.smash"
+						},
+						{
+							"guid": "E00001E802866C14",
+							"fqn": "abl.sith_warrior.skill.vengeance.vengeful_slam"
+						},
+						{
+							"guid": "E000E4856D6CC510",
+							"fqn": "abl.sith_warrior.smash"
+						},
+						{
+							"guid": "E00001E802866C14",
+							"fqn": "abl.sith_warrior.skill.vengeance.vengeful_slam"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "massivesmash"]
+				},
+				{
+					"fqn": "tal.sith_warrior.skill.vengeance.vengeance",
+					"guid": "E00069E257D4B8E5",
+					"name": "Vengeance",
+					"effect_levels": [64, 64, 64, 133],
+					"abilities": [
+						{
+							"guid": "E000A002B68C2E9E",
+							"fqn": null
+						},
+						{
+							"guid": "E000601A69FF7702",
+							"fqn": "abl.sith_warrior.force_scream"
+						},
+						{
+							"guid": "E000EAE98B5F78F1",
+							"fqn": "abl.sith_warrior.skill.vengeance.mods.tier3.skewering_strike"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "swsithpureblood"]
+				}
+			]
+		},
+		"smuggler.dirty_fighting": {
+			"name": "Dirty Fighting",
+			"mirror": "Virulence",
+			"class": "Smuggler",
+			"faction": "Republic",
+			"talents": [
+				{
+					"fqn": "tal.smuggler.skill.dirty_fighting.cold_blooded",
+					"guid": "E000B4C126EDFE8B",
+					"name": "Cold Blooded",
+					"effect_levels": [200],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "shadowcloak"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.dirty_fighting.concussion",
+					"guid": "E00043C576ECD1D8",
+					"name": "Concussion",
+					"effect_levels": [46],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "forcedetect"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.dirty_fighting.feelin_woozy",
+					"guid": "E00008F1C80E77F4",
+					"name": "Feelin Woozy",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "forcestun"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.dirty_fighting.gushing_wounds",
+					"guid": "E000F5B2FD986F17",
+					"name": "Gushing Wounds",
+					"effect_levels": [79],
+					"abilities": [
+						{
+							"guid": "E00056E9D5B7F71B",
+							"fqn": "abl.smuggler.skill.dirty_fighting.hemorrhaging_blast"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "gun_pass_gushing_wounds"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.dirty_fighting.mortal_wound",
+					"guid": "E000E30C31012B6F",
+					"name": "Mortal Wound",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "disable"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.dirty_fighting.nice_try",
+					"guid": "E0009F7F0ED550E8",
+					"name": "Nice Try",
+					"effect_levels": [79, 79, 79],
+					"abilities": [
+						{
+							"guid": "E00034CB0025618F",
+							"fqn": "abl.smuggler.charged_burst"
+						},
+						{
+							"guid": "E000413280384C79",
+							"fqn": "abl.smuggler.skill.dirty_fighting.wounding_shot"
+						},
+						{
+							"guid": "E0005AE2095B20B8",
+							"fqn": null
+						}
+					],
+					"strings": ["str.tal", "str.tal", "hammershot"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.dirty_fighting.open_wound",
+					"guid": "E000169BF14A9351",
+					"name": "Open Wound",
+					"effect_levels": [65],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "perforatingshot"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.dirty_fighting.reopen_wounds",
+					"guid": "E00076C691E32CAF",
+					"name": "Reopen Wounds",
+					"effect_levels": [135, 122, 122],
+					"abilities": [
+						{
+							"guid": "E000413280384C79",
+							"fqn": "abl.smuggler.skill.dirty_fighting.wounding_shot"
+						},
+						{
+							"guid": "E000413280384C79",
+							"fqn": "abl.smuggler.skill.dirty_fighting.wounding_shot"
+						},
+						{
+							"guid": "E000E0FC46CE7FD6",
+							"fqn": "abl.smuggler.speed_shot"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "bloomingshot"]
+				}
+			]
+		},
+		"smuggler.ruffian": {
+			"name": "Ruffian",
+			"mirror": "Lethality",
+			"class": "Smuggler",
+			"faction": "Republic",
+			"talents": [
+				{
+					"fqn": "tal.smuggler.skill.ruffian.black_market_mods",
+					"guid": "E00065D6634BF8D2",
+					"name": "Black Market Mods",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "blastercompetitiontrigger"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.ruffian.cheap_shots",
+					"guid": "E0007A7D9578CC1A",
+					"name": "Cheap Shots",
+					"effect_levels": [79, 79, 79],
+					"abilities": [
+						{
+							"guid": "E00045517F2CE090",
+							"fqn": "abl.smuggler.quick_shot"
+						},
+						{
+							"guid": "E000CD8259899286",
+							"fqn": "abl.smuggler.skill.ruffian.point_blank_shot"
+						},
+						{
+							"guid": "E000AF38B6216E93",
+							"fqn": "abl.smuggler.lacerating_blast"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_sm_sc_blkmarket_mods"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.ruffian.cold_blooded",
+					"guid": "E000A24D60FF09F1",
+					"name": "Cold Blooded",
+					"effect_levels": [200],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "shadowcloak"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.ruffian.cut_to_the_quick",
+					"guid": "E000192D6EA85C5B",
+					"name": "Cut To The Quick",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_sm_sc_cut_to_the_quick"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.ruffian.rough_and_tumble",
+					"guid": "E000AD95DF719746",
+					"name": "Rough And Tumble",
+					"effect_levels": [69],
+					"abilities": [
+						{
+							"guid": "E00059BFA999199E",
+							"fqn": "abl.smuggler.skill.ruffian.brutal_shots"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "cc_attack"]
+				}
+			]
+		},
+		"smuggler.saboteur": {
+			"name": "Saboteur",
+			"mirror": "Engineering",
+			"class": "Smuggler",
+			"faction": "Republic",
+			"talents": [
+				{
+					"fqn": "tal.smuggler.skill.saboteur.arsonist",
+					"guid": "E0005CC2007198E9",
+					"name": "Arsonist",
+					"effect_levels": [136, 123, 136, 136, 136],
+					"abilities": [
+						{
+							"guid": "E0000C36A22D1302",
+							"fqn": null
+						},
+						{
+							"guid": "E000CE40711E8BFE",
+							"fqn": "abl.smuggler.skill.saboteur.explosive_charge"
+						},
+						{
+							"guid": "E000F14CDDB01070",
+							"fqn": "abl.smuggler.skill.saboteur.shock_charge"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "burned"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.saboteur.conflagration",
+					"guid": "E000F98EAE9DA8D6",
+					"name": "Conflagration",
+					"effect_levels": [122, 135],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "gun_pass_conflagration"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.saboteur.dealers_discount",
+					"guid": "E000D2C487CB0FA4",
+					"name": "Dealers Discount",
+					"effect_levels": [69, 69, 69],
+					"abilities": [
+						{
+							"guid": "E000CE40711E8BFE",
+							"fqn": "abl.smuggler.skill.saboteur.explosive_charge"
+						},
+						{
+							"guid": "E000F14CDDB01070",
+							"fqn": "abl.smuggler.skill.saboteur.shock_charge"
+						},
+						{
+							"guid": "E000655E43076AF6",
+							"fqn": "abl.smuggler.skill.saboteur.incendiary_grenade"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "credit_chip"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.saboteur.hot_shot",
+					"guid": "E000DD39516A2B9C",
+					"name": "Hot Shot",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "shrapround"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.saboteur.independent_anarchy",
+					"guid": "E0006146993E64EB",
+					"name": "Independent Anarchy",
+					"effect_levels": [79],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "explosive"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.saboteur.jury_rigged_mods",
+					"guid": "E00085F77CB186AC",
+					"name": "Jury Rigged Mods",
+					"effect_levels": [64, 69],
+					"abilities": [
+						{
+							"guid": "E000E0FC46CE7FD6",
+							"fqn": "abl.smuggler.speed_shot"
+						},
+						{
+							"guid": "E00034CB0025618F",
+							"fqn": "abl.smuggler.charged_burst"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "armament2"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.saboteur.spacer",
+					"guid": "E00045342FDCDDD8",
+					"name": "Spacer",
+					"effect_levels": [64, 62],
+					"abilities": [
+						{
+							"guid": "E000FB97DBDC4949",
+							"fqn": "abl.smuggler.xs_freighter_flyby"
+						},
+						{
+							"guid": "E000FB97DBDC4949",
+							"fqn": "abl.smuggler.xs_freighter_flyby"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "smuggler"]
+				}
+			]
+		},
+		"smuggler.sawbones": {
+			"name": "Sawbones",
+			"mirror": "Medicine",
+			"class": "Smuggler",
+			"faction": "Republic",
+			"talents": [
+				{
+					"fqn": "tal.smuggler.skill.sawbones.accomplished_sawbones",
+					"guid": "E0003DA0CA00DBE2",
+					"name": "Accomplished Sawbones",
+					"effect_levels": [136, 136],
+					"abilities": [
+						{
+							"guid": "E0000A7A3C4D3261",
+							"fqn": "abl.smuggler.skill.sawbones.underworld_medicine"
+						},
+						{
+							"guid": "E0005082DA21A7FE",
+							"fqn": "abl.smuggler.kolto_pack"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "accomplishedsawbones"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.sawbones.bedside_manner",
+					"guid": "E000477737E3DD6E",
+					"name": "Bedside Manner",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_sm_sc_bedside_manner"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.sawbones.healing_hand",
+					"guid": "E00068951FAB83A6",
+					"name": "Healing Hand",
+					"effect_levels": [135],
+					"abilities": [
+						{
+							"guid": "E000F61E4BDD4078",
+							"fqn": "abl.smuggler.slow_release_medpac"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "firstaid"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.sawbones.homegrown_pharmacology",
+					"guid": "E000B4BD3EC3C4A5",
+					"name": "Homegrown Pharmacology",
+					"effect_levels": [69],
+					"abilities": [
+						{
+							"guid": "E0007ED25E1F0986",
+							"fqn": "abl.smuggler.skill.sawbones.kolto_cloud"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "bioanalysis"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.sawbones.prolonged_prescription",
+					"guid": "E0005F723061FF6B",
+					"name": "Prolonged Prescription",
+					"effect_levels": [65],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "\"scoun"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.sawbones.puissant_poultices",
+					"guid": "E0003A798ACDF202",
+					"name": "Puissant Poultices",
+					"effect_levels": [65, 65],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "homegrownpharmacology"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.sawbones.smuggled_med_delivery",
+					"guid": "E000A97878B778CF",
+					"name": "Smuggled Med Delivery",
+					"effect_levels": [201],
+					"abilities": [
+						{
+							"guid": "E000E8923F2668AA",
+							"fqn": "abl.smuggler.diagnostic_scan"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "assaulttech"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.sawbones.smuggled_technology",
+					"guid": "E0003E080EE7A6CC",
+					"name": "Smuggled Technology",
+					"effect_levels": [200, 81],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "333?", "medicalcrate"]
+				}
+			]
+		},
+		"smuggler.scrapper": {
+			"name": "Scrapper",
+			"mirror": "Concealment",
+			"class": "Smuggler",
+			"faction": "Republic",
+			"talents": [
+				{
+					"fqn": "tal.smuggler.skill.scrapper.critical_stimulants",
+					"guid": "E000241CEABDFDE0",
+					"name": "Critical Stimulants",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "stimulants"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.scrapper.let_em_have_it",
+					"guid": "E00049D2069EE347",
+					"name": "Let Em Have It",
+					"effect_levels": [122, 123],
+					"abilities": [
+						{
+							"guid": "E000AF38B6216E93",
+							"fqn": "abl.smuggler.lacerating_blast"
+						},
+						{
+							"guid": "E000AF38B6216E93",
+							"fqn": "abl.smuggler.lacerating_blast"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "!abl_a"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.scrapper.pierce_and_batter",
+					"guid": "E000995DE3202A4B",
+					"name": "Pierce And Batter",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "scound_pass_pierce_and_batter"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.scrapper.pressure_cooker",
+					"guid": "E000C0495BAFD287",
+					"name": "Pressure Cooker",
+					"effect_levels": [79, 135],
+					"abilities": [
+						{
+							"guid": "E0003043EB8E7FD9",
+							"fqn": "abl.smuggler.skill.scrapper.blood_boiler"
+						},
+						{
+							"guid": "E0003043EB8E7FD9",
+							"fqn": "abl.smuggler.skill.scrapper.blood_boiler"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_sm_sc_pressure_cooker"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.scrapper.sawed_off",
+					"guid": "E0003E83D616FF3F",
+					"name": "Sawed Off",
+					"effect_levels": [79, 69],
+					"abilities": [
+						{
+							"guid": "E0004C495BE60027",
+							"fqn": "abl.smuggler.back_blast"
+						},
+						{
+							"guid": "E0004C495BE60027",
+							"fqn": "abl.smuggler.back_blast"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "scatterblast"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.scrapper.scrappy",
+					"guid": "E000EA8565A93B41",
+					"name": "Scrappy",
+					"effect_levels": [79, 79],
+					"abilities": [
+						{
+							"guid": "E000BA106C06018E",
+							"fqn": "abl.smuggler.skill.scrapper.bludgeon"
+						},
+						{
+							"guid": "E00045517F2CE090",
+							"fqn": "abl.smuggler.quick_shot"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "bhrattatakigladiator"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.scrapper.shifty_eyed",
+					"guid": "E000CAC2105BD005",
+					"name": "Shifty Eyed",
+					"effect_levels": [50, 115, 121],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "aimboost"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.scrapper.underdogs_luck",
+					"guid": "E000AADBAD9F6C48",
+					"name": "Underdogs Luck",
+					"effect_levels": [136, 136, 136, 136],
+					"abilities": [
+						{
+							"guid": "E0004C495BE60027",
+							"fqn": "abl.smuggler.back_blast"
+						},
+						{
+							"guid": "E000C67A5716BE56",
+							"fqn": "abl.smuggler.skill.scrapper.sucker_punch"
+						},
+						{
+							"guid": "E0003043EB8E7FD9",
+							"fqn": "abl.smuggler.skill.scrapper.blood_boiler"
+						},
+						{
+							"guid": "E000BA106C06018E",
+							"fqn": "abl.smuggler.skill.scrapper.bludgeon"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "bravado"]
+				}
+			]
+		},
+		"smuggler.sharpshooter": {
+			"name": "Sharpshooter",
+			"mirror": "Marksmanship",
+			"class": "Smuggler",
+			"faction": "Republic",
+			"talents": [
+				{
+					"fqn": "tal.smuggler.skill.sharpshooter.accurized_blasters",
+					"guid": "E000D4CCD3E23D4B",
+					"name": "Accurized Blasters",
+					"effect_levels": [122, 123],
+					"abilities": [
+						{
+							"guid": "E000D2C089DBFA10",
+							"fqn": "abl.smuggler.sweeping_gunfire"
+						},
+						{
+							"guid": "E000D2C089DBFA10",
+							"fqn": "abl.smuggler.sweeping_gunfire"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_sm_gs_accurized_blasters"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.sharpshooter.aim_high",
+					"guid": "E000BD8BD0AAB7F2",
+					"name": "Aim High",
+					"effect_levels": [122, 69, 122],
+					"abilities": [
+						{
+							"guid": "E000218896A5AEAB",
+							"fqn": "abl.smuggler.quickdraw"
+						},
+						{
+							"guid": "E000218896A5AEAB",
+							"fqn": "abl.smuggler.quickdraw"
+						},
+						{
+							"guid": "E000B91F4E998071",
+							"fqn": "abl.smuggler.skill.sharpshooter.penetrating_rounds"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "headshot"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.sharpshooter.deadeye",
+					"guid": "E000ADDD6BFE56CA",
+					"name": "Deadeye",
+					"effect_levels": [123, 123, 123, 123, 123],
+					"abilities": [
+						{
+							"guid": "E000B607302509F8",
+							"fqn": "abl.smuggler.skill.sharpshooter.aimed_shot"
+						},
+						{
+							"guid": "E00055C89449F597",
+							"fqn": "abl.smuggler.skill.sharpshooter.trickshot"
+						},
+						{
+							"guid": "E000218896A5AEAB",
+							"fqn": "abl.smuggler.quickdraw"
+						},
+						{
+							"guid": "E00034CB0025618F",
+							"fqn": "abl.smuggler.charged_burst"
+						},
+						{
+							"guid": "E000B91F4E998071",
+							"fqn": "abl.smuggler.skill.sharpshooter.penetrating_rounds"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "bhoutlaw"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.sharpshooter.foxhole",
+					"guid": "E000AB5AD5BE06A9",
+					"name": "Foxhole",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "takecover"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.sharpshooter.percussive_diversion",
+					"guid": "E00044F35C567C33",
+					"name": "Percussive Diversion",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "accuracyreduced"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.sharpshooter.rapid_fire",
+					"guid": "E0005F46D02F9AA9",
+					"name": "Rapid Fire",
+					"effect_levels": [64, 64],
+					"abilities": [
+						{
+							"guid": "E000B607302509F8",
+							"fqn": "abl.smuggler.skill.sharpshooter.aimed_shot"
+						},
+						{
+							"guid": "E000B91F4E998071",
+							"fqn": "abl.smuggler.skill.sharpshooter.penetrating_rounds"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "rapidshots"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.sharpshooter.sharp_aim",
+					"guid": "E000C4F2A70501D1",
+					"name": "Sharp Aim",
+					"effect_levels": [166],
+					"abilities": [
+						{
+							"guid": "E000B607302509F8",
+							"fqn": "abl.smuggler.skill.sharpshooter.aimed_shot"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "blasterhugescope"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.sharpshooter.slick_shooter",
+					"guid": "E00015F7FAA13BD6",
+					"name": "Slick Shooter",
+					"effect_levels": [166, 122, 122],
+					"abilities": [
+						{
+							"guid": "E00034CB0025618F",
+							"fqn": "abl.smuggler.charged_burst"
+						},
+						{
+							"guid": "E00055C89449F597",
+							"fqn": "abl.smuggler.skill.sharpshooter.trickshot"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "chargedburst"]
+				},
+				{
+					"fqn": "tal.smuggler.skill.sharpshooter.stay_low",
+					"guid": "E0000A0C99A27221",
+					"name": "Stay Low",
+					"effect_levels": [65],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "portablebunker"]
+				}
+			]
+		},
+		"trooper.assault_specialist": {
+			"name": "Assault Specialist",
+			"mirror": "Innovative Ordnance",
+			"class": "Trooper",
+			"faction": "Republic",
+			"talents": [
+				{
+					"fqn": "tal.trooper.skill.assault_specialist.assault_trooper",
+					"guid": "E000AE606022191A",
+					"name": "Assault Trooper",
+					"effect_levels": [122, 123, 123, 136, 123],
+					"abilities": [
+						{
+							"guid": "E00078372B97B79F",
+							"fqn": null
+						},
+						{
+							"guid": "E000333EBB3734C4",
+							"fqn": "abl.trooper.charged_bolts"
+						},
+						{
+							"guid": "E0003416369C4274",
+							"fqn": "abl.trooper.skill.tactics.assault_plastique"
+						},
+						{
+							"guid": "E0000281E8370FBC",
+							"fqn": null
+						}
+					],
+					"strings": ["str.tal", "str.tal", "tzabrakguerillafighter"]
+				},
+				{
+					"fqn": "tal.trooper.skill.assault_specialist.mods.eruptive_flames",
+					"guid": "E000AE6197C7FBA6",
+					"name": "Eruptive Flames",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "mercom_eruptive_flames_rep"]
+				},
+				{
+					"fqn": "tal.trooper.skill.assault_specialist.explosive_dissemination",
+					"guid": "E000B5987156A811",
+					"name": "Explosive Dissemination",
+					"effect_levels": [79],
+					"abilities": [
+						{
+							"guid": "E0007FE99191EEC1",
+							"fqn": "abl.trooper.plasma_grenade"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "!abl_t"]
+				},
+				{
+					"fqn": "tal.trooper.skill.assault_specialist.flaming_wound",
+					"guid": "E000C0437F670E30",
+					"name": "Flaming Wound",
+					"effect_levels": [200],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "decoyarsenal"]
+				},
+				{
+					"fqn": "tal.trooper.skill.assault_specialist.mods.heavy_shrapnel",
+					"guid": "E000EE6FED028E54",
+					"name": "Heavy Shrapnel",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "mercom_heavy_shrapnel_rep"]
+				},
+				{
+					"fqn": "tal.trooper.skill.assault_specialist.hyper_barrels",
+					"guid": "E0008AB26014C761",
+					"name": "Hyper Barrels",
+					"effect_levels": [64, 69],
+					"abilities": [
+						{
+							"guid": "E0007FE99191EEC1",
+							"fqn": "abl.trooper.plasma_grenade"
+						},
+						{
+							"guid": "E0007FE99191EEC1",
+							"fqn": "abl.trooper.plasma_grenade"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "shockround"]
+				},
+				{
+					"fqn": "tal.trooper.skill.assault_specialist.mods.hyper_cinders",
+					"guid": "E0002BDC667EFF19",
+					"name": "Hyper Cinders",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "immolate"]
+				},
+				{
+					"fqn": "tal.trooper.skill.assault_specialist.mods.incendiary_ignition",
+					"guid": "E000B74EA502BC72",
+					"name": "Incendiary Ignition",
+					"effect_levels": [79],
+					"abilities": [
+						{
+							"guid": "E0005119315221B8",
+							"fqn": "abl.trooper.plasma_cell"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "burned"]
+				},
+				{
+					"fqn": "tal.trooper.skill.assault_specialist.rapid_recharge",
+					"guid": "E000687C01701F49",
+					"name": "Rapid Recharge",
+					"effect_levels": [64, 69],
+					"abilities": [
+						{
+							"guid": "E0002C6FBC3AAEF8",
+							"fqn": "abl.trooper.recharge_cells"
+						},
+						{
+							"guid": "E0005C7DF1B1378E",
+							"fqn": "abl.trooper.medical_probe"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "blastermagazine2"]
+				},
+				{
+					"fqn": "tal.trooper.skill.assault_specialist.relentless_assault",
+					"guid": "E0006EDDCB91C534",
+					"name": "Relentless Assault",
+					"effect_levels": [200],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "immolate"]
+				},
+				{
+					"fqn": "tal.trooper.skill.assault_specialist.mods.slow_burn",
+					"guid": "E0001AB96E508B4E",
+					"name": "Slow Burn",
+					"effect_levels": [79, 65],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "decoyarsenal"]
+				},
+				{
+					"fqn": "tal.trooper.skill.assault_specialist.superheated_plasma",
+					"guid": "E0007F5B0EB927F8",
+					"name": "Superheated Plasma",
+					"effect_levels": [79, 200],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "plasmaclip"]
+				}
+			]
+		},
+		"trooper.combat_medic": {
+			"name": "Combat Medic",
+			"mirror": "Bodyguard",
+			"class": "Trooper",
+			"faction": "Republic",
+			"talents": [
+				{
+					"fqn": "tal.trooper.skill.combat_medic.mods.critical_probes",
+					"guid": "E0000404A555366B",
+					"name": "Critical Probes",
+					"effect_levels": [135],
+					"abilities": [
+						{
+							"guid": "E000F9A97BFFD0C5",
+							"fqn": "abl.trooper.skill.combat_medic.advanced_medical_probe"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "surgicalprobe"]
+				},
+				{
+					"fqn": "tal.trooper.skill.combat_medic.field_medicine",
+					"guid": "E0008F382B39CE8E",
+					"name": "Field Medicine",
+					"effect_levels": [83, 83, 63, 67],
+					"abilities": [
+						{
+							"guid": "E0005C7DF1B1378E",
+							"fqn": "abl.trooper.medical_probe"
+						},
+						{
+							"guid": "E000CE901F7EDDC4",
+							"fqn": "abl.trooper.bacta_infusion"
+						},
+						{
+							"guid": "E00043504DFD8D64",
+							"fqn": "abl.trooper.skill.combat_medic.successive_treatment"
+						},
+						{
+							"guid": "E00043504DFD8D64",
+							"fqn": "abl.trooper.skill.combat_medic.successive_treatment"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "firstaidbox"]
+				},
+				{
+					"fqn": "tal.trooper.skill.combat_medic.frontline_medic",
+					"guid": "E0001D2CAF58368F",
+					"name": "Frontline Medic",
+					"effect_levels": [83, 83, 83],
+					"abilities": [
+						{
+							"guid": "E000E6338D0C839E",
+							"fqn": "abl.trooper.skill.combat_medic.kolto_bomb"
+						},
+						{
+							"guid": "E00043504DFD8D64",
+							"fqn": "abl.trooper.skill.combat_medic.successive_treatment"
+						},
+						{
+							"guid": "E000C4BC273AA8DE",
+							"fqn": "abl.trooper.skill.combat_medic.kolto_pods"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "comm_pass_frontline_medic"]
+				},
+				{
+					"fqn": "tal.trooper.skill.combat_medic.potent_medicine",
+					"guid": "E00087B828486990",
+					"name": "Potent Medicine",
+					"effect_levels": [136],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "medicalcrate"]
+				},
+				{
+					"fqn": "tal.trooper.skill.combat_medic.quick_thinking",
+					"guid": "E000C87CA2DE7C8A",
+					"name": "Quick Thinking",
+					"effect_levels": [135],
+					"abilities": [
+						{
+							"guid": "E0005C7DF1B1378E",
+							"fqn": "abl.trooper.medical_probe"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "auraofleadership"]
+				},
+				{
+					"fqn": "tal.trooper.skill.combat_medic.steady_hands",
+					"guid": "E00081EBDAF0B4CB",
+					"name": "Steady Hands",
+					"effect_levels": [200, 81],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "333?", "firstaid"]
+				},
+				{
+					"fqn": "tal.trooper.skill.combat_medic.treated_wound_dressings",
+					"guid": "E00029F51D50BD20",
+					"name": "Treated Wound Dressings",
+					"effect_levels": [21, 24, 22, 23, 135],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "revive"]
+				}
+			]
+		},
+		"trooper.gunnery": {
+			"name": "Gunnery",
+			"mirror": "Arsenal",
+			"class": "Trooper",
+			"faction": "Republic",
+			"talents": [
+				{
+					"fqn": "tal.trooper.skill.gunnery.blazing_barrel",
+					"guid": "E00009980369B5E1",
+					"name": "Blazing Barrel",
+					"effect_levels": [122, 123],
+					"abilities": [
+						{
+							"guid": "E000B1E63012D6AC",
+							"fqn": "abl.trooper.hail_of_bolts"
+						},
+						{
+							"guid": "E000B1E63012D6AC",
+							"fqn": "abl.trooper.hail_of_bolts"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_tr_co_blazing_barrel"]
+				},
+				{
+					"fqn": "tal.trooper.skill.gunnery.burst_mode",
+					"guid": "E000D3C99A90849D",
+					"name": "Burst Mode",
+					"effect_levels": [61],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_bhtr_meco_burst_mode"]
+				},
+				{
+					"fqn": "tal.trooper.skill.gunnery.charged_launcher",
+					"guid": "E000F9F9FB3D291B",
+					"name": "Charged Launcher",
+					"effect_levels": [79, 79, 79, 79],
+					"abilities": [
+						{
+							"guid": "E000FD36C3D5070B",
+							"fqn": "abl.trooper.electro_net"
+						},
+						{
+							"guid": "E000BB6C7841F4CA",
+							"fqn": "abl.trooper.skill.gunnery.grav_round"
+						},
+						{
+							"guid": "E000FBDC9282D3E7",
+							"fqn": "abl.trooper.skill.gunnery.demolition_round"
+						},
+						{
+							"guid": "E000D1DCA7C6B661",
+							"fqn": "abl.trooper.high_impact_round"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "powerednet"]
+				},
+				{
+					"fqn": "tal.trooper.skill.gunnery.cover_fire",
+					"guid": "E000E78EC004EA1F",
+					"name": "Cover Fire",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "cripplingfire"]
+				},
+				{
+					"fqn": "tal.trooper.skill.gunnery.mods.customized_round",
+					"guid": "E000C93DB66A9A4B",
+					"name": "Customized Round",
+					"effect_levels": [135, 136],
+					"abilities": [
+						{
+							"guid": "E000FBDC9282D3E7",
+							"fqn": "abl.trooper.skill.gunnery.demolition_round"
+						},
+						{
+							"guid": "E000FBDC9282D3E7",
+							"fqn": "abl.trooper.skill.gunnery.demolition_round"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_sm_gu_sow_chaos"]
+				},
+				{
+					"fqn": "tal.trooper.skill.gunnery.deadly_cannon",
+					"guid": "E000E9F3C96EA957",
+					"name": "Deadly Cannon",
+					"effect_levels": [136, 123, 123],
+					"abilities": [
+						{
+							"guid": "E000FBDC9282D3E7",
+							"fqn": "abl.trooper.skill.gunnery.demolition_round"
+						},
+						{
+							"guid": "E000D1DCA7C6B661",
+							"fqn": "abl.trooper.high_impact_round"
+						},
+						{
+							"guid": "E00077F28A9B95DA",
+							"fqn": "abl.trooper.skill.gunnery.vortex_bolt"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "deadlycannon"]
+				},
+				{
+					"fqn": "tal.trooper.skill.gunnery.mods.grav_trio",
+					"guid": "E000141F6C626A16",
+					"name": "Grav Trio",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "abl_sm_sc_blkmarket_mods"]
+				},
+				{
+					"fqn": "tal.trooper.skill.gunnery.mods.gravitating_compound",
+					"guid": "E000A137BB9406A2",
+					"name": "Gravitating Compound",
+					"effect_levels": [79],
+					"abilities": [
+						{
+							"guid": "E000BB6C7841F4CA",
+							"fqn": "abl.trooper.skill.gunnery.grav_round"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_tr_vg_muzzle_augs"]
+				},
+				{
+					"fqn": "tal.trooper.skill.gunnery.gravity_surge",
+					"guid": "E000AA98B8F77917",
+					"name": "Gravity Surge",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "spaceupgradejammingfield"]
+				},
+				{
+					"fqn": "tal.trooper.skill.gunnery.ironsights",
+					"guid": "E000DE6840045B90",
+					"name": "Ironsights",
+					"effect_levels": [79, 79, 79],
+					"abilities": [
+						{
+							"guid": "E00077F28A9B95DA",
+							"fqn": "abl.trooper.skill.gunnery.vortex_bolt"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "assaultcannonironsight"]
+				},
+				{
+					"fqn": "tal.trooper.skill.gunnery.mods.proficient_gravitation",
+					"guid": "E000BFAAF838C0E9",
+					"name": "Proficient Gravitation",
+					"effect_levels": [62, 69, 66],
+					"abilities": [
+						{
+							"guid": "E000BB6C7841F4CA",
+							"fqn": "abl.trooper.skill.gunnery.grav_round"
+						},
+						{
+							"guid": "E000BB6C7841F4CA",
+							"fqn": "abl.trooper.skill.gunnery.grav_round"
+						},
+						{
+							"guid": "E000BB6C7841F4CA",
+							"fqn": "abl.trooper.skill.gunnery.grav_round"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_bh_me_tracing_shot"]
+				},
+				{
+					"fqn": "tal.trooper.skill.gunnery.rotary_cannon",
+					"guid": "E000EDC3E67A3BB0",
+					"name": "Rotary Cannon",
+					"effect_levels": [122, 122],
+					"abilities": [
+						{
+							"guid": "E0000BED56C3DCAC",
+							"fqn": "abl.trooper.skill.gunnery.boltstorm"
+						},
+						{
+							"guid": "E00077F28A9B95DA",
+							"fqn": "abl.trooper.skill.gunnery.vortex_bolt"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "rotarycannon"]
+				},
+				{
+					"fqn": "tal.trooper.skill.gunnery.supercharged_barrel",
+					"guid": "E00031FE8FF3BE21",
+					"name": "Supercharged Barrel",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "comm_pass_supercharged_barrel"]
+				}
+			]
+		},
+		"trooper.plasmatech": {
+			"name": "Plasmatech",
+			"mirror": "Pyrotech",
+			"class": "Trooper",
+			"faction": "Republic",
+			"talents": [
+				{
+					"fqn": "tal.trooper.skill.plasmatech.assault_frame",
+					"guid": "E00078B7A33875DF",
+					"name": "Assault Frame",
+					"effect_levels": [46],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "rangedtankunlock"]
+				},
+				{
+					"fqn": "tal.trooper.skill.plasmatech.burnout",
+					"guid": "E000F417926CECD8",
+					"name": "Burnout",
+					"effect_levels": [200, 69],
+					"abilities": [
+						{
+							"guid": "E00059D96C2ABBE7",
+							"fqn": "abl.trooper.skill.plasmatech.plasmatize"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "immolate"]
+				},
+				{
+					"fqn": "tal.trooper.skill.plasmatech.hazardous_heat",
+					"guid": "E000732034899897",
+					"name": "Hazardous Heat",
+					"effect_levels": [79],
+					"abilities": [
+						{
+							"guid": "E00059D96C2ABBE7",
+							"fqn": "abl.trooper.skill.plasmatech.plasmatize"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "van_pass_hazardous_heat"]
+				},
+				{
+					"fqn": "tal.trooper.skill.plasmatech.heated_tools",
+					"guid": "E0004D25E4082408",
+					"name": "Heated Tools",
+					"effect_levels": [64],
+					"abilities": [
+						{
+							"guid": "E00061369D486400",
+							"fqn": "abl.trooper.ion_wave"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "toolbox"]
+				},
+				{
+					"fqn": "tal.trooper.skill.plasmatech.insulated_augs",
+					"guid": "E00067FA747EBD21",
+					"name": "Insulated Augs",
+					"effect_levels": [21, 22, 64],
+					"abilities": [
+						{
+							"guid": "E00075C9EF50B693",
+							"fqn": "abl.trooper.sonic_round"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_tr_vg_insulated_augs"]
+				},
+				{
+					"fqn": "tal.trooper.skill.plasmatech.ionized_ignition",
+					"guid": "E000F4F99A5E9FBF",
+					"name": "Ionized Ignition",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "damageincreased"]
+				},
+				{
+					"fqn": "tal.trooper.skill.plasmatech.plasmatic_assault",
+					"guid": "E0003A31F52EF5C0",
+					"name": "Plasmatic Assault",
+					"effect_levels": [136, 136, 136, 136],
+					"abilities": [
+						{
+							"guid": "E0004EDE1E7548EF",
+							"fqn": null
+						},
+						{
+							"guid": "E000AC50C72EC6F6",
+							"fqn": null
+						},
+						{
+							"guid": "E00059D96C2ABBE7",
+							"fqn": "abl.trooper.skill.plasmatech.plasmatize"
+						},
+						{
+							"guid": "E00061369D486400",
+							"fqn": "abl.trooper.ion_wave"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "elementaloverload"]
+				},
+				{
+					"fqn": "tal.trooper.skill.plasmatech.rain_of_fire",
+					"guid": "E000723452F55F97",
+					"name": "Rain Of Fire",
+					"effect_levels": [79, 79],
+					"abilities": [
+						{
+							"guid": "E000CF3CA76E959A",
+							"fqn": "abl.trooper.skill.plasmatech.incendiary_round"
+						},
+						{
+							"guid": "E000BFAE7C7D1360",
+							"fqn": "abl.trooper.skill.plasmatech.mods.tier3.armor_piercing_round"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "decoyarsenal"]
+				}
+			]
+		},
+		"trooper.shield_specialist": {
+			"name": "Shield Specialist",
+			"mirror": "Shield Tech",
+			"class": "Trooper",
+			"faction": "Republic",
+			"talents": [
+				{
+					"fqn": "tal.trooper.skill.shield_specialist.ceramic_plating",
+					"guid": "E00049FD8AA7ED0C",
+					"name": "Ceramic Plating",
+					"effect_levels": [119, 125, 201, 201],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "armoroverlay3"]
+				},
+				{
+					"fqn": "tal.trooper.skill.shield_specialist.deflective_guards",
+					"guid": "E0009752692FDB5A",
+					"name": "Deflective Guards",
+					"effect_levels": [121, 115, 21, 24, 22, 23],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "block"]
+				},
+				{
+					"fqn": "tal.trooper.skill.shield_specialist.energized_absorbers",
+					"guid": "E0001D56BFC1A2BE",
+					"name": "Energized Absorbers",
+					"effect_levels": [],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "van_pass_energized_absorbers"]
+				},
+				{
+					"fqn": "tal.trooper.skill.shield_specialist.ion_shield",
+					"guid": "E000D3D4524ED949",
+					"name": "Ion Shield",
+					"effect_levels": [21, 24, 22, 23],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "disturbance"]
+				}
+			]
+		},
+		"trooper.tactics": {
+			"name": "Tactics",
+			"mirror": "Advanced Prototype",
+			"class": "Trooper",
+			"faction": "Republic",
+			"talents": [
+				{
+					"fqn": "tal.trooper.skill.tactics.charged_loaders",
+					"guid": "E000D8939D8881FE",
+					"name": "Charged Loaders",
+					"effect_levels": [79, 79, 61, 135, 135],
+					"abilities": [
+						{
+							"guid": "E00032E92B7E65E2",
+							"fqn": "abl.trooper.shoulder_cannon"
+						},
+						{
+							"guid": "E00032E92B7E65E2",
+							"fqn": "abl.trooper.shoulder_cannon"
+						},
+						{
+							"guid": "E000CAA70E2076BD",
+							"fqn": "abl.trooper.stockstrike"
+						},
+						{
+							"guid": "E0003416369C4274",
+							"fqn": "abl.trooper.skill.tactics.assault_plastique"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "powerloaders"]
+				},
+				{
+					"fqn": "tal.trooper.skill.tactics.critical_recharge",
+					"guid": "E0009E1ACB3E4A4B",
+					"name": "Critical Recharge",
+					"effect_levels": [122, 135, 64, 64],
+					"abilities": [
+						{
+							"guid": "E0002C6FBC3AAEF8",
+							"fqn": "abl.trooper.recharge_cells"
+						},
+						{
+							"guid": "E000FE90AA034D70",
+							"fqn": "abl.trooper.reserve_powercell"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "blastermagazine2"]
+				},
+				{
+					"fqn": "tal.trooper.skill.tactics.grenadiership",
+					"guid": "E0006F16761048A5",
+					"name": "Grenadiership",
+					"effect_levels": [64, 64, 79],
+					"abilities": [
+						{
+							"guid": "E0008EF071D8436C",
+							"fqn": "abl.trooper.artillery_blitz"
+						},
+						{
+							"guid": "E000519B3F0B69D4",
+							"fqn": "abl.trooper.flak_shell"
+						},
+						{
+							"guid": "E000519B3F0B69D4",
+							"fqn": "abl.trooper.flak_shell"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "abl_tr_vg_grenadiership"]
+				},
+				{
+					"fqn": "tal.trooper.skill.tactics.havoc_training",
+					"guid": "E0001371E5463149",
+					"name": "Havoc Training",
+					"effect_levels": [136, 123, 136, 136, 136, 136],
+					"abilities": [
+						{
+							"guid": "E000CAA70E2076BD",
+							"fqn": "abl.trooper.stockstrike"
+						},
+						{
+							"guid": "E000D1DCA7C6B661",
+							"fqn": "abl.trooper.high_impact_round"
+						},
+						{
+							"guid": "E000808A4C37DCC3",
+							"fqn": "abl.trooper.skill.tactics.tactical_surge"
+						},
+						{
+							"guid": "E000353E6045550F",
+							"fqn": "abl.trooper.skill.tactics.gut"
+						},
+						{
+							"guid": "E0003416369C4274",
+							"fqn": "abl.trooper.skill.tactics.assault_plastique"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "trooper"]
+				},
+				{
+					"fqn": "tal.trooper.skill.tactics.nightvision_scope",
+					"guid": "E000D7C8964F441F",
+					"name": "Nightvision Scope",
+					"effect_levels": [50, 115, 121],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "blastershortscope"]
+				},
+				{
+					"fqn": "tal.trooper.skill.tactics.riot_augs",
+					"guid": "E00091AFFB7CD411",
+					"name": "Riot Augs",
+					"effect_levels": [79, 79, 79, 79, 79, 79, 79, 79],
+					"abilities": [
+						{
+							"guid": "E000CAA70E2076BD",
+							"fqn": "abl.trooper.stockstrike"
+						},
+						{
+							"guid": "E000D1DCA7C6B661",
+							"fqn": "abl.trooper.high_impact_round"
+						},
+						{
+							"guid": "E000808A4C37DCC3",
+							"fqn": "abl.trooper.skill.tactics.tactical_surge"
+						},
+						{
+							"guid": "E0004C6E8A8C2C42",
+							"fqn": "abl.trooper.explosive_surge"
+						},
+						{
+							"guid": "E000353E6045550F",
+							"fqn": "abl.trooper.skill.tactics.gut"
+						},
+						{
+							"guid": "E0003416369C4274",
+							"fqn": "abl.trooper.skill.tactics.assault_plastique"
+						},
+						{
+							"guid": "E0003B970F5EC44B",
+							"fqn": "abl.trooper.ion_pulse"
+						}
+					],
+					"strings": ["str.tal", "str.tal", "weaponcharge"]
+				},
+				{
+					"fqn": "tal.trooper.skill.tactics.serrated_blades",
+					"guid": "E000EE3E781C9611",
+					"name": "Serrated Blades",
+					"effect_levels": [79],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "criticalblade"]
+				},
+				{
+					"fqn": "tal.trooper.skill.tactics.triumph",
+					"guid": "E000A8A04897B61F",
+					"name": "Triumph",
+					"effect_levels": [200],
+					"abilities": [],
+					"strings": ["str.tal", "str.tal", "recklessness"]
+				}
+			]
+		}
+	},
+	"meta": {
+		"total_disciplines": 46,
+		"total_talents": 340,
+		"discipline_tiers": [15, 23, 27, 35, 39, 43, 47, 51, 60, 64, 68, 73, 78],
+		"notes": [
+			"effect_levels are scaling thresholds from payload, not tree positions",
+			"Tree tier positions may need external mapping (Jedipedia/manual)",
+			"abilities list contains GUID and FQN for granted/modified abilities"
+		]
+	}
+}

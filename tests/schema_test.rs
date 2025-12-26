@@ -136,8 +136,8 @@ fn test_icon_name_extraction_talent() {
     let obj = GameObject::from_gom(&gom);
 
     assert_eq!(obj.icon_name, Some("abl_bh_me_kolto_surge".to_string()));
-    // Talents get kind from prefix, not mapped
-    assert_eq!(obj.kind, "tal");
+    // Talents get kind mapped like other prefixes
+    assert_eq!(obj.kind, "Talent");
 }
 
 #[test]

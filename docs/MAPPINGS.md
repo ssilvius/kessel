@@ -184,6 +184,132 @@ Every GOM object has a 42-byte binary header with this structure:
 - `0102` = Static/reference types (talents, codex, achievements, schematics)
 - `0103` = World/instance types (abilities, quests, items, NPCs, mission points)
 
+## Talent GOM Payload Structure
+
+Talents (`tal.*`) define discipline tree nodes in SWTOR 7.0+. Each can grant abilities, modify existing abilities, or provide stat bonuses.
+
+**Statistics (1016 talents):**
+- Payload sizes: 184-617 bytes (avg 270)
+- 99% have `str.tal` string reference
+- 37% have ability GUID references
+- 94% have tail strings (ability script hooks)
+
+### Complete Byte Layout
+
+```
+OFFSET  SIZE  FIELD                DESCRIPTION
+----------------------------------------------------------------------
+0x00    0-7   leading_zeros        Variable padding (0-7 bytes of 0x00)
+var     2     effect_count         08 XX marker (XX = effect count)
+var     9     talent_type_id       CF 40000013A787EE87 (talent definition)
+var     5     header_bytes         08 02 09 02 02 (fixed sequence)
+var     9     unknown_ref          CF [8-byte reference] (internal ref)
+var     2     marker               04 04 (fixed)
+var     9     string_type_id       CF 400000115CE87488 (string table type)
+var     5     ce_string_id         CE [4-byte LE] (string table offset)
+var     var   pre_str_tal          Variable bytes before str.tal
+var     1     string_length        07 (length prefix for "str.tal")
+var     7     str.tal              73 74 72 2e 74 61 6c ("str.tal")
+var     5     cc_string_field      CC 6F6FAE37 (string reference field)
+var     var   [effect blocks]      1-3 effect block structures
+var     var   [ability refs]       0-N ability GUID references
+var     var   tail_string          Length-prefixed ASCII (script hook name)
+```
+
+### Effect Count Marker (08 XX)
+
+| Value | Count | Category |
+|-------|-------|----------|
+| 08 02 | 27 | Legacy perks, GSF talents |
+| 08 03 | 630 | Discipline talents, GSF talents |
+| 08 04 | 285 | Discipline talents |
+| 08 05 | 74 | Guild perks |
+
+### Type IDs (CF 4000...)
+
+| Type ID | Count | Purpose |
+|---------|-------|---------|
+| `40000013A787EE87` | 1016 | Talent definition (1 per talent) |
+| `400000115CE87488` | 2032 | String table block (2 per talent) |
+| `40000040D954FB02` | 1451 | Effect block with level |
+| `40000040D954FB05` | 1047 | Effect block header |
+
+### Field IDs (CC ...)
+
+| Field ID | Count | Purpose |
+|----------|-------|---------|
+| `6F6FAE37` | 2032 | String reference (after str.tal) |
+| `17E2840B` | 931 | Ability reference field |
+| `E4AFDD03` | 1047 | Effect field (with D954FB05) |
+| `0CCD312D` | 1015 | Unknown (1 per talent) |
+
+### CB Reference (Anchor)
+
+| Ref | Count | Purpose |
+|-----|-------|---------|
+| `9D4BD719` | 1215 | Effect anchor reference |
+| `964BD719` | 236 | Alternative effect anchor |
+
+### Effect Block Structure
+
+```
+cf 40 00 00 40 d9 54 fb 02  [9 bytes: CF + Type ID D954FB02]
+05                          [1 byte: marker]
+[LEVEL]                     [1 byte: level value]
+01 04 00 00                 [4 bytes: trailing]
+```
+
+**Example (dark_mending level 68):**
+```
+cf 40 00 00 40 d9 54 fb 02 05 44 01 04 00 00
+                           ^^ ^^
+                           |  Level 68 (0x44)
+                           Marker (05)
+```
+
+### Ability Reference Pattern
+
+```
+cc 17 e2 84 0b              [5 bytes: CC field ID 17E2840B]
+d0 01                       [2 bytes: D0 int8 = 1]
+cf e0 00 XX XX XX XX XX XX  [9 bytes: CF + 8-byte GUID big-endian]
+```
+
+**Statistics:** 385 talents (37%) have ability refs, avg 2-3 per talent
+
+**Example:**
+```
+cc 0b 84 e2 17 d0 01 cf e0 00 69 88 8d 5f 32 63
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                     GUID: E00069888D5F3263 -> dark_infusion
+```
+
+### Tail String
+
+Length-prefixed ASCII at payload end (94% of talents):
+
+| Talent | Tail String |
+|--------|-------------|
+| dark_mending | "sorcererhaste" |
+| stasis_mastery | "carbonized" |
+| deadly_toxins | "virulentpoison" |
+| xp_increase_2 | "Gld_XPIncrease2_Passive_Quick" |
+
+### GUID Encoding
+
+**IMPORTANT:** All GUIDs in payloads are **big-endian**:
+
+```
+cf e0 00 fb a7 96 66 d2 99  →  E000FBA79666D299
+                              → abl.sith_inquisitor.dark_heal
+```
+
+### Analysis Script
+
+```bash
+python3 tools/kessel/scripts/analyze_talents.py
+```
+
 ## GUID Structure
 
 ### GOM Object GUID
@@ -1075,3 +1201,92 @@ const FQN_STRING_OVERRIDES = {
 | Thwart | Not found in GOM objects |
 | Second Wind | Not found in strings or objects |
 | Through Peace | Not found in strings or objects |
+
+## Legacy Perks and Companion Gift Data
+
+### Legacy Ability Unlocks (Permanent Stat Bonuses)
+
+Completing class stories unlocks permanent legacy-wide stat bonuses:
+
+| FQN | GUID | Bonus |
+|-----|------|-------|
+| `tal.legacy.ability_unlock.agent_unlock` | E000AAB7BF2F24E7 | Crit chance |
+| `tal.legacy.ability_unlock.bounty_hunter_unlock` | E000FAF518954A90 | Companion gift effectiveness |
+| `tal.legacy.ability_unlock.consular_unlock` | E000D0F49248D304 | Max health |
+| `tal.legacy.ability_unlock.inquisitor_unlock` | E000416A1AC19B11 | Force regen |
+| `tal.legacy.ability_unlock.knight_unlock` | E000F7F4188B1E17 | Max health |
+| `tal.legacy.ability_unlock.smuggler_unlock` | E000014EE3EA492C | Critical damage |
+| `tal.legacy.ability_unlock.warrior_unlock` | E000BDAB756ADE9C | Rage/Focus regen |
+
+### Legacy Buff Unlocks
+
+| FQN | GUID | Description |
+|-----|------|-------------|
+| `tal.legacy.buff_unlock.consular_inquisitor` | E0004523AC8FA423 | Force users |
+| `tal.legacy.buff_unlock.knight_warrior` | E000A6C31D02B585 | Melee |
+| `tal.legacy.buff_unlock.trooper_bounty_hunter` | E000B7A26E4410DB | Tech users |
+
+### Legacy of Altruism (Cartel Market Perks)
+
+Gift bonus unlocks from the Cartel Market:
+
+| FQN | Internal Name | Description |
+|-----|---------------|-------------|
+| `itm.mtx.lgc.prk.affection_bonus.gift_1` | legacyofaltruism1 | Gift effectiveness I |
+| `itm.mtx.lgc.prk.affection_bonus.gift_2` | legacyofaltruism2 | Gift effectiveness II |
+| `itm.mtx.lgc.prk.affection_bonus.gift_3` | legacyofaltruism3 | Gift effectiveness III |
+| `itm.mtx.lgc.prk.affection_bonus.gift_speed_1` | legacyofaltruism1 | Gift speed I |
+| `itm.mtx.lgc.prk.affection_bonus.gift_speed_2` | legacyofaltruism1 | Gift speed II |
+
+### Legacy of Persuasion (Conversation Bonuses)
+
+| FQN | Internal Name | Description |
+|-----|---------------|-------------|
+| `itm.mtx.lgc.prk.affection_bonus.conversation_1` | legacyofpersuasion1 | Conversation influence I |
+| `itm.mtx.lgc.prk.affection_bonus.conversation_3` | legacyofpersuasion3 | Conversation influence III |
+
+### Companion Gift Categories
+
+12 gift categories with rank 1-6 and 5 quality tiers:
+
+| Category | Item Count | FQN Pattern |
+|----------|------------|-------------|
+| Military Gear | 28 | `itm.companion.gift.military_gear.*` |
+| Luxury | 28 | `itm.companion.gift.luxury.*` |
+| Republic Memorabilia | 27 | `itm.companion.gift.republic_memorabilia.*` |
+| Cultural Artifact | 27 | `itm.companion.gift.cultural_artifact.*` |
+| Imperial Memorabilia | 26 | `itm.companion.gift.imperial_memorabilia.*` |
+| Weapon | 25 | `itm.companion.gift.weapon.*` |
+| Underworld Good | 25 | `itm.companion.gift.underworld_good.*` |
+| Courting | 25 | `itm.companion.gift.courting.*` |
+| Trophy | 22 | `itm.companion.gift.trophy.*` |
+| Technology | 21 | `itm.companion.gift.technology.*` |
+| Maintenance | 3 | `itm.companion.gift.maintenance.*` |
+| Delicacies | 3 | `itm.companion.gift.delicacies.*` |
+
+**Quality Tiers:**
+- Standard (green)
+- Premium (blue)
+- Prototype (purple)
+- Artifact (gold)
+- Legendary (orange) - rank 6 only
+
+## GOM Payload Type ID Summary
+
+Common type IDs across all payload types:
+
+| Type ID | Primary Usage | Description |
+|---------|---------------|-------------|
+| `400000115CE87488` | All types | String table reference block |
+| `40000013A787EE87` | Talents, Achievements | Definition block |
+| `40000040D954FB02` | Talents | Effect block with level |
+| `40000040D954FB05` | Talents | Effect block header |
+| `400000003D2E41E7` | Abilities | Ability definition |
+| `4000000A384B7939` | Abilities | Ability modifier |
+| `40000002AE773353` | Items | Item definition |
+| `40000005DBB497C6` | Schematics | Schematic definition |
+| `40000008257639EA` | Codex | Codex entry |
+| `4000004BDA0A8E61` | Achievements | Achievement definition |
+
+**String Reference Pattern:**
+All payloads use `str.{kind}` (e.g., `str.tal`, `str.abl`, `str.itm`) to reference localized strings in the string tables.

@@ -12,6 +12,7 @@ mod myp;
 mod pbuk;
 mod schema;
 mod stb;
+mod unknowns;
 
 #[derive(Parser, Debug)]
 #[command(name = "kessel")]
@@ -44,10 +45,21 @@ struct Args {
     /// Verbose output (show debug info)
     #[arg(short, long)]
     verbose: bool,
+
+    /// Output file for unknown patterns (JSONL format)
+    #[arg(long)]
+    unknowns: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
+
+    // Initialize unknowns tracker
+    let unknowns_writer = if let Some(ref unknowns_path) = args.unknowns {
+        unknowns::UnknownsWriter::new(unknowns_path)?
+    } else {
+        unknowns::UnknownsWriter::disabled()
+    };
 
     // Load hash dictionary if provided
     let mut hash_dict = hash::HashDictionary::new();
@@ -117,7 +129,9 @@ fn main() -> Result<()> {
     let mut total_strings = 0usize;
     let mut total_icons = 0usize;
     let mut seen_hashes: HashSet<u64> = HashSet::new();
-    let mut seen_icon_content: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    // Buffer icons until objects are processed (need icon_name → game_id mapping)
+    let mut pending_icons: Vec<(Vec<u8>, String)> = Vec::new(); // (dds_data, icon_path)
 
     for tor_path in &tor_files {
         let filename = tor_path
@@ -229,21 +243,10 @@ fn main() -> Result<()> {
                         }
                     }
 
-                    // Process icon files (DDS -> WebP)
+                    // Buffer icon files for processing after objects (need icon_name → game_id mapping)
                     if let Some(icon_path) = icon_hashes.get(&entry.filename_hash) {
                         if dds::is_dds(&data) {
-                            match dds::convert_to_webp(&data, icon_path) {
-                                Ok(icon) => {
-                                    // Deduplicate by content hash
-                                    if !seen_icon_content.contains_key(&icon.content_hash) {
-                                        seen_icon_content.insert(icon.content_hash.clone(), icon.icon_name.clone());
-                                        if dds::save_icon(&icon, &args.icons_output).is_ok() {
-                                            total_icons += 1;
-                                        }
-                                    }
-                                }
-                                Err(_) => {}
-                            }
+                            pending_icons.push((data.clone(), icon_path.clone()));
                         }
                     }
                 }
@@ -260,6 +263,59 @@ fn main() -> Result<()> {
     }
 
     main_pb.finish_and_clear();
+
+    // Process buffered icons now that we have the icon_name → game_id mapping
+    if args.icons && !pending_icons.is_empty() {
+        println!("\nProcessing {} icons...", pending_icons.len());
+
+        // Get mapping: icon_name (SWTOR's) → game_id (ours)
+        let icon_mapping = db.get_icon_mapping()?;
+        println!("  Icon mapping entries: {}", icon_mapping.len());
+
+        let mut seen_content: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut unmapped_icons = 0usize;
+
+        for (dds_data, icon_path) in &pending_icons {
+            match dds::convert_to_webp(dds_data, icon_path) {
+                Ok(mut icon) => {
+                    // Deduplicate by content hash
+                    if seen_content.contains_key(&icon.content_hash) {
+                        continue;
+                    }
+
+                    // Extract icon_name from path: "/resources/gfx/icons/abl_foo.dds" → "abl_foo"
+                    let icon_name = icon_path
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(icon_path)
+                        .trim_end_matches(".dds");
+
+                    // Look up game_id from object that references this icon
+                    if let Some(game_id) = icon_mapping.get(icon_name) {
+                        // Use game_id as the icon filename
+                        icon.icon_id = game_id.clone();
+                    } else {
+                        // Fallback: keep original hash-based naming
+                        unmapped_icons += 1;
+                        unknowns_writer.record(unknowns::Unknown::UnmappedIcon {
+                            icon_name: icon_name.to_string(),
+                            source_file: icon_path.clone(),
+                        });
+                    }
+
+                    seen_content.insert(icon.content_hash.clone(), icon.icon_id.clone());
+                    if dds::save_icon(&icon, &args.icons_output).is_ok() {
+                        total_icons += 1;
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+
+        if unmapped_icons > 0 {
+            println!("  Unmapped icons (fallback naming): {}", unmapped_icons);
+        }
+    }
 
     // Print summary
     let stats = db.stats()?;
@@ -278,6 +334,13 @@ fn main() -> Result<()> {
         println!();
         println!("  Icons: {} (deduplicated)", total_icons);
         println!("    Output: {}", args.icons_output.display());
+    }
+
+    // Finalize unknowns tracker
+    if args.unknowns.is_some() {
+        unknowns_writer.finalize()?;
+        println!();
+        println!("  Unknowns: {}", args.unknowns.as_ref().unwrap().display());
     }
 
     Ok(())

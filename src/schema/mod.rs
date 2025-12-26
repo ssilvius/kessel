@@ -7,17 +7,25 @@ use serde_json::Value;
 /// Generic game object extracted from GOM
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GameObject {
-    /// Global unique identifier
+    /// Global unique identifier (from GOM header)
     pub guid: String,
 
     /// Fully qualified name (e.g., "qst.class.warrior.act1.the_hunt")
     pub fqn: String,
 
+    /// Compound ID: sha256(fqn:guid)[0:16] - deterministic, collision-resistant
+    /// Used for consistent naming of all related assets (icons, etc.)
+    pub game_id: String,
+
     /// Object kind/type (e.g., "Quest", "Ability", "Item", "Npc")
     pub kind: String,
 
-    /// Visual reference / icon name (extracted from payload)
+    /// Visual reference / icon name (extracted from payload, SWTOR's naming)
     pub icon_name: Option<String>,
+
+    /// String table ID (id2) for looking up localized name/description
+    /// Extracted from CE marker after CF 400000115CE87488 (string table type)
+    pub string_id: Option<u32>,
 
     /// Schema version
     pub version: u32,
@@ -36,6 +44,7 @@ impl GameObject {
     /// - FQN directly from the object
     /// - Kind extracted from FQN prefix
     /// - GUID extracted from header bytes (first 8 bytes as hex)
+    /// - game_id = sha256(fqn:guid)[0:16] for consistent asset naming
     /// - Payload stored as base64 in JSON for later parsing
     pub fn from_gom(gom: &GomObject) -> Self {
         // Extract kind from FQN prefix (e.g., "itm" from "itm.gen.lots...")
@@ -53,6 +62,7 @@ impl GameObject {
                 "plc" => "Placeable",
                 "dyn" => "Dynamic",
                 "hyd" => "Hydra",
+                "tal" => "Talent",
                 other => other,
             }
         } else {
@@ -71,6 +81,9 @@ impl GameObject {
             String::new()
         };
 
+        // Compute game_id: sha256(fqn:guid)[0:16] - deterministic compound ID
+        let game_id = crate::hash::compute_game_id(&gom.fqn, &guid);
+
         // Extract strings from payload for searchability
         let strings = gom.extract_strings();
 
@@ -81,6 +94,9 @@ impl GameObject {
         } else {
             Self::extract_visual_ref(&gom.payload)
         };
+
+        // Extract string_id from CE marker after string table type
+        let string_id = Self::extract_string_id(&gom.payload);
 
         // Encode raw payload as base64 for later analysis
         use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
@@ -93,17 +109,57 @@ impl GameObject {
             "payload_size": gom.payload.len(),
             "payload_b64": payload_b64,
             "strings": strings,
+            "string_id": string_id,
         });
 
         Self {
             guid,
             fqn: gom.fqn.clone(),
+            game_id,
             kind,
             icon_name,
+            string_id,
             version: 1,
             revision: 1,
             json,
         }
+    }
+
+    /// Extract string_id from payload by finding CE marker after string table type.
+    /// Pattern: CF 400000115CE87488 (string table type) followed by 02 CE <4-byte LE id>
+    /// Valid string IDs are in range 145000-1200000 based on STB extraction.
+    fn extract_string_id(payload: &[u8]) -> Option<u32> {
+        // String table type marker: CF 40 00 00 11 5C E8 74 88
+        const STRING_TABLE_TYPE: [u8; 9] = [0xCF, 0x40, 0x00, 0x00, 0x11, 0x5C, 0xE8, 0x74, 0x88];
+        const MIN_STRING_ID: u32 = 145_000;
+        const MAX_STRING_ID: u32 = 1_200_000;
+
+        // Search for the string table type marker
+        for i in 0..payload.len().saturating_sub(STRING_TABLE_TYPE.len() + 6) {
+            if payload[i..].starts_with(&STRING_TABLE_TYPE) {
+                // After CF + type ID (9 bytes), expect: 02 CE <4-byte LE>
+                let after_type = i + STRING_TABLE_TYPE.len();
+                if after_type + 6 <= payload.len()
+                    && payload[after_type] == 0x02
+                    && payload[after_type + 1] == 0xCE
+                {
+                    let id_bytes = &payload[after_type + 2..after_type + 6];
+                    let string_id = u32::from_le_bytes([
+                        id_bytes[0],
+                        id_bytes[1],
+                        id_bytes[2],
+                        id_bytes[3],
+                    ]);
+
+                    // Validate it's in the expected range
+                    if string_id >= MIN_STRING_ID && string_id <= MAX_STRING_ID {
+                        return Some(string_id);
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     /// Extract visual reference / icon name from payload.
