@@ -126,6 +126,18 @@ impl Archive {
         Ok(self.entries.iter())
     }
 
+    /// Read the per-file header (metadata before the actual file data)
+    pub fn read_entry_header(&mut self, entry: &FileEntry) -> Result<Vec<u8>> {
+        if entry.header_size == 0 {
+            return Ok(Vec::new());
+        }
+
+        self.reader.seek(SeekFrom::Start(entry.position))?;
+        let mut header = vec![0u8; entry.header_size as usize];
+        self.reader.read_exact(&mut header)?;
+        Ok(header)
+    }
+
     pub fn read_entry(&mut self, entry: &FileEntry) -> Result<Vec<u8>> {
         // Seek to file position (skip header)
         self.reader.seek(SeekFrom::Start(entry.position + entry.header_size as u64))?;

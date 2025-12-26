@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 mod db;
+mod dds;
 mod hash;
 mod myp;
 mod pbuk;
@@ -31,6 +32,14 @@ struct Args {
     /// Only process specific file types (quest, ability, item, npc)
     #[arg(short, long)]
     filter: Option<Vec<String>>,
+
+    /// Extract ability icons to WebP format
+    #[arg(long)]
+    icons: bool,
+
+    /// Output directory for icons (default: ./icons)
+    #[arg(long, default_value = "icons")]
+    icons_output: PathBuf,
 
     /// Verbose output (show debug info)
     #[arg(short, long)]
@@ -61,6 +70,18 @@ fn main() -> Result<()> {
         if stb::should_extract_stb(path) {
             stb_hashes.insert(hash);
         }
+    }
+
+    // Build set of icon file hashes to extract
+    let mut icon_hashes: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
+    if args.icons {
+        for (hash, path) in hash_dict.paths_matching("/gfx/icons/") {
+            if path.ends_with(".dds") {
+                icon_hashes.insert(hash, path.to_string());
+            }
+        }
+        // Create icons output directory
+        std::fs::create_dir_all(&args.icons_output)?;
     }
 
     // Initialize database
@@ -94,7 +115,9 @@ fn main() -> Result<()> {
     // Counters
     let mut total_objects = 0usize;
     let mut total_strings = 0usize;
+    let mut total_icons = 0usize;
     let mut seen_hashes: HashSet<u64> = HashSet::new();
+    let mut seen_icon_content: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     for tor_path in &tor_files {
         let filename = tor_path
@@ -176,7 +199,8 @@ fn main() -> Result<()> {
                             if let Ok(objects) = pbuk::parse_dblb_direct(&data) {
                                 for obj in objects {
                                     let game_obj = schema::GameObject::from_gom(&obj);
-                                    if should_extract_object(&game_obj.fqn) && !game_obj.fqn.is_empty()
+                                    if should_extract_object(&game_obj.fqn)
+                                        && !game_obj.fqn.is_empty()
                                     {
                                         if db.insert_object(&game_obj).is_ok() {
                                             total_objects += 1;
@@ -195,11 +219,30 @@ fn main() -> Result<()> {
                         if let Ok(objects) = pbuk::parse_dblb_direct(&data) {
                             for obj in objects {
                                 let game_obj = schema::GameObject::from_gom(&obj);
-                                if should_extract_object(&game_obj.fqn) && !game_obj.fqn.is_empty() {
+                                if should_extract_object(&game_obj.fqn) && !game_obj.fqn.is_empty()
+                                {
                                     if db.insert_object(&game_obj).is_ok() {
                                         total_objects += 1;
                                     }
                                 }
+                            }
+                        }
+                    }
+
+                    // Process icon files (DDS -> WebP)
+                    if let Some(icon_path) = icon_hashes.get(&entry.filename_hash) {
+                        if dds::is_dds(&data) {
+                            match dds::convert_to_webp(&data, icon_path) {
+                                Ok(icon) => {
+                                    // Deduplicate by content hash
+                                    if !seen_icon_content.contains_key(&icon.content_hash) {
+                                        seen_icon_content.insert(icon.content_hash.clone(), icon.icon_name.clone());
+                                        if dds::save_icon(&icon, &args.icons_output).is_ok() {
+                                            total_icons += 1;
+                                        }
+                                    }
+                                }
+                                Err(_) => {}
                             }
                         }
                     }
@@ -231,6 +274,11 @@ fn main() -> Result<()> {
     println!("    NPCs: {}", stats.npcs);
     println!();
     println!("  Strings: {}", stats.strings);
+    if args.icons {
+        println!();
+        println!("  Icons: {} (deduplicated)", total_icons);
+        println!("    Output: {}", args.icons_output.display());
+    }
 
     Ok(())
 }

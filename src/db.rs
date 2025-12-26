@@ -13,6 +13,7 @@ struct PendingObject {
     guid: String,
     fqn: String,
     kind: String,
+    icon_name: Option<String>,
     version: u32,
     revision: u32,
     json: String,
@@ -70,6 +71,7 @@ impl Database {
                 guid TEXT PRIMARY KEY,
                 fqn TEXT NOT NULL,
                 kind TEXT NOT NULL,
+                icon_name TEXT,
                 version INTEGER NOT NULL DEFAULT 0,
                 revision INTEGER NOT NULL DEFAULT 0,
                 json TEXT NOT NULL,
@@ -126,6 +128,7 @@ impl Database {
             guid: obj.guid.clone(),
             fqn: obj.fqn.clone(),
             kind: obj.kind.clone(),
+            icon_name: obj.icon_name.clone(),
             version: obj.version,
             revision: obj.revision,
             json: json_str,
@@ -178,11 +181,12 @@ impl Database {
         {
             let mut stmt = tx.prepare_cached(
                 r#"
-                INSERT INTO objects (guid, fqn, kind, version, revision, json)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                INSERT INTO objects (guid, fqn, kind, icon_name, version, revision, json)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                 ON CONFLICT(guid) DO UPDATE SET
                     fqn = excluded.fqn,
                     kind = excluded.kind,
+                    icon_name = excluded.icon_name,
                     version = excluded.version,
                     revision = excluded.revision,
                     json = excluded.json
@@ -195,6 +199,7 @@ impl Database {
                     obj.guid,
                     obj.fqn,
                     obj.kind,
+                    obj.icon_name,
                     obj.version,
                     obj.revision,
                     obj.json

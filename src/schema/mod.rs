@@ -16,6 +16,9 @@ pub struct GameObject {
     /// Object kind/type (e.g., "Quest", "Ability", "Item", "Npc")
     pub kind: String,
 
+    /// Visual reference / icon name (extracted from payload)
+    pub icon_name: Option<String>,
+
     /// Schema version
     pub version: u32,
 
@@ -71,6 +74,14 @@ impl GameObject {
         // Extract strings from payload for searchability
         let strings = gom.extract_strings();
 
+        // Extract visual reference / icon name from payload
+        // Abilities: icon at start, Talents: icon at end
+        let icon_name = if gom.fqn.starts_with("tal.") {
+            Self::extract_visual_ref_reverse(&gom.payload)
+        } else {
+            Self::extract_visual_ref(&gom.payload)
+        };
+
         // Encode raw payload as base64 for later analysis
         use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
         let payload_b64 = BASE64.encode(&gom.payload);
@@ -88,10 +99,80 @@ impl GameObject {
             guid,
             fqn: gom.fqn.clone(),
             kind,
+            icon_name,
             version: 1,
             revision: 1,
             json,
         }
+    }
+
+    /// Extract visual reference / icon name from payload.
+    /// Looks for pattern: 0x06 <length> <ascii_string> in first 60 bytes.
+    fn extract_visual_ref(payload: &[u8]) -> Option<String> {
+        let search_limit = payload.len().min(60);
+
+        for i in 0..search_limit.saturating_sub(4) {
+            if payload[i] == 0x06 {
+                let length = payload[i + 1] as usize;
+                if length > 4 && length < 60 && i + 2 + length <= payload.len() {
+                    let potential = &payload[i + 2..i + 2 + length];
+                    // Check if ASCII alphanumeric with underscores
+                    if potential.iter().all(|&b| {
+                        (b >= b'a' && b <= b'z')
+                            || (b >= b'A' && b <= b'Z')
+                            || (b >= b'0' && b <= b'9')
+                            || b == b'_'
+                    }) {
+                        if let Ok(s) = std::str::from_utf8(potential) {
+                            // Must contain underscore or be purely alphabetic
+                            if s.contains('_') || s.chars().all(|c| c.is_alphabetic()) {
+                                return Some(s.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Extract visual reference from end of payload (for talents).
+    /// Searches backwards from the last 100 bytes.
+    fn extract_visual_ref_reverse(payload: &[u8]) -> Option<String> {
+        if payload.len() < 10 {
+            return None;
+        }
+
+        // Search the last 100 bytes, backwards
+        let start = payload.len().saturating_sub(100);
+        let mut last_match: Option<String> = None;
+
+        for i in start..payload.len().saturating_sub(4) {
+            if payload[i] == 0x06 {
+                let length = payload[i + 1] as usize;
+                if length > 4 && length < 60 && i + 2 + length <= payload.len() {
+                    let potential = &payload[i + 2..i + 2 + length];
+                    // Check if ASCII alphanumeric with underscores
+                    if potential.iter().all(|&b| {
+                        (b >= b'a' && b <= b'z')
+                            || (b >= b'A' && b <= b'Z')
+                            || (b >= b'0' && b <= b'9')
+                            || b == b'_'
+                    }) {
+                        if let Ok(s) = std::str::from_utf8(potential) {
+                            // Must contain underscore or be purely alphabetic
+                            // Skip "str.tal" prefix strings
+                            if !s.starts_with("str.")
+                                && (s.contains('_') || s.chars().all(|c| c.is_alphabetic()))
+                            {
+                                last_match = Some(s.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        last_match
     }
 }
 

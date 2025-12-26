@@ -13,6 +13,10 @@ path = "src/lib.rs"
 name = "kessel"
 path = "src/main.rs"
 
+[[bin]]
+name = "analyze-headers"
+path = "src/bin/analyze_headers.rs"
+
 [dependencies]
 # Archive parsing
 flate2 = "1.0"           # zlib decompression (legacy)
@@ -49,8 +53,8 @@ indicatif = "0.17"
 # Parallel processing
 rayon = "1.8"
 
-# Image processing (DDS → PNG)
-image = "0.25"
+# Image processing (DDS → WebP)
+image = { version = "0.25", features = ["webp"] }
 image_dds = "0.4"
 
 [profile.release]
