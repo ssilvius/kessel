@@ -14,9 +14,51 @@ struct PendingObject {
     fqn: String,
     kind: String,
     icon_name: Option<String>,
+    for_export: bool,
     version: u32,
     revision: u32,
     json: String,
+}
+
+/// Determine if an ability should be exported (not internal/debug)
+fn should_export(fqn: &str) -> bool {
+    // Internal/debug abilities to exclude
+    const EXCLUDED_SLUGS: &[&str] = &[
+        "exit_area",
+        "quick_travel",
+        "emergency_fleet_pass",
+        "priority_transport",
+        "heroic_moment",
+        "legacy_",
+        "mount_",
+        "ooc_heal", // out of combat heal
+        "ooc_regen",
+        "rest",
+        "revive",
+        "holocom",
+        "shuttle",
+        "taxi",
+        "speeder",
+        "vehicle",
+        "rocket_boost",
+        "unity", // legacy ability
+    ];
+
+    let lower = fqn.to_lowercase();
+
+    // Skip companion abilities entirely
+    if lower.contains(".companion.") {
+        return false;
+    }
+
+    // Check for excluded slugs
+    for slug in EXCLUDED_SLUGS {
+        if lower.contains(slug) {
+            return false;
+        }
+    }
+
+    true
 }
 
 /// Serialized string ready for batch insert
@@ -72,6 +114,7 @@ impl Database {
                 fqn TEXT NOT NULL,
                 kind TEXT NOT NULL,
                 icon_name TEXT,
+                for_export INTEGER NOT NULL DEFAULT 1,
                 version INTEGER NOT NULL DEFAULT 0,
                 revision INTEGER NOT NULL DEFAULT 0,
                 json TEXT NOT NULL,
@@ -80,6 +123,7 @@ impl Database {
 
             CREATE INDEX IF NOT EXISTS idx_objects_fqn ON objects(fqn);
             CREATE INDEX IF NOT EXISTS idx_objects_kind ON objects(kind);
+            CREATE INDEX IF NOT EXISTS idx_objects_for_export ON objects(for_export);
 
             -- Localized strings table (from STB files)
             CREATE TABLE IF NOT EXISTS strings (
@@ -129,6 +173,7 @@ impl Database {
             fqn: obj.fqn.clone(),
             kind: obj.kind.clone(),
             icon_name: obj.icon_name.clone(),
+            for_export: should_export(&obj.fqn),
             version: obj.version,
             revision: obj.revision,
             json: json_str,
@@ -181,12 +226,13 @@ impl Database {
         {
             let mut stmt = tx.prepare_cached(
                 r#"
-                INSERT INTO objects (guid, fqn, kind, icon_name, version, revision, json)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                INSERT INTO objects (guid, fqn, kind, icon_name, for_export, version, revision, json)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                 ON CONFLICT(guid) DO UPDATE SET
                     fqn = excluded.fqn,
                     kind = excluded.kind,
                     icon_name = excluded.icon_name,
+                    for_export = excluded.for_export,
                     version = excluded.version,
                     revision = excluded.revision,
                     json = excluded.json
@@ -200,6 +246,7 @@ impl Database {
                     obj.fqn,
                     obj.kind,
                     obj.icon_name,
+                    obj.for_export,
                     obj.version,
                     obj.revision,
                     obj.json
