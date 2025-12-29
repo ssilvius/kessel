@@ -4,6 +4,7 @@
 
 pub mod db;
 pub mod dds;
+pub mod grammar;
 pub mod hash;
 pub mod myp;
 pub mod pbuk;

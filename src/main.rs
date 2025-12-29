@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 mod db;
 mod dds;
+mod grammar;
 mod hash;
 mod myp;
 mod pbuk;
@@ -61,6 +62,15 @@ fn main() -> Result<()> {
         unknowns::UnknownsWriter::disabled()
     };
 
+    // Load embedded grammar rules (compiled into binary)
+    let grammar = match grammar::Grammar::from_embedded() {
+        Ok(g) => Some(std::sync::Arc::new(g)),
+        Err(e) => {
+            eprintln!("Warning: Failed to load grammar rules: {}", e);
+            None
+        }
+    };
+
     // Load hash dictionary if provided
     let mut hash_dict = hash::HashDictionary::new();
     let mut bucket_hashes: HashSet<u64> = HashSet::new();
@@ -96,8 +106,8 @@ fn main() -> Result<()> {
         std::fs::create_dir_all(&args.icons_output)?;
     }
 
-    // Initialize database
-    let db = db::Database::new(&args.output)?;
+    // Initialize database with optional grammar rules
+    let db = db::Database::with_grammar(&args.output, grammar)?;
     db.init_schema()?;
 
     // Find all .tor files
@@ -264,11 +274,11 @@ fn main() -> Result<()> {
 
     main_pb.finish_and_clear();
 
-    // Process buffered icons now that we have the icon_name → game_id mapping
+    // Process buffered icons now that we have the icon_name → (game_id, kind) mapping
     if args.icons && !pending_icons.is_empty() {
         println!("\nProcessing {} icons...", pending_icons.len());
 
-        // Get mapping: icon_name (SWTOR's) → game_id (ours)
+        // Get mapping: icon_name (SWTOR's) → (game_id, kind)
         let icon_mapping = db.get_icon_mapping()?;
         println!("  Icon mapping entries: {}", icon_mapping.len());
 
@@ -284,28 +294,52 @@ fn main() -> Result<()> {
                     }
 
                     // Extract icon_name from path: "/resources/gfx/icons/abl_foo.dds" → "abl_foo"
+                    // Lowercase for case-insensitive matching with DB icon_names
                     let icon_name = icon_path
                         .rsplit('/')
                         .next()
                         .unwrap_or(icon_path)
-                        .trim_end_matches(".dds");
+                        .trim_end_matches(".dds")
+                        .to_lowercase();
 
-                    // Look up game_id from object that references this icon
-                    if let Some(game_id) = icon_mapping.get(icon_name) {
-                        // Use game_id as the icon filename
-                        icon.icon_id = game_id.clone();
+                    // Skip if we already processed this exact content
+                    if seen_content.contains_key(&icon.content_hash) {
+                        continue;
+                    }
+                    seen_content.insert(icon.content_hash.clone(), icon_name.clone());
+
+                    // Look up all objects that reference this icon
+                    if let Some(objects) = icon_mapping.get(&icon_name) {
+                        // Save icon for ALL objects that reference it (handles shared icons)
+                        for (game_id, kind) in objects {
+                            let subdir = match kind.as_str() {
+                                "Ability" => "abilities",
+                                "Item" => "items",
+                                "Npc" => "npcs",
+                                "Quest" => "quests",
+                                "Achievement" => "achievements",
+                                "Codex" => "codex",
+                                "Schematic" => "schematics",
+                                "Talent" => "talents",
+                                _ => "misc",
+                            };
+                            let output_dir = args.icons_output.join(subdir);
+                            icon.icon_id = game_id.clone();
+                            if dds::save_icon(&icon, &output_dir).is_ok() {
+                                total_icons += 1;
+                            }
+                        }
                     } else {
-                        // Fallback: keep original hash-based naming
+                        // Unmapped icon - save to misc with original hash
                         unmapped_icons += 1;
                         unknowns_writer.record(unknowns::Unknown::UnmappedIcon {
                             icon_name: icon_name.to_string(),
                             source_file: icon_path.clone(),
                         });
-                    }
-
-                    seen_content.insert(icon.content_hash.clone(), icon.icon_id.clone());
-                    if dds::save_icon(&icon, &args.icons_output).is_ok() {
-                        total_icons += 1;
+                        let output_dir = args.icons_output.join("misc");
+                        if dds::save_icon(&icon, &output_dir).is_ok() {
+                            total_icons += 1;
+                        }
                     }
                 }
                 Err(_) => {}

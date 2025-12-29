@@ -1,0 +1,74 @@
+# SWTOR Description Grammar Rules
+# Applied during kessel extraction to clean template syntax
+#
+# Pattern types:
+# - template: Regex for SWTOR's <<N[...]>> syntax
+# - literal: Exact string replacement
+# - cleanup: Post-processing regex (applied after templates)
+
+# Version for cache invalidation
+version = 1
+
+# Template patterns: <<N[singular/plural/plural]>>
+# The 'capture' field extracts a word from the template (e.g., "seconds")
+# The 'map' converts that word to natural phrasing
+[[templates]]
+# Duration templates: <<1[%d seconds/%d second/%d seconds]>> -> "time"
+pattern = '<<\d+\[%d\s+(\w+)[^]]*\]>>'
+capture = 1  # Capture group index
+map = { seconds = "time", second = "time", meters = "range", meter = "range", charges = "charges", charge = "a charge", stacks = "stacks", stack = "a stack" }
+fallback = ""  # If no map match, use this
+
+[[templates]]
+# Simple value placeholders: <<N>> -> ""
+# These are damage/healing values shown elsewhere in tooltips
+pattern = '<<\d+>>'
+replacement = ""
+
+# Literal replacements (exact string match)
+[[literals]]
+# Remove awkward articles before removed numbers
+find = " an additional "
+replace = " additional "
+
+[[literals]]
+find = " a additional "
+replace = " additional "
+
+[[literals]]
+find = " deals  "  # Double space from removed <<N>>
+replace = " deals "
+
+[[literals]]
+find = " for  "
+replace = " for "
+
+[[literals]]
+find = "  and "
+replace = " and "
+
+[[literals]]
+find = "  to "
+replace = " to "
+
+[[literals]]
+find = "  the "
+replace = " the "
+
+# Cleanup patterns (regex, applied after all other processing)
+[[cleanup]]
+# Collapse multiple spaces
+pattern = '\s{2,}'
+replacement = " "
+
+[[cleanup]]
+# Remove leading/trailing whitespace on lines
+pattern = '^\s+|\s+$'
+replacement = ""
+
+[[cleanup]]
+# Remove "over time" when followed by "and" (redundant phrasing)
+# e.g., "over time and deals" -> "and deals"
+# Note: "slows the target over time." stays as-is (no "and")
+pattern = 'over time and '
+replacement = "and "

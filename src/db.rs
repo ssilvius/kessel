@@ -3,8 +3,9 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use crate::grammar::Grammar;
 use crate::schema::GameObject;
 use crate::stb::StbEntry;
 
@@ -78,6 +79,7 @@ pub struct Database {
     batch_size: usize,
     pending_objects: Mutex<Vec<PendingObject>>,
     pending_strings: Mutex<Vec<PendingString>>,
+    grammar: Option<Arc<Grammar>>,
 }
 
 pub struct Stats {
@@ -90,6 +92,10 @@ pub struct Stats {
 
 impl Database {
     pub fn new(path: &Path) -> Result<Self> {
+        Self::with_grammar(path, None)
+    }
+
+    pub fn with_grammar(path: &Path, grammar: Option<Arc<Grammar>>) -> Result<Self> {
         let conn = Connection::open(path).context("Failed to create database")?;
 
         // Performance optimizations
@@ -103,6 +109,7 @@ impl Database {
             batch_size: 5000,
             pending_objects: Mutex::new(Vec::with_capacity(5000)),
             pending_strings: Mutex::new(Vec::with_capacity(5000)),
+            grammar,
         })
     }
 
@@ -202,13 +209,21 @@ impl Database {
     }
 
     /// Queue a string for batch insert
+    /// If grammar rules are configured, applies them to clean the text
     pub fn insert_string(&self, fqn: &str, locale: &str, entry: &StbEntry) -> Result<()> {
+        // Apply grammar rules if configured
+        let cleaned_text = if let Some(ref grammar) = self.grammar {
+            grammar.clean(&entry.text)
+        } else {
+            entry.text.clone()
+        };
+
         let pending = PendingString {
             fqn: fqn.to_string(),
             locale: locale.to_string(),
             id1: entry.id1,
             id2: entry.id2,
-            text: entry.text.clone(),
+            text: cleaned_text,
             version: entry.version,
         };
 
@@ -354,25 +369,29 @@ impl Database {
         Ok(())
     }
 
-    /// Build mapping from icon_name → game_id for all objects with icons.
-    /// Used to name icon files by their owner's game_id instead of SWTOR's arbitrary naming.
-    pub fn get_icon_mapping(&self) -> Result<std::collections::HashMap<String, String>> {
+    /// Build mapping from icon_name → Vec<(game_id, kind)> for all objects with icons.
+    /// Returns ALL objects per icon (shared icons get multiple game_ids).
+    pub fn get_icon_mapping(&self) -> Result<std::collections::HashMap<String, Vec<(String, String)>>> {
         self.flush()?; // Ensure all pending objects are written
 
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT icon_name, game_id FROM objects WHERE icon_name IS NOT NULL"
+            "SELECT icon_name, game_id, kind FROM objects WHERE icon_name IS NOT NULL"
         )?;
 
-        let mut mapping = std::collections::HashMap::new();
+        let mut mapping: std::collections::HashMap<String, Vec<(String, String)>> = std::collections::HashMap::new();
         let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         })?;
 
         for row in rows {
-            let (icon_name, game_id) = row?;
-            // First object wins - most specific FQN gets the icon
-            mapping.entry(icon_name).or_insert(game_id);
+            let (icon_name, game_id, kind) = row?;
+            // Lowercase for case-insensitive matching with file paths
+            mapping.entry(icon_name.to_lowercase()).or_default().push((game_id, kind));
         }
 
         Ok(mapping)

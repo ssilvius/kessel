@@ -1,6 +1,6 @@
 # Kessel
 
-SWTOR data miner - extracts game objects and icons from .tor archives.
+SWTOR data miner - extracts game objects, strings, and icons from .tor archives.
 
 Named after the spice mines of Kessel, continuing the Star Wars mining theme from [bespin](https://github.com/kbatten/bespin).
 
@@ -8,8 +8,16 @@ Named after the spice mines of Kessel, continuing the Star Wars mining theme fro
 
 Kessel reads SWTOR's `.tor` archive files and extracts:
 
-- **Game Objects** → SQLite database (164,492 quality-filtered objects)
-- **Strings** → Localized text from STB files (554,980 strings)
+- **Game Objects** -> SQLite database (165k+ quality-filtered objects)
+- **Strings** -> Localized text from STB files (557k+ strings)
+- **Icons** -> DDS to WebP conversion with game_id naming
+
+### Grammar Processing
+
+Descriptions are automatically cleaned using embedded grammar rules:
+- Removes SWTOR template syntax (`<<1>>`, `<<N[singular|plural]>>`)
+- Cleans redundant phrasing
+- Rules defined in `grammar.toml`, embedded at compile time
 
 ## Extraction Results
 
@@ -17,17 +25,66 @@ Quality-filtered extraction (see `docs/STATUS.md` for details):
 
 | Type | Count | Notes |
 |------|-------|-------|
-| Items | 94,011 | Gear, mods, tacticals, consumables |
-| NPCs | 34,582 | Companions, quest NPCs, vendors |
-| Schematics | 13,773 | Crafting recipes |
-| Quests | 10,130 | Story, side, daily quests |
-| Achievements | 6,107 | All achievement types |
-| Codex | 3,152 | Lore entries |
-| Abilities | 2,712 | Class, companion, legacy abilities |
-| **Total** | **164,492** | |
-| Strings | 554,980 | Localized text (en-us) |
+| Items | 98,692 | Gear, mods, tacticals, consumables |
+| NPCs | 36,242 | Companions, quest NPCs, vendors |
+| Quests | 11,692 | Story, side, daily quests |
+| Abilities | 2,893 | Class, companion, legacy abilities |
+| **Total Objects** | **174,824** | |
+| Strings | 557,325 | Localized text (en-us) |
+| Icons | 900+ | WebP format, named by game_id |
 
-Object types kept (by FQN prefix): `abl`, `itm`, `npc`, `schem`, `qst`, `cdx`, `ach`, `mpn`
+Object types kept (by FQN prefix): `abl`, `itm`, `npc`, `schem`, `qst`, `cdx`, `ach`, `mpn`, `tal`
+
+## Usage
+
+```bash
+# Build
+cd tools/kessel
+cargo build --release
+
+# Extract game objects to SQLite
+./target/release/kessel \
+  --input ~/swtor/assets \
+  --output ~/swtor/data/spice.sqlite \
+  --hashes ~/swtor/data/hashes_filename.txt
+
+# Extract with icons
+./target/release/kessel \
+  --input ~/swtor/assets \
+  --output ~/swtor/data/spice.sqlite \
+  --hashes ~/swtor/data/hashes_filename.txt \
+  --icons \
+  --icons-output ~/swtor/data/icons
+
+# Check results
+sqlite3 ~/swtor/data/spice.sqlite "
+  SELECT kind, COUNT(*) as cnt FROM objects
+  GROUP BY kind ORDER BY cnt DESC;
+"
+```
+
+### CLI Options
+
+| Flag | Description |
+|------|-------------|
+| `-i, --input <DIR>` | Directory containing .tor files (required) |
+| `-o, --output <PATH>` | Output SQLite database path (default: raw.sqlite) |
+| `-H, --hashes <FILE>` | Hash dictionary file from Jedipedia |
+| `--icons` | Extract icons to WebP format |
+| `--icons-output <DIR>` | Output directory for icons (default: ./icons) |
+| `-v, --verbose` | Verbose output |
+| `--unknowns <FILE>` | Output file for unknown patterns (JSONL) |
+
+## Icon Extraction
+
+Icons are extracted from DDS files in the .tor archives:
+
+1. **Source**: `/resources/gfx/icons/*.dds` (DXT1/BC1 compressed, 52x52px)
+2. **Matching**: Case-insensitive match between file basename and object `icon_name`
+3. **Output**: WebP format, named by `game_id` (e.g., `c27c91eabaf927f3.webp`)
+4. **Organization**: Subdirectories by object kind (`abilities/`, `items/`, `talents/`, etc.)
+
+Icons are saved for ALL objects that reference them (shared icons get multiple copies with different game_ids).
 
 ## Binary Format Specifications
 
@@ -37,12 +94,12 @@ SWTOR uses a layered container format. Understanding this is key to extracting g
 
 ```
 .tor file (MYP archive)
-  └── Contains many files, identified by hash
-        └── PBUK container (game object bundles)
-              └── DBLB wrapper (16 bytes)
-                    └── DBLB object block
-                          └── Individual GOM objects
-                                └── 42-byte header + FQN + ZSTD payload
+  -> Contains many files, identified by hash
+       -> PBUK container (game object bundles)
+             -> DBLB wrapper (16 bytes)
+                   -> DBLB object block
+                         -> Individual GOM objects
+                               -> 42-byte header + FQN + ZSTD payload
 ```
 
 ### MYP Archive Format (.tor files)
@@ -170,74 +227,70 @@ Common Fully Qualified Name prefixes:
 | `cbt.` | Combat |
 | `veh.` | Vehicle |
 | `mtx.` | Cartel Market |
-
-### Icon Files
-
-Icons are stored as DDS (DirectDraw Surface) files:
-- Format: DXT1 (BC1) compressed
-- Typical size: 52x52 pixels
-- Path pattern: `/resources/gfx/icons/*.dds`
-- Found in: `swtor_main_gfx_*.tor` archives
-
-## Usage
-
-```bash
-# Build
-cargo build --release
-
-# Extract game objects to SQLite
-./target/release/kessel \
-  --input ~/swtor/assets \
-  --output ~/swtor/data/kessel.sqlite \
-  --hashes ~/swtor/data/hashes_filename.txt
-
-# Extract icons (example script)
-cargo run --release --example extract_icons
-```
+| `tal.` | Talent |
 
 ## Project Structure
 
 ```
 tools/kessel/
-├── Cargo.toml
-├── README.md
-├── docs/
-│   ├── STATUS.md       # Current extraction results
-│   └── MAPPINGS.md     # File format mappings reference
-├── src/
-│   ├── main.rs         # CLI + quality filters
-│   ├── lib.rs          # Library exports
-│   ├── myp.rs          # MYP archive reader
-│   ├── pbuk.rs         # PBUK/DBLB/ZSTD parser
-│   ├── stb.rs          # STB string table parser
-│   ├── hash.rs         # Hash dictionary loader
-│   ├── db.rs           # SQLite output
-│   └── schema/
-│       └── mod.rs      # GameObject struct
-└── tests/              # Integration tests
++-- Cargo.toml
++-- README.md
++-- grammar.toml        # Description cleanup rules (embedded at compile time)
++-- docs/
+|   +-- STATUS.md       # Current extraction results
+|   +-- MAPPINGS.md     # File format mappings reference
++-- src/
+|   +-- main.rs         # CLI + quality filters
+|   +-- lib.rs          # Library exports
+|   +-- myp.rs          # MYP archive reader
+|   +-- pbuk.rs         # PBUK/DBLB/ZSTD parser
+|   +-- stb.rs          # STB string table parser
+|   +-- hash.rs         # Hash dictionary loader
+|   +-- db.rs           # SQLite output
+|   +-- dds.rs          # DDS to WebP conversion
+|   +-- grammar.rs      # Description grammar processor
+|   +-- unknowns.rs     # Unknown pattern tracking
+|   +-- schema/
+|       +-- mod.rs      # GameObject struct
++-- tests/              # Integration tests
 ```
 
 ## Output Schema
 
 ```sql
 CREATE TABLE objects (
-    fqn TEXT PRIMARY KEY,
+    guid INTEGER PRIMARY KEY,
+    fqn TEXT NOT NULL UNIQUE,
+    game_id TEXT NOT NULL,      -- sha256(fqn:guid)[0:16]
     kind TEXT NOT NULL,
-    guid TEXT,
-    payload BLOB
+    icon_name TEXT,
+    string_id INTEGER,
+    for_export INTEGER DEFAULT 1,
+    version INTEGER DEFAULT 0,
+    revision INTEGER DEFAULT 0,
+    json TEXT,                  -- Parsed payload data
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE strings (
     fqn TEXT PRIMARY KEY,
     locale TEXT NOT NULL,
-    id1 INTEGER,
-    id2 INTEGER,
-    version INTEGER,
-    text TEXT NOT NULL
+    id1 INTEGER NOT NULL,
+    id2 INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    version INTEGER DEFAULT 0
 );
 
+-- Views for common queries
+CREATE VIEW abilities AS SELECT * FROM objects WHERE kind = 'Ability' OR fqn LIKE 'abl.%';
+CREATE VIEW items AS SELECT * FROM objects WHERE kind = 'Item' OR fqn LIKE 'itm.%';
+CREATE VIEW npcs AS SELECT * FROM objects WHERE kind = 'Npc' OR fqn LIKE 'npc.%';
+CREATE VIEW quests AS SELECT * FROM objects WHERE kind = 'Quest' OR fqn LIKE 'qst.%';
+
 CREATE INDEX idx_objects_kind ON objects(kind);
+CREATE INDEX idx_objects_icon_name ON objects(icon_name);
 CREATE INDEX idx_strings_locale ON strings(locale);
+CREATE INDEX idx_strings_id2 ON strings(id2);
 ```
 
 ## Dependencies
@@ -245,8 +298,10 @@ CREATE INDEX idx_strings_locale ON strings(locale);
 - `zstd` - ZSTD decompression (current SWTOR format)
 - `flate2` - zlib decompression (legacy format)
 - `rusqlite` - SQLite output
-- `image` + `image_dds` - DDS → PNG conversion
+- `image` + `image_dds` - DDS to WebP conversion
 - `quick-xml` + `serde_json` - XML parsing
+- `regex` - Grammar rule processing
+- `toml` - Grammar configuration parsing
 
 ## References
 
