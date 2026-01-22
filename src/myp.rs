@@ -45,6 +45,7 @@ pub struct FileEntry {
     pub compressed_size: u32,
     pub uncompressed_size: u32,
     pub filename_hash: u64,
+    #[allow(dead_code)]
     pub crc32: u32,
     pub compression: u16,
 }
@@ -127,6 +128,8 @@ impl Archive {
     }
 
     /// Read the per-file header (metadata before the actual file data)
+    /// Used by analyze-headers binary for debugging DDS metadata
+    #[allow(dead_code)]
     pub fn read_entry_header(&mut self, entry: &FileEntry) -> Result<Vec<u8>> {
         if entry.header_size == 0 {
             return Ok(Vec::new());

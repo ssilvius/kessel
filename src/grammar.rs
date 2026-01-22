@@ -16,6 +16,7 @@ use std::path::Path;
 /// Grammar configuration loaded from TOML
 #[derive(Debug, Deserialize)]
 pub struct GrammarConfig {
+    #[allow(dead_code)]
     pub version: u32,
     #[serde(default)]
     pub templates: Vec<TemplateRule>,
@@ -134,15 +135,6 @@ impl Grammar {
             literals: config.literals,
             cleanup,
         })
-    }
-
-    /// Create a no-op grammar (for when config file is missing)
-    pub fn disabled() -> Self {
-        Self {
-            templates: vec![],
-            literals: vec![],
-            cleanup: vec![],
-        }
     }
 
     /// Apply all grammar rules to a string

@@ -72,8 +72,54 @@ sqlite3 ~/swtor/data/spice.sqlite "
 | `-H, --hashes <FILE>` | Hash dictionary file from Jedipedia |
 | `--icons` | Extract icons to WebP format |
 | `--icons-output <DIR>` | Output directory for icons (default: ./icons) |
+| `--unfiltered` | Extract all objects without content filtering (filter in ETL instead) |
 | `-v, --verbose` | Verbose output |
 | `--unknowns <FILE>` | Output file for unknown patterns (JSONL) |
+
+### Unfiltered Mode
+
+By default, Kessel applies content-based filters to skip internal objects:
+- NPC abilities (`abl.npc.*`, `abl.operation.*`, etc.)
+- Internal items (`itm.loot.*`, `itm.npc.*`, etc.)
+- Blueprint NPCs (`npc.blueprints.*`, etc.)
+
+Use `--unfiltered` to extract everything and filter in ETL scripts instead:
+
+```bash
+./target/release/kessel \
+  --input ~/swtor/assets \
+  --output ~/swtor/data/spice.unfiltered.sqlite \
+  --hashes ~/swtor/data/hashes_filename.txt \
+  --unfiltered
+```
+
+This is useful when:
+- Investigating missing objects (abilities, items, etc.)
+- Creating a complete reference database
+- Debugging extraction issues
+
+The `--unfiltered` flag still applies:
+- Versioned duplicate filter (FQN with `/`)
+- Test/debug/deprecated content filter
+- Prefix type filter: only known prefixes are extracted
+  (`abl`, `tal`, `itm`, `npc`, `schem`, `qst`, `cdx`, `ach`, `mpn`, `pkg`, `loot`, `rew`, `cnv`, `apc`, `class`)
+
+**Prefix types**:
+- `abl` - Abilities (player and NPC)
+- `tal` - Talents (discipline tree choices)
+- `itm` - Items (equipment, consumables)
+- `npc` - NPCs (companions, enemies, vendors)
+- `qst` - Quests/Missions
+- `cdx` - Codex entries
+- `ach` - Achievements
+- `schem` - Schematics (crafting)
+- `mpn` - Map pins/points
+- `pkg` - Packages (bundles)
+- `loot` - Loot tables
+- `rew` - Rewards
+- `cnv` - Conversations
+- `apc` - Appearances (character customization)
+- `class` - Class definitions
 
 ## Icon Extraction
 

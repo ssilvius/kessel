@@ -50,6 +50,11 @@ struct Args {
     /// Output file for unknown patterns (JSONL format)
     #[arg(long)]
     unknowns: Option<PathBuf>,
+
+    /// Extract all objects without content filtering (filter in ETL instead)
+    /// Only excludes versioned duplicates and test/debug content
+    #[arg(long)]
+    unfiltered: bool,
 }
 
 fn main() -> Result<()> {
@@ -136,7 +141,6 @@ fn main() -> Result<()> {
 
     // Counters
     let mut total_objects = 0usize;
-    let mut total_strings = 0usize;
     let mut total_icons = 0usize;
     let mut seen_hashes: HashSet<u64> = HashSet::new();
 
@@ -203,12 +207,7 @@ fn main() -> Result<()> {
                                         "{}.{}.{}",
                                         stb_file.fqn_prefix, stb_entry.id1, stb_entry.id2
                                     );
-                                    if db
-                                        .insert_string(&string_fqn, &stb_file.locale, stb_entry)
-                                        .is_ok()
-                                    {
-                                        total_strings += 1;
-                                    }
+                                    let _ = db.insert_string(&string_fqn, &stb_file.locale, stb_entry);
                                 }
                             }
                         }
@@ -216,14 +215,14 @@ fn main() -> Result<()> {
                     // Process bucket files (PBUK format)
                     else if is_bucket {
                         if pbuk::is_pbuk(&data) {
-                            if let Ok(count) = process_pbuk(&data, &db) {
+                            if let Ok(count) = process_pbuk(&data, &db, args.unfiltered) {
                                 total_objects += count;
                             }
                         } else if pbuk::is_dblb(&data) {
                             if let Ok(objects) = pbuk::parse_dblb_direct(&data) {
                                 for obj in objects {
                                     let game_obj = schema::GameObject::from_gom(&obj);
-                                    if should_extract_object(&game_obj.fqn)
+                                    if should_extract_object(&game_obj.fqn, args.unfiltered)
                                         && !game_obj.fqn.is_empty()
                                     {
                                         if db.insert_object(&game_obj).is_ok() {
@@ -236,14 +235,14 @@ fn main() -> Result<()> {
                     }
                     // Process loose PBUK/DBLB files
                     else if pbuk::is_pbuk(&data) {
-                        if let Ok(count) = process_pbuk(&data, &db) {
+                        if let Ok(count) = process_pbuk(&data, &db, args.unfiltered) {
                             total_objects += count;
                         }
                     } else if pbuk::is_dblb(&data) {
                         if let Ok(objects) = pbuk::parse_dblb_direct(&data) {
                             for obj in objects {
                                 let game_obj = schema::GameObject::from_gom(&obj);
-                                if should_extract_object(&game_obj.fqn) && !game_obj.fqn.is_empty()
+                                if should_extract_object(&game_obj.fqn, args.unfiltered) && !game_obj.fqn.is_empty()
                                 {
                                     if db.insert_object(&game_obj).is_ok() {
                                         total_objects += 1;
@@ -381,8 +380,9 @@ fn main() -> Result<()> {
 }
 
 /// Check if a GOM object should be extracted based on FQN prefix
-fn should_extract_object(fqn: &str) -> bool {
+fn should_extract_object(fqn: &str, unfiltered: bool) -> bool {
     // Skip versioned duplicates: "abl.foo.bar/17/5" -> only keep base "abl.foo.bar"
+    // Always apply this - versioned paths are duplicates
     if fqn.contains('/') {
         return false;
     }
@@ -392,18 +392,18 @@ fn should_extract_object(fqn: &str) -> bool {
         None => fqn,
     };
 
-    // Must be a known prefix type
+    // Must be a known prefix type (always applied)
     if !matches!(
         prefix,
         "abl" | "tal" | "itm" | "npc" | "schem" | "qst" | "cdx" | "ach" | "mpn"
-        | "pkg" | "loot" | "rew" | "cnv"
+        | "pkg" | "loot" | "rew" | "cnv" | "apc" | "class"
     ) {
         return false;
     }
 
     let parts: Vec<&str> = fqn.split('.').collect();
 
-    // Skip test, debug, deprecated content
+    // Skip test, debug, deprecated content (always applied - this is garbage)
     for part in &parts {
         if matches!(
             *part,
@@ -416,6 +416,14 @@ fn should_extract_object(fqn: &str) -> bool {
     if fqn.contains(".test_") || fqn.contains("_test.") || fqn.contains(".debug_") {
         return false;
     }
+
+    // When --unfiltered, skip content-based filtering and let ETL handle it
+    if unfiltered {
+        return true;
+    }
+
+    // Content-based filters below (only applied when NOT unfiltered)
+    // These can be replicated in ETL scripts for finer control
 
     // Skip internal abilities
     if prefix == "abl" && parts.len() >= 2 {
@@ -493,13 +501,13 @@ fn should_extract_object(fqn: &str) -> bool {
     true
 }
 
-fn process_pbuk(data: &[u8], db: &db::Database) -> Result<usize> {
+fn process_pbuk(data: &[u8], db: &db::Database, unfiltered: bool) -> Result<usize> {
     let objects = pbuk::parse(data)?;
     let mut count = 0;
 
     for obj in objects {
         let game_obj = schema::GameObject::from_gom(&obj);
-        if should_extract_object(&game_obj.fqn) && !game_obj.fqn.is_empty() {
+        if should_extract_object(&game_obj.fqn, unfiltered) && !game_obj.fqn.is_empty() {
             db.insert_object(&game_obj)?;
             count += 1;
         }

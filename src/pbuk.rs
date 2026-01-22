@@ -65,15 +65,6 @@ pub struct GomObject {
 }
 
 impl GomObject {
-    /// Extract the object type from FQN prefix
-    pub fn object_type(&self) -> &str {
-        if let Some(pos) = self.fqn.find('.') {
-            &self.fqn[..pos]
-        } else {
-            &self.fqn
-        }
-    }
-
     /// Try to extract strings from the binary payload
     pub fn extract_strings(&self) -> Vec<String> {
         let mut strings = Vec::new();
@@ -96,53 +87,6 @@ impl GomObject {
         }
 
         strings
-    }
-
-    /// Extract icon names from payload (patterns like "abl_*" that reference ability icons)
-    /// Scans for ASCII strings matching icon naming patterns
-    pub fn extract_icon_names(&self) -> Vec<String> {
-        let mut icons = Vec::new();
-        let payload = &self.payload;
-
-        // Scan for "abl_" prefix which indicates ability icons
-        let pattern = b"abl_";
-        let mut i = 0;
-
-        while i + pattern.len() < payload.len() {
-            if &payload[i..i + pattern.len()] == pattern {
-                // Found potential icon name, extract the full string
-                let start = i;
-                let mut end = i;
-
-                // Icon names are ASCII alphanumeric with underscores
-                while end < payload.len() {
-                    let b = payload[end];
-                    if (b >= b'a' && b <= b'z')
-                        || (b >= b'A' && b <= b'Z')
-                        || (b >= b'0' && b <= b'9')
-                        || b == b'_'
-                    {
-                        end += 1;
-                    } else {
-                        break;
-                    }
-                }
-
-                // Validate: must be reasonable length (5-60 chars)
-                let len = end - start;
-                if len >= 5 && len <= 60 {
-                    if let Ok(s) = std::str::from_utf8(&payload[start..end]) {
-                        icons.push(s.to_string());
-                    }
-                }
-
-                i = end;
-            } else {
-                i += 1;
-            }
-        }
-
-        icons
     }
 }
 
@@ -397,32 +341,5 @@ pub fn parse_dblb_direct(data: &[u8]) -> Result<Vec<GomObject>> {
         parse_object_dblb(&data[16..])
     } else {
         parse_object_dblb(data)
-    }
-}
-
-// Legacy compatibility - DblbObject for old code
-#[derive(Debug)]
-pub struct DblbObject {
-    pub label: String,
-    pub data_type: u16,
-    pub compressed: bool,
-    pub data: Vec<u8>,
-}
-
-impl DblbObject {
-    pub fn decompress(&self) -> Result<Option<Vec<u8>>> {
-        // Convert from new GomObject format
-        Ok(if self.data.is_empty() { None } else { Some(self.data.clone()) })
-    }
-}
-
-impl From<GomObject> for DblbObject {
-    fn from(obj: GomObject) -> Self {
-        DblbObject {
-            label: obj.fqn,
-            data_type: 0,
-            compressed: false,
-            data: obj.payload,
-        }
     }
 }

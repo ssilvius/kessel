@@ -17,6 +17,7 @@ use std::sync::Mutex;
 /// Types of unknown patterns we track
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
+#[allow(dead_code)]
 pub enum Unknown {
     /// FQN prefix not in our known list
     #[serde(rename = "unknown_prefix")]
@@ -115,22 +116,6 @@ impl UnknownsWriter {
         }
     }
 
-    /// Track an unknown FQN prefix (deduplicated, counted)
-    pub fn track_prefix(&self, prefix: &str, fqn: &str) {
-        let mut counts = self.prefix_counts.lock().unwrap();
-        let count = counts.entry(prefix.to_string()).or_insert(0);
-        *count += 1;
-
-        // Only record first occurrence and periodic samples
-        if *count == 1 || *count % 100 == 0 {
-            self.record(Unknown::UnknownPrefix {
-                prefix: prefix.to_string(),
-                fqn: fqn.to_string(),
-                sample_count: *count,
-            });
-        }
-    }
-
     /// Flush and finalize - writes summary of prefix counts
     pub fn finalize(&self) -> std::io::Result<()> {
         // Write final prefix counts
@@ -153,16 +138,4 @@ impl UnknownsWriter {
 
         Ok(())
     }
-}
-
-/// Known FQN prefixes - anything not in this list gets tracked
-pub const KNOWN_PREFIXES: &[&str] = &[
-    "abl", "ach", "cdx", "cnv", "dyn", "enc", "hyd", "itm",
-    "mpn", "npc", "plc", "qst", "schem", "spn", "tal",
-    // Add more as we discover them
-];
-
-/// Check if a prefix is known
-pub fn is_known_prefix(prefix: &str) -> bool {
-    KNOWN_PREFIXES.contains(&prefix)
 }

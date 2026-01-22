@@ -33,6 +33,7 @@ pub struct StbEntry {
     /// Secondary ID
     pub id2: u32,
     /// Entry flags
+    #[allow(dead_code)]
     pub flags: u16,
     /// Version number
     pub version: u32,
@@ -49,18 +50,6 @@ pub struct StbFile {
     pub locale: String,
     /// FQN prefix derived from path (e.g., "str.abl")
     pub fqn_prefix: String,
-}
-
-/// Check if data appears to be an STB file
-///
-/// STB files have version byte 0x01 at offset 0
-pub fn is_stb(data: &[u8]) -> bool {
-    if data.len() < HEADER_SIZE {
-        return false;
-    }
-
-    // Version check: byte 0 should be 0x01
-    data[0] == 0x01
 }
 
 /// Parse an STB file from raw bytes

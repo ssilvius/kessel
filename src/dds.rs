@@ -21,7 +21,7 @@ use image_dds::ddsfile::Dds;
 use image_dds::image::RgbaImage;
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
-use std::io::{BufReader, Cursor, Read, Write};
+use std::io::{Cursor, Write};
 use std::path::Path;
 
 /// DDS file magic number
@@ -63,11 +63,6 @@ impl ConvertedIcon {
     /// Uses icon_id (sha256(icon_name)[0:16]) - matches computeIconId() in frontend
     pub fn filename(&self) -> String {
         format!("{}.webp", self.icon_id)
-    }
-
-    /// Check if this icon has the same content as another
-    pub fn is_duplicate_of(&self, other: &ConvertedIcon) -> bool {
-        self.content_hash == other.content_hash
     }
 }
 
@@ -125,16 +120,6 @@ pub fn convert_to_webp(data: &[u8], icon_name: &str) -> Result<ConvertedIcon> {
     })
 }
 
-/// Convert DDS file from disk to WebP
-pub fn convert_file(input: &Path, icon_name: &str) -> Result<ConvertedIcon> {
-    let file = File::open(input).context("Failed to open DDS file")?;
-    let mut reader = BufReader::new(file);
-    let mut data = Vec::new();
-    reader.read_to_end(&mut data)?;
-
-    convert_to_webp(&data, icon_name)
-}
-
 /// Save converted icon to output directory
 pub fn save_icon(icon: &ConvertedIcon, output_dir: &Path) -> Result<()> {
     fs::create_dir_all(output_dir)?;
@@ -153,36 +138,6 @@ pub fn save_icon(icon: &ConvertedIcon, output_dir: &Path) -> Result<()> {
     );
 
     Ok(())
-}
-
-/// Batch convert multiple DDS textures
-/// Returns (converted, duplicates, errors)
-pub fn batch_convert<'a>(
-    items: impl Iterator<Item = (&'a [u8], &'a str)>,
-) -> (Vec<ConvertedIcon>, Vec<(String, String)>, Vec<(String, String)>) {
-    let mut converted = Vec::new();
-    let mut duplicates = Vec::new();
-    let mut errors = Vec::new();
-    let mut seen_content: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-
-    for (data, icon_name) in items {
-        match convert_to_webp(data, icon_name) {
-            Ok(icon) => {
-                // Check for duplicate content
-                if let Some(original) = seen_content.get(&icon.content_hash) {
-                    duplicates.push((icon_name.to_string(), original.clone()));
-                } else {
-                    seen_content.insert(icon.content_hash.clone(), icon_name.to_string());
-                    converted.push(icon);
-                }
-            }
-            Err(e) => {
-                errors.push((icon_name.to_string(), e.to_string()));
-            }
-        }
-    }
-
-    (converted, duplicates, errors)
 }
 
 #[cfg(test)]
@@ -313,36 +268,14 @@ mod tests {
     }
 
     #[test]
-    fn test_duplicate_detection() {
+    fn test_content_hash_for_duplicate_detection() {
         let dds_data = make_test_dds();
 
         let icon1 = convert_to_webp(&dds_data, "/icons/one.dds").unwrap();
         let icon2 = convert_to_webp(&dds_data, "/icons/two.dds").unwrap();
 
-        // Same content, different names
-        assert!(icon1.is_duplicate_of(&icon2));
+        // Same content, different names - content_hash should match
         assert_ne!(icon1.icon_id, icon2.icon_id);
         assert_eq!(icon1.content_hash, icon2.content_hash);
-    }
-
-    #[test]
-    fn test_batch_convert() {
-        let dds_data = make_test_dds();
-
-        let items: Vec<(&[u8], &str)> = vec![
-            (&dds_data, "/icons/one.dds"),
-            (&dds_data, "/icons/two.dds"), // duplicate content
-            (b"invalid", "/icons/bad.dds"), // error
-        ];
-
-        let (converted, duplicates, errors) = batch_convert(items.into_iter());
-
-        assert_eq!(converted.len(), 1);
-        assert_eq!(duplicates.len(), 1);
-        assert_eq!(errors.len(), 1);
-
-        assert_eq!(duplicates[0].0, "/icons/two.dds");
-        assert_eq!(duplicates[0].1, "/icons/one.dds");
-        assert_eq!(errors[0].0, "/icons/bad.dds");
     }
 }

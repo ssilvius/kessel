@@ -91,10 +91,6 @@ pub struct Stats {
 }
 
 impl Database {
-    pub fn new(path: &Path) -> Result<Self> {
-        Self::with_grammar(path, None)
-    }
-
     pub fn with_grammar(path: &Path, grammar: Option<Arc<Grammar>>) -> Result<Self> {
         let conn = Connection::open(path).context("Failed to create database")?;
 
@@ -358,15 +354,6 @@ impl Database {
             npcs,
             strings,
         })
-    }
-
-    pub fn set_meta(&self, key: &str, value: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
-            params![key, value],
-        )?;
-        Ok(())
     }
 
     /// Build mapping from icon_name → Vec<(game_id, kind)> for all objects with icons.
