@@ -93,14 +93,24 @@ pub fn parse(data: &[u8], path: &str) -> Result<StbFile> {
         let id1 = u32::from_le_bytes([entry_data[0], entry_data[1], entry_data[2], entry_data[3]]);
         let id2 = u32::from_le_bytes([entry_data[4], entry_data[5], entry_data[6], entry_data[7]]);
         let flags = u16::from_le_bytes([entry_data[8], entry_data[9]]);
-        let version =
-            u32::from_le_bytes([entry_data[10], entry_data[11], entry_data[12], entry_data[13]]);
-        let text_len =
-            u32::from_le_bytes([entry_data[14], entry_data[15], entry_data[16], entry_data[17]])
-                as usize;
-        let text_offset =
-            u32::from_le_bytes([entry_data[18], entry_data[19], entry_data[20], entry_data[21]])
-                as usize;
+        let version = u32::from_le_bytes([
+            entry_data[10],
+            entry_data[11],
+            entry_data[12],
+            entry_data[13],
+        ]);
+        let text_len = u32::from_le_bytes([
+            entry_data[14],
+            entry_data[15],
+            entry_data[16],
+            entry_data[17],
+        ]) as usize;
+        let text_offset = u32::from_le_bytes([
+            entry_data[18],
+            entry_data[19],
+            entry_data[20],
+            entry_data[21],
+        ]) as usize;
         // bytes 22-25 are additional_length, not needed for basic parsing
 
         // Read text at offset
@@ -214,7 +224,7 @@ pub fn should_extract_stb(path: &str) -> bool {
             "schem.stb",
         ];
 
-        return target_files.iter().any(|&f| after_str == f);
+        return target_files.contains(&after_str);
     }
 
     false
@@ -268,9 +278,15 @@ mod tests {
         assert!(should_extract_stb("/resources/en-us/str/schem.stb"));
 
         // Should NOT extract subdirectory files
-        assert!(!should_extract_stb("/resources/en-us/str/abl/agent/skill.stb"));
-        assert!(!should_extract_stb("/resources/en-us/str/gui/disciplinewindow.stb"));
-        assert!(!should_extract_stb("/resources/en-us/str/cnv/some_convo.stb"));
+        assert!(!should_extract_stb(
+            "/resources/en-us/str/abl/agent/skill.stb"
+        ));
+        assert!(!should_extract_stb(
+            "/resources/en-us/str/gui/disciplinewindow.stb"
+        ));
+        assert!(!should_extract_stb(
+            "/resources/en-us/str/cnv/some_convo.stb"
+        ));
 
         // Should NOT extract other root files
         assert!(!should_extract_stb("/resources/en-us/str/mpn.stb"));

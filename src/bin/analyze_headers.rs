@@ -55,7 +55,7 @@ fn main() -> Result<()> {
     let mut tor_files: Vec<PathBuf> = std::fs::read_dir(&input_dir)?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().map_or(false, |ext| ext == "tor"))
+        .filter(|p| p.extension().is_some_and(|ext| ext == "tor"))
         .collect();
     tor_files.sort();
 
@@ -138,18 +138,27 @@ fn main() -> Result<()> {
             // First 6 bytes as potential GUID (like GOM objects)
             if header.len() >= 6 {
                 let guid_bytes = &header[0..6];
-                println!("  Bytes 0-5 as GUID: {:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-                    guid_bytes[0], guid_bytes[1], guid_bytes[2],
-                    guid_bytes[3], guid_bytes[4], guid_bytes[5]);
+                println!(
+                    "  Bytes 0-5 as GUID: {:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+                    guid_bytes[0],
+                    guid_bytes[1],
+                    guid_bytes[2],
+                    guid_bytes[3],
+                    guid_bytes[4],
+                    guid_bytes[5]
+                );
             }
 
             // First 8 bytes as u64
             if header.len() >= 8 {
                 let first_u64 = u64::from_le_bytes([
-                    header[0], header[1], header[2], header[3],
-                    header[4], header[5], header[6], header[7]
+                    header[0], header[1], header[2], header[3], header[4], header[5], header[6],
+                    header[7],
                 ]);
-                println!("  Bytes 0-7 as u64 LE: {} (0x{:016x})", first_u64, first_u64);
+                println!(
+                    "  Bytes 0-7 as u64 LE: {} (0x{:016x})",
+                    first_u64, first_u64
+                );
             }
 
             // Check for magic numbers

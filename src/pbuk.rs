@@ -75,7 +75,7 @@ impl GomObject {
             let len = self.payload[i] as usize;
             if len > 0 && len < 200 && i + 1 + len <= self.payload.len() {
                 let potential_string = &self.payload[i + 1..i + 1 + len];
-                if potential_string.iter().all(|&b| b >= 32 && b < 127) && len >= 2 {
+                if potential_string.iter().all(|&b| (32..127).contains(&b)) && len >= 2 {
                     if let Ok(s) = std::str::from_utf8(potential_string) {
                         strings.push(s.to_string());
                     }
@@ -106,12 +106,12 @@ pub fn parse(data: &[u8]) -> Result<Vec<GomObject>> {
     }
 
     // Verify DBLB wrapper at offset 12
-    if &data[12..16] != DBLB_MAGIC {
+    if data[12..16] != DBLB_MAGIC {
         bail!("No DBLB wrapper at offset 12");
     }
 
     // Verify object DBLB at offset 28
-    if &data[28..32] != DBLB_MAGIC {
+    if data[28..32] != DBLB_MAGIC {
         bail!("No object DBLB at offset 28");
     }
 
@@ -172,8 +172,8 @@ fn parse_object_dblb(data: &[u8]) -> Result<Vec<GomObject>> {
             let obj_data = &data[offset..offset + obj_size];
 
             // Validate: check FQN looks valid
-            let fqn_valid = obj_data.len() > 46
-                && obj_data[42..46].iter().all(|&b| b >= 32 && b < 127);
+            let fqn_valid =
+                obj_data.len() > 46 && obj_data[42..46].iter().all(|&b| (32..127).contains(&b));
 
             if fqn_valid {
                 // Get footer for next iteration BEFORE trying to parse
@@ -189,7 +189,7 @@ fn parse_object_dblb(data: &[u8]) -> Result<Vec<GomObject>> {
 
                 // Move to next object
                 let next_unaligned = offset + obj_size;
-                offset = if next_unaligned % 8 != 0 {
+                offset = if !next_unaligned.is_multiple_of(8) {
                     next_unaligned + (8 - next_unaligned % 8)
                 } else {
                     next_unaligned
@@ -217,7 +217,7 @@ fn parse_object_dblb(data: &[u8]) -> Result<Vec<GomObject>> {
         }
 
         let potential_fqn = &data[fqn_pos..data.len().min(fqn_pos + 4)];
-        let has_fqn = potential_fqn.iter().all(|&b| b >= 32 && b < 127);
+        let has_fqn = potential_fqn.iter().all(|&b| (32..127).contains(&b));
 
         if !has_fqn {
             offset += 8;
@@ -233,7 +233,7 @@ fn parse_object_dblb(data: &[u8]) -> Result<Vec<GomObject>> {
         // Find ZSTD magic
         let mut zstd_pos = None;
         for i in fqn_end..data.len().min(fqn_end + 10) {
-            if data.len() > i + 4 && &data[i..i + 4] == ZSTD_MAGIC {
+            if data.len() > i + 4 && data[i..i + 4] == ZSTD_MAGIC {
                 zstd_pos = Some(i);
                 break;
             }
@@ -243,12 +243,12 @@ fn parse_object_dblb(data: &[u8]) -> Result<Vec<GomObject>> {
             // Use ZSTD's frame size detection - O(1) instead of probing
             let zstd_data = &data[zstd_start..];
             if let Ok(frame_size) = zstd_safe::find_frame_compressed_size(zstd_data) {
-                let frame_size = frame_size as usize;
                 if frame_size > 0 && zstd_start + frame_size <= data.len() {
                     if let Ok(decoded) = zstd::decode_all(&zstd_data[..frame_size]) {
                         let obj_end = zstd_start + frame_size + 8;
                         let fqn = String::from_utf8_lossy(&data[fqn_pos..fqn_end]).to_string();
-                        let header = data[offset..offset.saturating_add(42).min(data.len())].to_vec();
+                        let header =
+                            data[offset..offset.saturating_add(42).min(data.len())].to_vec();
 
                         objects.push(GomObject {
                             fqn,
@@ -299,7 +299,7 @@ fn parse_object(data: &[u8]) -> Result<GomObject> {
     // Find ZSTD magic after FQN null
     let mut zstd_pos = None;
     for i in fqn_end..data.len().min(fqn_end + 10) {
-        if data.len() > i + 4 && &data[i..i + 4] == ZSTD_MAGIC {
+        if data.len() > i + 4 && data[i..i + 4] == ZSTD_MAGIC {
             zstd_pos = Some(i);
             break;
         }
@@ -318,8 +318,7 @@ fn parse_object(data: &[u8]) -> Result<GomObject> {
     }
 
     let zstd_payload = &data[zstd_start..payload_end];
-    let payload = zstd::decode_all(zstd_payload)
-        .context("Failed to decompress ZSTD payload")?;
+    let payload = zstd::decode_all(zstd_payload).context("Failed to decompress ZSTD payload")?;
 
     Ok(GomObject {
         fqn,
@@ -336,7 +335,7 @@ pub fn parse_dblb_direct(data: &[u8]) -> Result<Vec<GomObject>> {
     }
 
     // Check if this is a wrapper DBLB (has another DBLB at offset 16)
-    if data.len() > 20 && &data[16..20] == DBLB_MAGIC {
+    if data.len() > 20 && data[16..20] == DBLB_MAGIC {
         // Skip wrapper
         parse_object_dblb(&data[16..])
     } else {

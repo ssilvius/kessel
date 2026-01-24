@@ -82,8 +82,8 @@ const EMBEDDED_GRAMMAR: &str = include_str!("../grammar.toml");
 impl Grammar {
     /// Load grammar rules embedded at compile time
     pub fn from_embedded() -> Result<Self> {
-        let config: GrammarConfig = toml::from_str(EMBEDDED_GRAMMAR)
-            .context("Failed to parse embedded grammar TOML")?;
+        let config: GrammarConfig =
+            toml::from_str(EMBEDDED_GRAMMAR).context("Failed to parse embedded grammar TOML")?;
         Self::from_config(config)
     }
 

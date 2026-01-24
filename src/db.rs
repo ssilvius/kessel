@@ -358,15 +358,17 @@ impl Database {
 
     /// Build mapping from icon_name → Vec<(game_id, kind)> for all objects with icons.
     /// Returns ALL objects per icon (shared icons get multiple game_ids).
-    pub fn get_icon_mapping(&self) -> Result<std::collections::HashMap<String, Vec<(String, String)>>> {
+    pub fn get_icon_mapping(
+        &self,
+    ) -> Result<std::collections::HashMap<String, Vec<(String, String)>>> {
         self.flush()?; // Ensure all pending objects are written
 
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT icon_name, game_id, kind FROM objects WHERE icon_name IS NOT NULL"
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT icon_name, game_id, kind FROM objects WHERE icon_name IS NOT NULL")?;
 
-        let mut mapping: std::collections::HashMap<String, Vec<(String, String)>> = std::collections::HashMap::new();
+        let mut mapping: std::collections::HashMap<String, Vec<(String, String)>> =
+            std::collections::HashMap::new();
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -378,7 +380,10 @@ impl Database {
         for row in rows {
             let (icon_name, game_id, kind) = row?;
             // Lowercase for case-insensitive matching with file paths
-            mapping.entry(icon_name.to_lowercase()).or_default().push((game_id, kind));
+            mapping
+                .entry(icon_name.to_lowercase())
+                .or_default()
+                .push((game_id, kind));
         }
 
         Ok(mapping)

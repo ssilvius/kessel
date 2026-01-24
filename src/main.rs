@@ -119,7 +119,7 @@ fn main() -> Result<()> {
     let mut tor_files: Vec<PathBuf> = std::fs::read_dir(&args.input)?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().map_or(false, |ext| ext == "tor"))
+        .filter(|p| p.extension().is_some_and(|ext| ext == "tor"))
         .collect();
     tor_files.sort();
 
@@ -155,86 +155,65 @@ fn main() -> Result<()> {
             .to_string();
         main_pb.set_message(filename.clone());
 
-        match myp::Archive::open(tor_path) {
-            Ok(mut archive) => {
-                let entries: Vec<_> = match archive.entries() {
-                    Ok(iter) => iter.cloned().collect(),
-                    Err(_) => {
-                        main_pb.inc(1);
-                        continue;
+        if let Ok(mut archive) = myp::Archive::open(tor_path) {
+            let entries: Vec<_> = match archive.entries() {
+                Ok(iter) => iter.cloned().collect(),
+                Err(_) => {
+                    main_pb.inc(1);
+                    continue;
+                }
+            };
+
+            let entry_count = entries.len();
+            let archive_start = Instant::now();
+            let mut entry_pb: Option<ProgressBar> = None;
+            let mut last_check = Instant::now();
+
+            for (i, entry) in entries.iter().enumerate() {
+                seen_hashes.insert(entry.filename_hash);
+
+                // Show entry progress bar if archive takes >20s
+                if entry_pb.is_none() && archive_start.elapsed() > Duration::from_secs(20) {
+                    let pb = multi.insert_after(&main_pb, ProgressBar::new(entry_count as u64));
+                    pb.set_style(entry_style.clone());
+                    pb.set_position(i as u64);
+                    pb.set_message(filename.clone());
+                    entry_pb = Some(pb);
+                }
+
+                // Update entry progress every 100ms
+                if let Some(ref pb) = entry_pb {
+                    if last_check.elapsed() > Duration::from_millis(100) {
+                        pb.set_position(i as u64);
+                        last_check = Instant::now();
                     }
+                }
+
+                let is_bucket = bucket_hashes.contains(&entry.filename_hash);
+                let is_stb = stb_hashes.contains(&entry.filename_hash);
+
+                let data = match archive.read_entry(entry) {
+                    Ok(d) => d,
+                    Err(_) => continue,
                 };
 
-                let entry_count = entries.len();
-                let archive_start = Instant::now();
-                let mut entry_pb: Option<ProgressBar> = None;
-                let mut last_check = Instant::now();
-
-                for (i, entry) in entries.iter().enumerate() {
-                    seen_hashes.insert(entry.filename_hash);
-
-                    // Show entry progress bar if archive takes >20s
-                    if entry_pb.is_none() && archive_start.elapsed() > Duration::from_secs(20) {
-                        let pb = multi.insert_after(&main_pb, ProgressBar::new(entry_count as u64));
-                        pb.set_style(entry_style.clone());
-                        pb.set_position(i as u64);
-                        pb.set_message(filename.clone());
-                        entry_pb = Some(pb);
-                    }
-
-                    // Update entry progress every 100ms
-                    if let Some(ref pb) = entry_pb {
-                        if last_check.elapsed() > Duration::from_millis(100) {
-                            pb.set_position(i as u64);
-                            last_check = Instant::now();
-                        }
-                    }
-
-                    let is_bucket = bucket_hashes.contains(&entry.filename_hash);
-                    let is_stb = stb_hashes.contains(&entry.filename_hash);
-
-                    let data = match archive.read_entry(entry) {
-                        Ok(d) => d,
-                        Err(_) => continue,
-                    };
-
-                    // Process STB files
-                    if is_stb {
-                        if let Some(path) = hash_dict.get(entry.filename_hash) {
-                            if let Ok(stb_file) = stb::parse(&data, path) {
-                                for stb_entry in &stb_file.entries {
-                                    let string_fqn = format!(
-                                        "{}.{}.{}",
-                                        stb_file.fqn_prefix, stb_entry.id1, stb_entry.id2
-                                    );
-                                    let _ = db.insert_string(&string_fqn, &stb_file.locale, stb_entry);
-                                }
+                // Process STB files
+                if is_stb {
+                    if let Some(path) = hash_dict.get(entry.filename_hash) {
+                        if let Ok(stb_file) = stb::parse(&data, path) {
+                            for stb_entry in &stb_file.entries {
+                                let string_fqn = format!(
+                                    "{}.{}.{}",
+                                    stb_file.fqn_prefix, stb_entry.id1, stb_entry.id2
+                                );
+                                let _ = db.insert_string(&string_fqn, &stb_file.locale, stb_entry);
                             }
                         }
                     }
-                    // Process bucket files (PBUK format)
-                    else if is_bucket {
-                        if pbuk::is_pbuk(&data) {
-                            if let Ok(count) = process_pbuk(&data, &db, args.unfiltered) {
-                                total_objects += count;
-                            }
-                        } else if pbuk::is_dblb(&data) {
-                            if let Ok(objects) = pbuk::parse_dblb_direct(&data) {
-                                for obj in objects {
-                                    let game_obj = schema::GameObject::from_gom(&obj);
-                                    if should_extract_object(&game_obj.fqn, args.unfiltered)
-                                        && !game_obj.fqn.is_empty()
-                                    {
-                                        if db.insert_object(&game_obj).is_ok() {
-                                            total_objects += 1;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    // Process loose PBUK/DBLB files
-                    else if pbuk::is_pbuk(&data) {
+                }
+                // Process bucket files (PBUK format)
+                else if is_bucket {
+                    if pbuk::is_pbuk(&data) {
                         if let Ok(count) = process_pbuk(&data, &db, args.unfiltered) {
                             total_objects += count;
                         }
@@ -242,30 +221,47 @@ fn main() -> Result<()> {
                         if let Ok(objects) = pbuk::parse_dblb_direct(&data) {
                             for obj in objects {
                                 let game_obj = schema::GameObject::from_gom(&obj);
-                                if should_extract_object(&game_obj.fqn, args.unfiltered) && !game_obj.fqn.is_empty()
+                                if should_extract_object(&game_obj.fqn, args.unfiltered)
+                                    && !game_obj.fqn.is_empty()
+                                    && db.insert_object(&game_obj).is_ok()
                                 {
-                                    if db.insert_object(&game_obj).is_ok() {
-                                        total_objects += 1;
-                                    }
+                                    total_objects += 1;
                                 }
                             }
                         }
                     }
-
-                    // Buffer icon files for processing after objects (need icon_name → game_id mapping)
-                    if let Some(icon_path) = icon_hashes.get(&entry.filename_hash) {
-                        if dds::is_dds(&data) {
-                            pending_icons.push((data.clone(), icon_path.clone()));
+                }
+                // Process loose PBUK/DBLB files
+                else if pbuk::is_pbuk(&data) {
+                    if let Ok(count) = process_pbuk(&data, &db, args.unfiltered) {
+                        total_objects += count;
+                    }
+                } else if pbuk::is_dblb(&data) {
+                    if let Ok(objects) = pbuk::parse_dblb_direct(&data) {
+                        for obj in objects {
+                            let game_obj = schema::GameObject::from_gom(&obj);
+                            if should_extract_object(&game_obj.fqn, args.unfiltered)
+                                && !game_obj.fqn.is_empty()
+                                && db.insert_object(&game_obj).is_ok()
+                            {
+                                total_objects += 1;
+                            }
                         }
                     }
                 }
 
-                // Clear entry progress bar
-                if let Some(pb) = entry_pb {
-                    pb.finish_and_clear();
+                // Buffer icon files for processing after objects (need icon_name → game_id mapping)
+                if let Some(icon_path) = icon_hashes.get(&entry.filename_hash) {
+                    if dds::is_dds(&data) {
+                        pending_icons.push((data.clone(), icon_path.clone()));
+                    }
                 }
             }
-            Err(_) => {}
+
+            // Clear entry progress bar
+            if let Some(pb) = entry_pb {
+                pb.finish_and_clear();
+            }
         }
 
         main_pb.inc(1);
@@ -281,67 +277,65 @@ fn main() -> Result<()> {
         let icon_mapping = db.get_icon_mapping()?;
         println!("  Icon mapping entries: {}", icon_mapping.len());
 
-        let mut seen_content: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut seen_content: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         let mut unmapped_icons = 0usize;
 
         for (dds_data, icon_path) in &pending_icons {
-            match dds::convert_to_webp(dds_data, icon_path) {
-                Ok(mut icon) => {
-                    // Deduplicate by content hash
-                    if seen_content.contains_key(&icon.content_hash) {
-                        continue;
-                    }
+            if let Ok(mut icon) = dds::convert_to_webp(dds_data, icon_path) {
+                // Deduplicate by content hash
+                if seen_content.contains_key(&icon.content_hash) {
+                    continue;
+                }
 
-                    // Extract icon_name from path: "/resources/gfx/icons/abl_foo.dds" → "abl_foo"
-                    // Lowercase for case-insensitive matching with DB icon_names
-                    let icon_name = icon_path
-                        .rsplit('/')
-                        .next()
-                        .unwrap_or(icon_path)
-                        .trim_end_matches(".dds")
-                        .to_lowercase();
+                // Extract icon_name from path: "/resources/gfx/icons/abl_foo.dds" → "abl_foo"
+                // Lowercase for case-insensitive matching with DB icon_names
+                let icon_name = icon_path
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(icon_path)
+                    .trim_end_matches(".dds")
+                    .to_lowercase();
 
-                    // Skip if we already processed this exact content
-                    if seen_content.contains_key(&icon.content_hash) {
-                        continue;
-                    }
-                    seen_content.insert(icon.content_hash.clone(), icon_name.clone());
+                // Skip if we already processed this exact content
+                if seen_content.contains_key(&icon.content_hash) {
+                    continue;
+                }
+                seen_content.insert(icon.content_hash.clone(), icon_name.clone());
 
-                    // Look up all objects that reference this icon
-                    if let Some(objects) = icon_mapping.get(&icon_name) {
-                        // Save icon for ALL objects that reference it (handles shared icons)
-                        for (game_id, kind) in objects {
-                            let subdir = match kind.as_str() {
-                                "Ability" => "abilities",
-                                "Item" => "items",
-                                "Npc" => "npcs",
-                                "Quest" => "quests",
-                                "Achievement" => "achievements",
-                                "Codex" => "codex",
-                                "Schematic" => "schematics",
-                                "Talent" => "talents",
-                                _ => "misc",
-                            };
-                            let output_dir = args.icons_output.join(subdir);
-                            icon.icon_id = game_id.clone();
-                            if dds::save_icon(&icon, &output_dir).is_ok() {
-                                total_icons += 1;
-                            }
-                        }
-                    } else {
-                        // Unmapped icon - save to misc with original hash
-                        unmapped_icons += 1;
-                        unknowns_writer.record(unknowns::Unknown::UnmappedIcon {
-                            icon_name: icon_name.to_string(),
-                            source_file: icon_path.clone(),
-                        });
-                        let output_dir = args.icons_output.join("misc");
+                // Look up all objects that reference this icon
+                if let Some(objects) = icon_mapping.get(&icon_name) {
+                    // Save icon for ALL objects that reference it (handles shared icons)
+                    for (game_id, kind) in objects {
+                        let subdir = match kind.as_str() {
+                            "Ability" => "abilities",
+                            "Item" => "items",
+                            "Npc" => "npcs",
+                            "Quest" => "quests",
+                            "Achievement" => "achievements",
+                            "Codex" => "codex",
+                            "Schematic" => "schematics",
+                            "Talent" => "talents",
+                            _ => "misc",
+                        };
+                        let output_dir = args.icons_output.join(subdir);
+                        icon.icon_id = game_id.clone();
                         if dds::save_icon(&icon, &output_dir).is_ok() {
                             total_icons += 1;
                         }
                     }
+                } else {
+                    // Unmapped icon - save to misc with original hash
+                    unmapped_icons += 1;
+                    unknowns_writer.record(unknowns::Unknown::UnmappedIcon {
+                        icon_name: icon_name.to_string(),
+                        source_file: icon_path.clone(),
+                    });
+                    let output_dir = args.icons_output.join("misc");
+                    if dds::save_icon(&icon, &output_dir).is_ok() {
+                        total_icons += 1;
+                    }
                 }
-                Err(_) => {}
             }
         }
 
@@ -370,10 +364,10 @@ fn main() -> Result<()> {
     }
 
     // Finalize unknowns tracker
-    if args.unknowns.is_some() {
+    if let Some(ref unknowns_path) = args.unknowns {
         unknowns_writer.finalize()?;
         println!();
-        println!("  Unknowns: {}", args.unknowns.as_ref().unwrap().display());
+        println!("  Unknowns: {}", unknowns_path.display());
     }
 
     Ok(())
@@ -395,8 +389,21 @@ fn should_extract_object(fqn: &str, unfiltered: bool) -> bool {
     // Must be a known prefix type (always applied)
     if !matches!(
         prefix,
-        "abl" | "tal" | "itm" | "npc" | "schem" | "qst" | "cdx" | "ach" | "mpn"
-        | "pkg" | "loot" | "rew" | "cnv" | "apc" | "class"
+        "abl"
+            | "tal"
+            | "itm"
+            | "npc"
+            | "schem"
+            | "qst"
+            | "cdx"
+            | "ach"
+            | "mpn"
+            | "pkg"
+            | "loot"
+            | "rew"
+            | "cnv"
+            | "apc"
+            | "class"
     ) {
         return false;
     }

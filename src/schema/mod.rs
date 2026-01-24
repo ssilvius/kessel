@@ -67,14 +67,21 @@ impl GameObject {
             }
         } else {
             "Unknown"
-        }.to_string();
+        }
+        .to_string();
 
         // Extract GUID from header bytes 0-7 (little-endian u64)
         let guid = if gom.header.len() >= 8 {
             let guid_bytes = &gom.header[0..8];
             let guid_u64 = u64::from_le_bytes([
-                guid_bytes[0], guid_bytes[1], guid_bytes[2], guid_bytes[3],
-                guid_bytes[4], guid_bytes[5], guid_bytes[6], guid_bytes[7],
+                guid_bytes[0],
+                guid_bytes[1],
+                guid_bytes[2],
+                guid_bytes[3],
+                guid_bytes[4],
+                guid_bytes[5],
+                guid_bytes[6],
+                guid_bytes[7],
             ]);
             format!("{:016X}", guid_u64)
         } else {
@@ -99,7 +106,7 @@ impl GameObject {
         let string_id = Self::extract_string_id(&gom.payload);
 
         // Encode raw payload as base64 for later analysis
-        use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
         let payload_b64 = BASE64.encode(&gom.payload);
 
         // Store metadata and payload reference in JSON
@@ -144,15 +151,11 @@ impl GameObject {
                     && payload[after_type + 1] == 0xCE
                 {
                     let id_bytes = &payload[after_type + 2..after_type + 6];
-                    let string_id = u32::from_le_bytes([
-                        id_bytes[0],
-                        id_bytes[1],
-                        id_bytes[2],
-                        id_bytes[3],
-                    ]);
+                    let string_id =
+                        u32::from_le_bytes([id_bytes[0], id_bytes[1], id_bytes[2], id_bytes[3]]);
 
                     // Validate it's in the expected range
-                    if string_id >= MIN_STRING_ID && string_id <= MAX_STRING_ID {
+                    if (MIN_STRING_ID..=MAX_STRING_ID).contains(&string_id) {
                         return Some(string_id);
                     }
                 }
@@ -174,9 +177,9 @@ impl GameObject {
                     let potential = &payload[i + 2..i + 2 + length];
                     // Check if ASCII alphanumeric with underscores
                     if potential.iter().all(|&b| {
-                        (b >= b'a' && b <= b'z')
-                            || (b >= b'A' && b <= b'Z')
-                            || (b >= b'0' && b <= b'9')
+                        b.is_ascii_lowercase()
+                            || b.is_ascii_uppercase()
+                            || b.is_ascii_digit()
                             || b == b'_'
                     }) {
                         if let Ok(s) = std::str::from_utf8(potential) {
@@ -210,9 +213,9 @@ impl GameObject {
                     let potential = &payload[i + 2..i + 2 + length];
                     // Check if ASCII alphanumeric with underscores
                     if potential.iter().all(|&b| {
-                        (b >= b'a' && b <= b'z')
-                            || (b >= b'A' && b <= b'Z')
-                            || (b >= b'0' && b <= b'9')
+                        b.is_ascii_lowercase()
+                            || b.is_ascii_uppercase()
+                            || b.is_ascii_digit()
                             || b == b'_'
                     }) {
                         if let Ok(s) = std::str::from_utf8(potential) {
@@ -231,4 +234,3 @@ impl GameObject {
         last_match
     }
 }
-

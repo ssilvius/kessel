@@ -18,6 +18,7 @@ use std::sync::Mutex;
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 #[allow(dead_code)]
+#[allow(clippy::enum_variant_names)]
 pub enum Unknown {
     /// FQN prefix not in our known list
     #[serde(rename = "unknown_prefix")]

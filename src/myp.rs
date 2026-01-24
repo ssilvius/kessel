@@ -74,7 +74,11 @@ impl Archive {
         let total_files = u32::from_le_bytes(header[24..28].try_into()?);
         let _num_tables = u32::from_le_bytes(header[28..32].try_into()?);
 
-        tracing::debug!("MYP header: {} files, first table at {}", total_files, first_table_offset);
+        tracing::debug!(
+            "MYP header: {} files, first table at {}",
+            total_files,
+            first_table_offset
+        );
 
         // Read all file tables
         let mut entries = Vec::with_capacity(total_files as usize);
@@ -143,7 +147,8 @@ impl Archive {
 
     pub fn read_entry(&mut self, entry: &FileEntry) -> Result<Vec<u8>> {
         // Seek to file position (skip header)
-        self.reader.seek(SeekFrom::Start(entry.position + entry.header_size as u64))?;
+        self.reader
+            .seek(SeekFrom::Start(entry.position + entry.header_size as u64))?;
 
         // Read compressed data
         let mut compressed = vec![0u8; entry.compressed_size as usize];

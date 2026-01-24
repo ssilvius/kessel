@@ -97,7 +97,10 @@ fn xml_to_json(data: &[u8]) -> Result<Value> {
                 if let Some((elem_name, mut elem_data)) = stack.pop() {
                     // Add text content under "%" key if present
                     if !current_text.trim().is_empty() {
-                        elem_data.insert("%".to_string(), Value::String(current_text.trim().to_string()));
+                        elem_data.insert(
+                            "%".to_string(),
+                            Value::String(current_text.trim().to_string()),
+                        );
                     }
 
                     let elem_value = Value::Object(elem_data);

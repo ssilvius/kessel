@@ -85,8 +85,8 @@ pub fn convert_to_webp(data: &[u8], icon_name: &str) -> Result<ConvertedIcon> {
 
     // Decode to RGBA image using image_dds
     // mipmap level 0 = base texture
-    let rgba: RgbaImage = image_dds::image_from_dds(&dds, 0)
-        .context("Failed to decode DDS texture")?;
+    let rgba: RgbaImage =
+        image_dds::image_from_dds(&dds, 0).context("Failed to decode DDS texture")?;
 
     let (width, height) = rgba.dimensions();
 
@@ -100,9 +100,9 @@ pub fn convert_to_webp(data: &[u8], icon_name: &str) -> Result<ConvertedIcon> {
     // Encode to WebP (lossless for transparency support)
     let mut webp_data = Vec::new();
     {
-        use image_dds::image::ImageEncoder;
         use image_dds::image::codecs::webp::WebPEncoder;
         use image_dds::image::ColorType;
+        use image_dds::image::ImageEncoder;
         // Use lossless encoding to preserve quality and transparency
         let encoder = WebPEncoder::new_lossless(&mut webp_data);
         encoder
