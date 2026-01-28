@@ -2,11 +2,13 @@ use anyhow::Result;
 use clap::Parser;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 mod db;
 mod dds;
+mod gifts;
 mod grammar;
 mod hash;
 mod myp;
@@ -76,11 +78,12 @@ fn main() -> Result<()> {
         }
     };
 
-    // Load hash dictionary if provided
+    // Load hash dictionary (auto-download from Jedipedia if not provided)
     let mut hash_dict = hash::HashDictionary::new();
     let mut bucket_hashes: HashSet<u64> = HashSet::new();
 
-    if let Some(hash_path) = &args.hashes {
+    let hash_path = resolve_hashes_path(&args)?;
+    if let Some(hash_path) = &hash_path {
         hash_dict.load(hash_path)?;
 
         // Find all bucket file hashes
@@ -371,6 +374,58 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Resolve the hashes file path: use --hashes if provided, otherwise look for
+/// hashes_filename.txt next to the output file, and download from Jedipedia if missing.
+fn resolve_hashes_path(args: &Args) -> Result<Option<PathBuf>> {
+    // Explicit path provided
+    if let Some(ref path) = args.hashes {
+        if path.exists() {
+            return Ok(Some(path.clone()));
+        }
+        anyhow::bail!("Hash file not found: {}", path.display());
+    }
+
+    // Check default location: same directory as output
+    let default_path = args
+        .output
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("hashes_filename.txt");
+
+    if default_path.exists() {
+        println!("Using hash dictionary: {}", default_path.display());
+        return Ok(Some(default_path));
+    }
+
+    // Download from Jedipedia
+    println!("Downloading hash dictionary from Jedipedia...");
+    let url = "https://swtor.jedipedia.net/ajax/getFileNames.php?env=live&format=easymyp";
+
+    let response = ureq::get(url)
+        .call()
+        .map_err(|e| anyhow::anyhow!("Failed to download hashes: {}", e))?;
+
+    let mut body = Vec::new();
+    response
+        .into_reader()
+        .read_to_end(&mut body)
+        .map_err(|e| anyhow::anyhow!("Failed to read response: {}", e))?;
+
+    // Ensure parent directory exists
+    if let Some(parent) = default_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    std::fs::write(&default_path, &body)?;
+    println!(
+        "Saved hash dictionary ({:.1} MB) to {}",
+        body.len() as f64 / 1_048_576.0,
+        default_path.display()
+    );
+
+    Ok(Some(default_path))
 }
 
 /// Check if a GOM object should be extracted based on FQN prefix

@@ -51,6 +51,9 @@ sha2 = "0.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# HTTP client (for auto-downloading hash dictionary)
+ureq = "2.9"
+
 # Progress bars for large file processing
 indicatif = "0.17"
 

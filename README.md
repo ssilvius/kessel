@@ -8,9 +8,10 @@ Named after the spice mines of Kessel, continuing the Star Wars mining theme fro
 
 Kessel reads SWTOR's `.tor` archive files and extracts:
 
-- **Game Objects** -> SQLite database (165k+ quality-filtered objects)
+- **Game Objects** -> SQLite database (176k+ quality-filtered objects)
 - **Strings** -> Localized text from STB files (557k+ strings)
 - **Icons** -> DDS to WebP conversion with game_id naming
+- **Item Classification** -> FQN fragment parsing for structured lookups (gifts module)
 
 ### Grammar Processing
 
@@ -29,7 +30,7 @@ Quality-filtered extraction (see `docs/STATUS.md` for details):
 | NPCs | 36,242 | Companions, quest NPCs, vendors |
 | Quests | 11,692 | Story, side, daily quests |
 | Abilities | 2,893 | Class, companion, legacy abilities |
-| **Total Objects** | **174,824** | |
+| **Total Objects** | **176,112** | |
 | Strings | 557,325 | Localized text (en-us) |
 | Icons | 900+ | WebP format, named by game_id |
 
@@ -43,10 +44,10 @@ cd tools/kessel
 cargo build --release
 
 # Extract game objects to SQLite
+# Hashes file auto-downloads from Jedipedia if not found
 ./target/release/kessel \
   --input ~/swtor/assets \
-  --output ~/swtor/data/spice.sqlite \
-  --hashes ~/swtor/data/hashes_filename.txt
+  --output ~/swtor/data/spice.sqlite
 
 # Extract with icons
 ./target/release/kessel \
@@ -69,7 +70,7 @@ sqlite3 ~/swtor/data/spice.sqlite "
 |------|-------------|
 | `-i, --input <DIR>` | Directory containing .tor files (required) |
 | `-o, --output <PATH>` | Output SQLite database path (default: raw.sqlite) |
-| `-H, --hashes <FILE>` | Hash dictionary file from Jedipedia |
+| `-H, --hashes <FILE>` | Hash dictionary file (auto-downloads from Jedipedia if not found) |
 | `--icons` | Extract icons to WebP format |
 | `--icons-output <DIR>` | Output directory for icons (default: ./icons) |
 | `--unfiltered` | Extract all objects without content filtering (filter in ETL instead) |
@@ -131,6 +132,18 @@ Icons are extracted from DDS files in the .tor archives:
 4. **Organization**: Subdirectories by object kind (`abilities/`, `items/`, `talents/`, etc.)
 
 Icons are saved for ALL objects that reference them (shared icons get multiple copies with different game_ids).
+
+## FQN Classification
+
+The `gifts` module parses item FQNs into structured fragments that match the frontend TypeScript types exactly. This is the pattern for classifying items by FQN — more modules will follow as we need them.
+
+**Gift items** (`itm.companion.gift.*`):
+- FQN: `itm.companion.gift.{type}.{quality}_rank{rank}_v1`
+- Rust: `GiftType`, `GiftQuality` enums + `parse_gift_fqn()`
+- TS: `GiftType`, `GiftQuality` types in `data/gift-calculator.ts`
+- Map: `type → quality → rank → game_id` (Rust `GiftGameIdMap`, TS `GIFT_GAME_IDS`)
+
+Both sides parse the same FQN fragments into the same structure. Icons resolve to `{game_id}.webp`.
 
 ## Binary Format Specifications
 
@@ -294,6 +307,7 @@ tools/kessel/
 |   +-- hash.rs         # Hash dictionary loader
 |   +-- db.rs           # SQLite output
 |   +-- dds.rs          # DDS to WebP conversion
+|   +-- gifts.rs        # Gift item FQN classification (shared with TS)
 |   +-- grammar.rs      # Description grammar processor
 |   +-- unknowns.rs     # Unknown pattern tracking
 |   +-- schema/
@@ -348,6 +362,7 @@ CREATE INDEX idx_strings_id2 ON strings(id2);
 - `quick-xml` + `serde_json` - XML parsing
 - `regex` - Grammar rule processing
 - `toml` - Grammar configuration parsing
+- `ureq` - HTTP client (auto-downloading hash dictionary)
 
 ## References
 
