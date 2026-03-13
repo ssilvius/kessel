@@ -206,7 +206,7 @@ var     5     header_bytes         08 02 09 02 02 (fixed sequence)
 var     9     unknown_ref          CF [8-byte reference] (internal ref)
 var     2     marker               04 04 (fixed)
 var     9     string_type_id       CF 400000115CE87488 (string table type)
-var     5     ce_string_id         CE [4-byte LE] (string table offset)
+var     5     ce_string_id         CE [4 bytes] (string table offset, see encoding note)
 var     var   pre_str_tal          Variable bytes before str.tal
 var     1     string_length        07 (length prefix for "str.tal")
 var     7     str.tal              73 74 72 2e 74 61 6c ("str.tal")
@@ -215,6 +215,23 @@ var     var   [effect blocks]      1-3 effect block structures
 var     var   [ability refs]       0-N ability GUID references
 var     var   tail_string          Length-prefixed ASCII (script hook name)
 ```
+
+### CE String ID Encoding
+
+The 4 bytes after the CE marker encode the string table id2, but the byte order differs:
+
+| Talent Type | Encoding | Example Bytes | Decoded id2 |
+|-------------|----------|---------------|-------------|
+| Discipline (`tal.{class}.*`) | 4-byte little-endian | `0B 74 0D 00` | 881,675 |
+| GSF (`tal.spvp.*`) | 3-byte big-endian + 0x00 pad | `0B C9 E3 00` | 772,579 |
+
+**Discipline:** `u32::from_le_bytes([0x0B, 0x74, 0x0D, 0x00])` = 0x000D740B = 881,675
+**GSF:** `(0x0B << 16) | (0xC9 << 8) | 0xE3` = 0x0BC9E3 = 772,579
+
+Kessel tries LE32 first; if out of range (145,000-1,200,000), falls back to BE24.
+GSF string id2 values are in the 766,000-775,000 range.
+
+7 shield `.base` talents have CE values that don't resolve to any string (no display text).
 
 ### Effect Count Marker (08 XX)
 

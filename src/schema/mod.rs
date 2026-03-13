@@ -133,7 +133,12 @@ impl GameObject {
     }
 
     /// Extract string_id from payload by finding CE marker after string table type.
-    /// Pattern: CF 400000115CE87488 (string table type) followed by 02 CE <4-byte LE id>
+    /// Pattern: CF 400000115CE87488 (string table type) followed by 02 CE <4-byte id>
+    ///
+    /// Discipline talents encode the id as 4-byte little-endian.
+    /// GSF talents (tal.spvp.*) encode it as 3-byte big-endian with a trailing 0x00.
+    /// We try LE32 first, then fall back to BE24 if out of range.
+    ///
     /// Valid string IDs are in range 145000-1200000 based on STB extraction.
     fn extract_string_id(payload: &[u8]) -> Option<u32> {
         // String table type marker: CF 40 00 00 11 5C E8 74 88
@@ -144,19 +149,27 @@ impl GameObject {
         // Search for the string table type marker
         for i in 0..payload.len().saturating_sub(STRING_TABLE_TYPE.len() + 6) {
             if payload[i..].starts_with(&STRING_TABLE_TYPE) {
-                // After CF + type ID (9 bytes), expect: 02 CE <4-byte LE>
+                // After CF + type ID (9 bytes), expect: 02 CE <4 bytes>
                 let after_type = i + STRING_TABLE_TYPE.len();
                 if after_type + 6 <= payload.len()
                     && payload[after_type] == 0x02
                     && payload[after_type + 1] == 0xCE
                 {
                     let id_bytes = &payload[after_type + 2..after_type + 6];
-                    let string_id =
-                        u32::from_le_bytes([id_bytes[0], id_bytes[1], id_bytes[2], id_bytes[3]]);
 
-                    // Validate it's in the expected range
-                    if (MIN_STRING_ID..=MAX_STRING_ID).contains(&string_id) {
-                        return Some(string_id);
+                    // Try standard 4-byte little-endian first (discipline talents)
+                    let le32 =
+                        u32::from_le_bytes([id_bytes[0], id_bytes[1], id_bytes[2], id_bytes[3]]);
+                    if (MIN_STRING_ID..=MAX_STRING_ID).contains(&le32) {
+                        return Some(le32);
+                    }
+
+                    // Fall back to 3-byte big-endian (GSF talents: tal.spvp.*)
+                    // These encode as [XX YY ZZ 00] where BE24 = (XX<<16)|(YY<<8)|ZZ
+                    let be24 =
+                        (id_bytes[0] as u32) << 16 | (id_bytes[1] as u32) << 8 | id_bytes[2] as u32;
+                    if (MIN_STRING_ID..=MAX_STRING_ID).contains(&be24) {
+                        return Some(be24);
                     }
                 }
             }
