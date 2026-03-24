@@ -388,4 +388,85 @@ impl Database {
 
         Ok(mapping)
     }
+
+    /// Build fallback icon mappings for objects with NULL icon_name.
+    /// Derives icon names from known FQN patterns where the game data
+    /// doesn't embed the icon reference in the binary payload.
+    ///
+    /// Returns the same format as get_icon_mapping: icon_name -> Vec<(game_id, kind)>
+    pub fn get_fqn_fallback_icons(
+        &self,
+    ) -> Result<std::collections::HashMap<String, Vec<(String, String)>>> {
+        self.flush()?;
+
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT fqn, game_id, kind FROM objects WHERE icon_name IS NULL")?;
+
+        let mut mapping: std::collections::HashMap<String, Vec<(String, String)>> =
+            std::collections::HashMap::new();
+
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+
+        for row in rows {
+            let (fqn, game_id, kind) = row?;
+            if let Some(icon_name) = derive_icon_from_fqn(&fqn) {
+                mapping.entry(icon_name).or_default().push((game_id, kind));
+            }
+        }
+
+        Ok(mapping)
+    }
+}
+
+/// Derive an icon filename from a FQN for objects that lack embedded icon references.
+///
+/// Known patterns:
+/// - Legacy perk gift bonuses: itm.mtx.lgc.prk.affection_bonus.gift_{N} -> legacyofaltruism{N}
+/// - Legacy perk gift speed: itm.mtx.lgc.prk.affection_bonus.gift_speed_{N} -> legacyofaltruism1
+/// - Legacy perk conversation: itm.mtx.lgc.prk.affection_bonus.conversation_{N} -> legacyofpersuasion{N}
+fn derive_icon_from_fqn(fqn: &str) -> Option<String> {
+    // Legacy Cartel Market perks: itm.mtx.lgc.prk.affection_bonus.*
+    if let Some(suffix) = fqn.strip_prefix("itm.mtx.lgc.prk.affection_bonus.") {
+        if let Some(n) = suffix.strip_prefix("gift_speed_") {
+            // Gift speed perks all use the tier-1 altruism icon
+            let _rank: u8 = n.parse().ok()?;
+            return Some("legacyofaltruism1".to_string());
+        }
+        if let Some(n) = suffix.strip_prefix("gift_") {
+            // Gift effectiveness: gift_1 -> legacyofaltruism1, etc.
+            let rank: u8 = n.parse().ok()?;
+            return Some(format!("legacyofaltruism{}", rank));
+        }
+        if let Some(n) = suffix.strip_prefix("conversation_") {
+            // Conversation influence: conversation_1 -> legacyofpersuasion1, etc.
+            let rank: u8 = n.parse().ok()?;
+            return Some(format!("legacyofpersuasion{}", rank));
+        }
+    }
+
+    // Legacy talent perks: tal.legacy.perk.companion_gift_{N}
+    // These are the talent counterparts of the item perks above
+    if let Some(suffix) = fqn.strip_prefix("tal.legacy.perk.") {
+        if let Some(n) = suffix.strip_prefix("companion_gift_") {
+            let rank: u8 = n.parse().ok()?;
+            return Some(format!("legacyofaltruism{}", rank));
+        }
+        if let Some(n) = suffix.strip_prefix("companion_gift_speed_") {
+            let _rank: u8 = n.parse().ok()?;
+            return Some("legacyofaltruism1".to_string());
+        }
+        if let Some(n) = suffix.strip_prefix("conversation_influence_") {
+            let rank: u8 = n.parse().ok()?;
+            return Some(format!("legacyofpersuasion{}", rank));
+        }
+    }
+
+    None
 }

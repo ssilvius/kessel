@@ -277,8 +277,18 @@ fn main() -> Result<()> {
         println!("\nProcessing {} icons...", pending_icons.len());
 
         // Get mapping: icon_name (SWTOR's) → (game_id, kind)
-        let icon_mapping = db.get_icon_mapping()?;
+        let mut icon_mapping = db.get_icon_mapping()?;
         println!("  Icon mapping entries: {}", icon_mapping.len());
+
+        // Merge fallback mappings for objects with NULL icon_name but known FQN patterns
+        let fallbacks = db.get_fqn_fallback_icons()?;
+        let fallback_count = fallbacks.len();
+        for (icon_name, objects) in fallbacks {
+            icon_mapping.entry(icon_name).or_default().extend(objects);
+        }
+        if fallback_count > 0 {
+            println!("  FQN-derived fallback icons: {}", fallback_count);
+        }
 
         let mut seen_content: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
