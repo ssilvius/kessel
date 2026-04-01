@@ -1,371 +1,156 @@
 # Kessel
 
-SWTOR data miner - extracts game objects, strings, and icons from .tor archives.
+SWTOR data miner -- extracts game objects, localized strings, and icons from `.tor` archives into SQLite.
 
-Named after the spice mines of Kessel, continuing the Star Wars mining theme from [bespin](https://github.com/kbatten/bespin).
+Named after the spice mines of Kessel.
 
-## What It Does
+## What it does
 
-Kessel reads SWTOR's `.tor` archive files and extracts:
+Kessel reads SWTOR's `.tor` archive files and produces:
 
-- **Game Objects** -> SQLite database (176k+ quality-filtered objects)
-- **Strings** -> Localized text from STB files (557k+ strings)
-- **Icons** -> DDS to WebP conversion with game_id naming
-- **Item Classification** -> FQN fragment parsing for structured lookups (gifts module)
+- **SQLite database** with 176k+ game objects (abilities, items, NPCs, quests, talents, etc.)
+- **557k+ localized strings** extracted from STB string tables
+- **WebP icons** converted from DDS textures, named by deterministic game_id
 
-### Grammar Processing
-
-Descriptions are automatically cleaned using embedded grammar rules:
-- Removes SWTOR template syntax (`<<1>>`, `<<N[singular|plural]>>`)
-- Cleans redundant phrasing
-- Rules defined in `grammar.toml`, embedded at compile time
-
-## Extraction Results
-
-Quality-filtered extraction (see `docs/STATUS.md` for details):
-
-| Type | Count | Notes |
-|------|-------|-------|
-| Items | 98,692 | Gear, mods, tacticals, consumables |
-| NPCs | 36,242 | Companions, quest NPCs, vendors |
-| Quests | 11,692 | Story, side, daily quests |
-| Abilities | 2,893 | Class, companion, legacy abilities |
-| **Total Objects** | **176,112** | |
-| Strings | 557,325 | Localized text (en-us) |
-| Icons | 900+ | WebP format, named by game_id |
-
-Object types kept (by FQN prefix): `abl`, `itm`, `npc`, `schem`, `qst`, `cdx`, `ach`, `mpn`, `tal`
+Descriptions are automatically cleaned via embedded grammar rules that strip SWTOR's template syntax (`<<1[%d seconds/%d second/%d seconds]>>` becomes natural English).
 
 ## Usage
 
 ```bash
-# Build
-cd tools/kessel
 cargo build --release
 
-# Extract game objects to SQLite
-# Hashes file auto-downloads from Jedipedia if not found
+# Extract game objects and strings
 ./target/release/kessel \
-  --input ~/swtor/assets \
-  --output ~/swtor/data/spice.sqlite
+  --input ~/swtor/Assets \
+  --output spice.sqlite
 
-# Extract with icons
+# With icon extraction
 ./target/release/kessel \
-  --input ~/swtor/assets \
-  --output ~/swtor/data/spice.sqlite \
-  --hashes ~/swtor/data/hashes_filename.txt \
+  --input ~/swtor/Assets \
+  --output spice.sqlite \
   --icons \
-  --icons-output ~/swtor/data/icons
+  --icons-output ./icons
 
-# Check results
-sqlite3 ~/swtor/data/spice.sqlite "
-  SELECT kind, COUNT(*) as cnt FROM objects
-  GROUP BY kind ORDER BY cnt DESC;
-"
-```
-
-### CLI Options
-
-| Flag | Description |
-|------|-------------|
-| `-i, --input <DIR>` | Directory containing .tor files (required) |
-| `-o, --output <PATH>` | Output SQLite database path (default: raw.sqlite) |
-| `-H, --hashes <FILE>` | Hash dictionary file (auto-downloads from Jedipedia if not found) |
-| `--icons` | Extract icons to WebP format |
-| `--icons-output <DIR>` | Output directory for icons (default: ./icons) |
-| `--unfiltered` | Extract all objects without content filtering (filter in ETL instead) |
-| `-v, --verbose` | Verbose output |
-| `--unknowns <FILE>` | Output file for unknown patterns (JSONL) |
-
-### Unfiltered Mode
-
-By default, Kessel applies content-based filters to skip internal objects:
-- NPC abilities (`abl.npc.*`, `abl.operation.*`, etc.)
-- Internal items (`itm.loot.*`, `itm.npc.*`, etc.)
-- Blueprint NPCs (`npc.blueprints.*`, etc.)
-
-Use `--unfiltered` to extract everything and filter in ETL scripts instead:
-
-```bash
+# Unfiltered (skip content filters, keep everything)
 ./target/release/kessel \
-  --input ~/swtor/assets \
-  --output ~/swtor/data/spice.unfiltered.sqlite \
-  --hashes ~/swtor/data/hashes_filename.txt \
+  --input ~/swtor/Assets \
+  --output spice.sqlite \
   --unfiltered
 ```
 
-This is useful when:
-- Investigating missing objects (abilities, items, etc.)
-- Creating a complete reference database
-- Debugging extraction issues
+The hash dictionary auto-downloads from Jedipedia on first run.
 
-The `--unfiltered` flag still applies:
-- Versioned duplicate filter (FQN with `/`)
-- Test/debug/deprecated content filter
-- Prefix type filter: only known prefixes are extracted
-  (`abl`, `tal`, `itm`, `npc`, `schem`, `qst`, `cdx`, `ach`, `mpn`, `pkg`, `loot`, `rew`, `cnv`, `apc`, `class`)
+### CLI flags
 
-**Prefix types**:
-- `abl` - Abilities (player and NPC)
-- `tal` - Talents (discipline tree choices)
-- `itm` - Items (equipment, consumables)
-- `npc` - NPCs (companions, enemies, vendors)
-- `qst` - Quests/Missions
-- `cdx` - Codex entries
-- `ach` - Achievements
-- `schem` - Schematics (crafting)
-- `mpn` - Map pins/points
-- `pkg` - Packages (bundles)
-- `loot` - Loot tables
-- `rew` - Rewards
-- `cnv` - Conversations
-- `apc` - Appearances (character customization)
-- `class` - Class definitions
+| Flag | Description |
+|------|-------------|
+| `-i, --input <DIR>` | SWTOR Assets directory (required) |
+| `-o, --output <PATH>` | SQLite output path (default: `raw.sqlite`) |
+| `-H, --hashes <FILE>` | Hash dictionary (auto-downloads if missing) |
+| `--icons` | Enable DDS to WebP icon extraction |
+| `--icons-output <DIR>` | Icon output directory (default: `./icons`) |
+| `--unfiltered` | Skip content filters (keeps NPC abilities, internal items, etc.) |
+| `-v, --verbose` | Verbose logging |
+| `--unknowns <FILE>` | Track unknown patterns to JSONL |
 
-## Icon Extraction
+### Filtering
 
-Icons are extracted from DDS files in the .tor archives:
+By default, kessel applies content filters to skip internal/NPC objects. Use `--unfiltered` to extract everything.
 
-1. **Source**: `/resources/gfx/icons/*.dds` (DXT1/BC1 compressed, 52x52px)
-2. **Matching**: Case-insensitive match between file basename and object `icon_name`
-3. **Output**: WebP format, named by `game_id` (e.g., `c27c91eabaf927f3.webp`)
-4. **Organization**: Subdirectories by object kind (`abilities/`, `items/`, `talents/`, etc.)
+Both modes always skip: versioned duplicates (FQN containing `/`), test/debug/deprecated content.
 
-Icons are saved for ALL objects that reference them (shared icons get multiple copies with different game_ids).
+Extracted FQN prefixes: `abl` (abilities), `tal` (talents), `itm` (items), `npc` (NPCs), `qst` (quests), `cdx` (codex), `ach` (achievements), `schem` (schematics), `mpn` (map pins), `pkg` (packages), `loot` (loot tables), `rew` (rewards), `cnv` (conversations), `apc` (appearances), `class` (class definitions).
 
-## FQN Classification
-
-The `gifts` module parses item FQNs into structured fragments that match the frontend TypeScript types exactly. This is the pattern for classifying items by FQN — more modules will follow as we need them.
-
-**Gift items** (`itm.companion.gift.*`):
-- FQN: `itm.companion.gift.{type}.{quality}_rank{rank}_v1`
-- Rust: `GiftType`, `GiftQuality` enums + `parse_gift_fqn()`
-- TS: `GiftType`, `GiftQuality` types in `data/gift-calculator.ts`
-- Map: `type → quality → rank → game_id` (Rust `GiftGameIdMap`, TS `GIFT_GAME_IDS`)
-
-Both sides parse the same FQN fragments into the same structure. Icons resolve to `{game_id}.webp`.
-
-## Binary Format Specifications
-
-SWTOR uses a layered container format. Understanding this is key to extracting game data.
-
-### Overview
-
-```
-.tor file (MYP archive)
-  -> Contains many files, identified by hash
-       -> PBUK container (game object bundles)
-             -> DBLB wrapper (16 bytes)
-                   -> DBLB object block
-                         -> Individual GOM objects
-                               -> 42-byte header + FQN + ZSTD payload
-```
-
-### MYP Archive Format (.tor files)
-
-MYP is BioWare's archive format. Each `.tor` file contains thousands of compressed files.
-
-```
-Header (40 bytes):
-  bytes 0-3:   Magic "MYP\0"
-  bytes 4-7:   Version
-  bytes 8-15:  File table offset (u64)
-  bytes 16-23: File table size
-  bytes 24-31: File count
-  bytes 32-39: Reserved
-
-File Table Entry (34 bytes each):
-  bytes 0-7:   Data offset in archive (u64)
-  bytes 8-11:  Compressed size (u32)
-  bytes 12-15: Uncompressed size (u32)
-  bytes 16-23: Filename hash (u64) - used for lookup
-  bytes 24-27: CRC32
-  bytes 28-31: Compression type (0=none, 1=zlib, 2=zstd)
-  bytes 32-33: Flags
-```
-
-Files are identified by a 64-bit hash of their path. A hash dictionary (`hashes_filename.txt`) maps hashes back to paths.
-
-### PBUK Container Format
-
-PBUK ("Package Bundle"?) wraps collections of game objects.
-
-```
-PBUK Header (12 bytes):
-  bytes 0-3:   Magic "PBUK"
-  bytes 4-5:   Chunk count (u16) - typically 2
-  bytes 6-7:   Unknown (u16)
-  bytes 8-11:  Offset to first DBLB (always 12)
-
-At offset 12: DBLB Wrapper (16 bytes)
-At offset 28: Object DBLB block
-```
-
-### DBLB Format (Game Object Model)
-
-DBLB ("Database Block"?) contains the actual game objects.
-
-```
-DBLB Wrapper (16 bytes, at PBUK offset 12):
-  bytes 0-3:   Magic "DBLB"
-  bytes 4-7:   Version (u32, typically 2)
-  bytes 8-11:  Padding (zeros)
-  bytes 12-15: Total DBLB size (u32)
-
-Object DBLB (at PBUK offset 28):
-  bytes 0-3:   Magic "DBLB"
-  bytes 4-7:   Version (u32)
-  bytes 8-11:  First object size (u32) - important!
-  bytes 12-15: Padding
-  bytes 16+:   Object data begins
-```
-
-### GOM Object Format
-
-Each object within a DBLB block has this structure:
-
-```
-Object Structure:
-  bytes 0-7:   GUID (u64, little-endian)
-  bytes 8-41:  Header data (GUIDs, offsets, flags)
-  byte 42+:    FQN string (null-terminated ASCII)
-               Example: "itm.gen.lots.weapon.blaster_rifle..."
-  [padding]:   Align to next boundary
-  [ZSTD]:      Compressed payload (magic: 0x28 0xB5 0x2F 0xFD)
-  [8 bytes]:   Footer (next object link)
-```
-
-**Key insight**: The ZSTD frame ends 8 bytes before the next object. You must trim the last 8 bytes to get a valid ZSTD frame.
-
-### ZSTD Payload
-
-The compressed payload contains binary GOM data with:
-- Length-prefixed strings (1-byte length + ASCII)
-- Nested object references
-- Property values
-
-```
-String format in payload:
-  byte 0:      Length (0-255)
-  bytes 1-N:   ASCII string data
-```
-
-### Parsing Strategy
-
-1. **Open .tor archive** - Read MYP header and file table
-2. **Find PBUK files** - Check first 4 bytes for "PBUK" magic
-3. **Locate Object DBLB** - Always at offset 28 in PBUK
-4. **Read first object size** - From DBLB header bytes 8-11
-5. **Parse objects iteratively**:
-   - Read 42-byte header
-   - Find null-terminated FQN
-   - Locate ZSTD magic (0x28 0xB5 0x2F 0xFD)
-   - Try decompressing with increasing frame sizes
-   - On success, object ends 8 bytes after ZSTD frame
-   - Align to 8-byte boundary for next object
-
-### FQN Prefixes
-
-Common Fully Qualified Name prefixes:
-
-| Prefix | Type |
-|--------|------|
-| `qst.` | Quest |
-| `abl.` | Ability |
-| `itm.` | Item |
-| `npc.` | NPC |
-| `cnv.` | Conversation |
-| `cdx.` | Codex |
-| `ach.` | Achievement |
-| `enc.` | Encounter |
-| `loc.` | Location |
-| `mpn.` | Mission/Planet |
-| `dyn.` | Dynamic |
-| `spn.` | Spawn |
-| `plc.` | Placeable |
-| `cbt.` | Combat |
-| `veh.` | Vehicle |
-| `mtx.` | Cartel Market |
-| `tal.` | Talent |
-
-## Project Structure
-
-```
-tools/kessel/
-+-- Cargo.toml
-+-- README.md
-+-- grammar.toml        # Description cleanup rules (embedded at compile time)
-+-- docs/
-|   +-- STATUS.md       # Current extraction results
-|   +-- MAPPINGS.md     # File format mappings reference
-+-- src/
-|   +-- main.rs         # CLI + quality filters
-|   +-- lib.rs          # Library exports
-|   +-- myp.rs          # MYP archive reader
-|   +-- pbuk.rs         # PBUK/DBLB/ZSTD parser
-|   +-- stb.rs          # STB string table parser
-|   +-- hash.rs         # Hash dictionary loader
-|   +-- db.rs           # SQLite output
-|   +-- dds.rs          # DDS to WebP conversion
-|   +-- gifts.rs        # Gift item FQN classification (shared with TS)
-|   +-- grammar.rs      # Description grammar processor
-|   +-- unknowns.rs     # Unknown pattern tracking
-|   +-- schema/
-|       +-- mod.rs      # GameObject struct
-+-- tests/              # Integration tests
-```
-
-## Output Schema
+## Output schema
 
 ```sql
 CREATE TABLE objects (
-    guid INTEGER PRIMARY KEY,
-    fqn TEXT NOT NULL UNIQUE,
+    guid TEXT PRIMARY KEY,
+    fqn TEXT NOT NULL,
     game_id TEXT NOT NULL,      -- sha256(fqn:guid)[0:16]
     kind TEXT NOT NULL,
     icon_name TEXT,
-    string_id INTEGER,
+    string_id INTEGER,          -- links to strings.id2
     for_export INTEGER DEFAULT 1,
     version INTEGER DEFAULT 0,
     revision INTEGER DEFAULT 0,
-    json TEXT,                  -- Parsed payload data
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    json TEXT NOT NULL,
+    created_at INTEGER DEFAULT (unixepoch())
 );
 
 CREATE TABLE strings (
     fqn TEXT PRIMARY KEY,
     locale TEXT NOT NULL,
     id1 INTEGER NOT NULL,
-    id2 INTEGER NOT NULL,
+    id2 INTEGER NOT NULL,       -- links to objects.string_id
     text TEXT NOT NULL,
     version INTEGER DEFAULT 0
 );
-
--- Views for common queries
-CREATE VIEW abilities AS SELECT * FROM objects WHERE kind = 'Ability' OR fqn LIKE 'abl.%';
-CREATE VIEW items AS SELECT * FROM objects WHERE kind = 'Item' OR fqn LIKE 'itm.%';
-CREATE VIEW npcs AS SELECT * FROM objects WHERE kind = 'Npc' OR fqn LIKE 'npc.%';
-CREATE VIEW quests AS SELECT * FROM objects WHERE kind = 'Quest' OR fqn LIKE 'qst.%';
-
-CREATE INDEX idx_objects_kind ON objects(kind);
-CREATE INDEX idx_objects_icon_name ON objects(icon_name);
-CREATE INDEX idx_strings_locale ON strings(locale);
-CREATE INDEX idx_strings_id2 ON strings(id2);
 ```
 
-## Dependencies
+Views: `abilities`, `items`, `npcs`, `quests`.
 
-- `zstd` - ZSTD decompression (current SWTOR format)
-- `flate2` - zlib decompression (legacy format)
-- `rusqlite` - SQLite output
-- `image` + `image_dds` - DDS to WebP conversion
-- `quick-xml` + `serde_json` - XML parsing
-- `regex` - Grammar rule processing
-- `toml` - Grammar configuration parsing
-- `ureq` - HTTP client (auto-downloading hash dictionary)
+### Querying
 
-## References
+```bash
+# Object counts by type
+sqlite3 spice.sqlite "SELECT kind, COUNT(*) FROM objects GROUP BY kind ORDER BY 2 DESC;"
 
-- [bespin](https://github.com/kbatten/bespin) - Original format specs (Python, 2012)
-- [Jedipedia](https://swtor.jedipedia.net) - Reference database
-- [SWTOR-Slicers](https://github.com/SWTOR-Slicers) - Community tools
+# Find an ability by name
+sqlite3 spice.sqlite "
+  SELECT o.fqn, s.text
+  FROM objects o
+  JOIN strings s ON s.id2 = o.string_id AND s.locale = 'en-us' AND s.id1 = 1
+  WHERE o.kind = 'Ability' AND s.text LIKE '%Ravage%';
+"
+```
+
+## How it works
+
+SWTOR stores game data in layered binary containers:
+
+```
+.tor archive (MYP format)
+  -> Files identified by 64-bit hash
+    -> PBUK containers (game object bundles)
+      -> DBLB blocks (database blocks)
+        -> GOM objects (42-byte header + FQN + ZSTD-compressed payload)
+```
+
+Kessel reads the archive, resolves hashes to paths via a dictionary, decompresses each layer (zstd or zlib), and extracts structured data from the binary GOM payloads.
+
+String tables (`.stb` files) are parsed separately and linked to objects via `string_id`.
+
+Icons are DDS textures converted to lossless WebP, organized by object kind (`abilities/`, `items/`, `talents/`, etc.) and named by `game_id` for deterministic frontend lookup.
+
+## Project structure
+
+```
+kessel/
+  Cargo.toml
+  grammar.toml          # Description cleanup rules (embedded at compile time)
+  src/
+    main.rs             # CLI entry point and extraction pipeline
+    lib.rs              # Library exports
+    myp.rs              # MYP archive reader (decompress .tor files)
+    pbuk.rs             # PBUK/DBLB parser (extract GOM objects)
+    stb.rs              # STB string table parser
+    db.rs               # SQLite database (batch inserts, grammar application)
+    dds.rs              # DDS to WebP icon conversion
+    hash.rs             # Hash dictionary and game_id computation
+    grammar.rs          # Template/literal/cleanup rule processor
+    gifts.rs            # Gift item FQN classification
+    unknowns.rs         # Unknown pattern tracking
+    schema/mod.rs       # GameObject struct and binary extraction
+    bin/
+      analyze_headers.rs  # DDS header analysis utility
+  tests/
+    schema_test.rs
+    pbuk_test.rs
+    myp_test.rs
+    xml_parser_test.rs
+```
+
+## License
+
+MIT

@@ -1,2 +1,4 @@
 /target/
-/output/
+*.sqlite
+*.log
+/icons/
