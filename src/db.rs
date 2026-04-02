@@ -198,11 +198,13 @@ impl Database {
             );
 
             -- Quest chain links (built from GUID refs and prereq graph)
+            -- Uses game_id (sha256(fqn:guid)[0:16]) not FQN, since FQN is
+            -- not unique in the objects table (guid is the true PK)
             CREATE TABLE IF NOT EXISTS quest_chain (
-                source_fqn TEXT NOT NULL,
-                target_fqn TEXT NOT NULL,
+                source_game_id TEXT NOT NULL,
+                target_game_id TEXT NOT NULL,
                 link_type TEXT NOT NULL,
-                PRIMARY KEY (source_fqn, target_fqn)
+                PRIMARY KEY (source_game_id, target_game_id)
             );
 
             -- Extraction metadata
