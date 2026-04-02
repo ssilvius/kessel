@@ -103,9 +103,8 @@ impl GameObject {
         };
 
         // Extract string_id: try FQN-based first (finds 91% of quests), then type-marker fallback
-        let string_id =
-            Self::extract_string_id_via_fqn_with(&gom.payload, Some(&gom.fqn))
-                .or_else(|| Self::extract_string_id_via_type_marker(&gom.payload));
+        let string_id = Self::extract_string_id_via_fqn_with(&gom.payload, Some(&gom.fqn))
+            .or_else(|| Self::extract_string_id_via_type_marker(&gom.payload));
 
         // Encode raw payload as base64 for later analysis
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -211,8 +210,7 @@ impl GameObject {
     /// Fallback extraction: search for string table type marker CF 400000115CE87488.
     /// Handles talents and objects where FQN-based extraction fails.
     fn extract_string_id_via_type_marker(payload: &[u8]) -> Option<u32> {
-        const STRING_TABLE_TYPE: [u8; 9] =
-            [0xCF, 0x40, 0x00, 0x00, 0x11, 0x5C, 0xE8, 0x74, 0x88];
+        const STRING_TABLE_TYPE: [u8; 9] = [0xCF, 0x40, 0x00, 0x00, 0x11, 0x5C, 0xE8, 0x74, 0x88];
         const MIN_STRING_ID: u32 = 1_000;
         const MAX_STRING_ID: u32 = 10_000_000;
 
@@ -233,9 +231,8 @@ impl GameObject {
                     }
 
                     // Fall back to 3-byte big-endian (GSF talents: tal.spvp.*)
-                    let be24 = (id_bytes[0] as u32) << 16
-                        | (id_bytes[1] as u32) << 8
-                        | id_bytes[2] as u32;
+                    let be24 =
+                        (id_bytes[0] as u32) << 16 | (id_bytes[1] as u32) << 8 | id_bytes[2] as u32;
                     if (MIN_STRING_ID..=MAX_STRING_ID).contains(&be24) {
                         return Some(be24);
                     }
