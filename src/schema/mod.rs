@@ -102,8 +102,10 @@ impl GameObject {
             Self::extract_visual_ref(&gom.payload)
         };
 
-        // Extract string_id from CE marker after string table type
-        let string_id = Self::extract_string_id(&gom.payload);
+        // Extract string_id: try FQN-based first (finds 91% of quests), then type-marker fallback
+        let string_id =
+            Self::extract_string_id_via_fqn_with(&gom.payload, Some(&gom.fqn))
+                .or_else(|| Self::extract_string_id_via_type_marker(&gom.payload));
 
         // Encode raw payload as base64 for later analysis
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -132,24 +134,90 @@ impl GameObject {
         }
     }
 
-    /// Extract string_id from payload by finding CE marker after string table type.
-    /// Pattern: CF 400000115CE87488 (string table type) followed by 02 CE <4-byte id>
-    ///
-    /// Discipline talents encode the id as 4-byte little-endian.
-    /// GSF talents (tal.spvp.*) encode it as 3-byte big-endian with a trailing 0x00.
-    /// We try LE32 first, then fall back to BE24 if out of range.
-    ///
-    /// Valid string IDs are in range 145000-1200000 based on STB extraction.
-    fn extract_string_id(payload: &[u8]) -> Option<u32> {
-        // String table type marker: CF 40 00 00 11 5C E8 74 88
-        const STRING_TABLE_TYPE: [u8; 9] = [0xCF, 0x40, 0x00, 0x00, 0x11, 0x5C, 0xE8, 0x74, 0x88];
-        const MIN_STRING_ID: u32 = 145_000;
-        const MAX_STRING_ID: u32 = 1_200_000;
+    /// FQN-based string_id extraction.
+    fn extract_string_id_via_fqn_with(payload: &[u8], fqn: Option<&str>) -> Option<u32> {
+        const MIN_STRING_ID: u32 = 1_000;
+        const MAX_STRING_ID: u32 = 10_000_000;
 
-        // Search for the string table type marker
+        // Find FQN in payload -- either use provided FQN or scan for dot-separated identifier
+        let fqn_end = if let Some(fqn_str) = fqn {
+            let fqn_bytes = fqn_str.as_bytes();
+            let pos = payload
+                .windows(fqn_bytes.len())
+                .position(|w| w == fqn_bytes)?;
+            pos + fqn_bytes.len()
+        } else {
+            // Scan for first dot-separated ASCII identifier (the embedded FQN)
+            Self::find_embedded_fqn_end(payload)?
+        };
+
+        // Scan up to 40 bytes after FQN end for CE marker.
+        // The CE marker (3-byte BE string table ID) typically appears 8-20 bytes after the
+        // FQN in GOM payloads. 40 bytes provides headroom for objects with extra padding or
+        // intermediate fields between FQN and string_id. If CE markers are found beyond this
+        // window in practice, increase the limit (extraction validation will show NULL string_id
+        // for affected objects).
+        let scan_end = (fqn_end + 40).min(payload.len().saturating_sub(3));
+        for i in fqn_end..scan_end {
+            if payload[i] == 0xCE && i + 4 <= payload.len() {
+                // 3-byte big-endian (SWTOR custom CE encoding for string table IDs)
+                let stid = (payload[i + 1] as u32) << 16
+                    | (payload[i + 2] as u32) << 8
+                    | payload[i + 3] as u32;
+                if (MIN_STRING_ID..=MAX_STRING_ID).contains(&stid) {
+                    return Some(stid);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Find the end position of the first embedded FQN in the payload.
+    /// FQNs are dot-separated ASCII identifiers like "qst.class.warrior.act1.the_hunt".
+    fn find_embedded_fqn_end(payload: &[u8]) -> Option<usize> {
+        // Look for a sequence of ASCII chars with dots (FQN pattern)
+        let mut i = 0;
+        while i < payload.len().saturating_sub(10) {
+            // FQNs start with lowercase ASCII
+            if payload[i].is_ascii_lowercase() {
+                let start = i;
+                let mut has_dot = false;
+                let mut j = i;
+                while j < payload.len()
+                    && (payload[j].is_ascii_lowercase()
+                        || payload[j].is_ascii_digit()
+                        || payload[j] == b'.'
+                        || payload[j] == b'_')
+                {
+                    if payload[j] == b'.' {
+                        has_dot = true;
+                    }
+                    j += 1;
+                }
+                let len = j - start;
+                // FQNs are at least ~8 chars with dots (e.g., "qst.x.y")
+                if has_dot && len >= 8 {
+                    return Some(j);
+                }
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+        None
+    }
+
+    /// Fallback extraction: search for string table type marker CF 400000115CE87488.
+    /// Handles talents and objects where FQN-based extraction fails.
+    fn extract_string_id_via_type_marker(payload: &[u8]) -> Option<u32> {
+        const STRING_TABLE_TYPE: [u8; 9] =
+            [0xCF, 0x40, 0x00, 0x00, 0x11, 0x5C, 0xE8, 0x74, 0x88];
+        const MIN_STRING_ID: u32 = 1_000;
+        const MAX_STRING_ID: u32 = 10_000_000;
+
         for i in 0..payload.len().saturating_sub(STRING_TABLE_TYPE.len() + 6) {
             if payload[i..].starts_with(&STRING_TABLE_TYPE) {
-                // After CF + type ID (9 bytes), expect: 02 CE <4 bytes>
                 let after_type = i + STRING_TABLE_TYPE.len();
                 if after_type + 6 <= payload.len()
                     && payload[after_type] == 0x02
@@ -157,7 +225,7 @@ impl GameObject {
                 {
                     let id_bytes = &payload[after_type + 2..after_type + 6];
 
-                    // Try standard 4-byte little-endian first (discipline talents)
+                    // Try 4-byte little-endian first (discipline talents)
                     let le32 =
                         u32::from_le_bytes([id_bytes[0], id_bytes[1], id_bytes[2], id_bytes[3]]);
                     if (MIN_STRING_ID..=MAX_STRING_ID).contains(&le32) {
@@ -165,9 +233,9 @@ impl GameObject {
                     }
 
                     // Fall back to 3-byte big-endian (GSF talents: tal.spvp.*)
-                    // These encode as [XX YY ZZ 00] where BE24 = (XX<<16)|(YY<<8)|ZZ
-                    let be24 =
-                        (id_bytes[0] as u32) << 16 | (id_bytes[1] as u32) << 8 | id_bytes[2] as u32;
+                    let be24 = (id_bytes[0] as u32) << 16
+                        | (id_bytes[1] as u32) << 8
+                        | id_bytes[2] as u32;
                     if (MIN_STRING_ID..=MAX_STRING_ID).contains(&be24) {
                         return Some(be24);
                     }

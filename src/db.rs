@@ -6,6 +6,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::grammar::Grammar;
+use crate::quest;
 use crate::schema::GameObject;
 use crate::stb::StbEntry;
 
@@ -160,6 +161,49 @@ impl Database {
 
             CREATE VIEW IF NOT EXISTS npcs AS
                 SELECT * FROM objects WHERE kind = 'Npc' OR fqn LIKE 'npc.%';
+
+            -- Quest details (classified from FQN patterns)
+            CREATE TABLE IF NOT EXISTS quest_details (
+                fqn TEXT PRIMARY KEY,
+                mission_type TEXT NOT NULL,
+                faction TEXT,
+                planet TEXT,
+                class_code TEXT,
+                companion_class TEXT,
+                step_count INTEGER DEFAULT 0
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_quest_details_type ON quest_details(mission_type);
+            CREATE INDEX IF NOT EXISTS idx_quest_details_planet ON quest_details(planet);
+
+            -- Quest NPC references (npc.* FQNs embedded in payload)
+            CREATE TABLE IF NOT EXISTS quest_npcs (
+                quest_fqn TEXT NOT NULL,
+                npc_fqn TEXT NOT NULL,
+                PRIMARY KEY (quest_fqn, npc_fqn)
+            );
+
+            -- Quest phase references (mpn.* FQNs embedded in payload)
+            CREATE TABLE IF NOT EXISTS quest_phases (
+                quest_fqn TEXT NOT NULL,
+                phase_fqn TEXT NOT NULL,
+                PRIMARY KEY (quest_fqn, phase_fqn)
+            );
+
+            -- Quest prerequisites (has_* variables in payload)
+            CREATE TABLE IF NOT EXISTS quest_prerequisites (
+                fqn TEXT NOT NULL,
+                variable TEXT NOT NULL,
+                PRIMARY KEY (fqn, variable)
+            );
+
+            -- Quest chain links (built from GUID refs and prereq graph)
+            CREATE TABLE IF NOT EXISTS quest_chain (
+                source_fqn TEXT NOT NULL,
+                target_fqn TEXT NOT NULL,
+                link_type TEXT NOT NULL,
+                PRIMARY KEY (source_fqn, target_fqn)
+            );
 
             -- Extraction metadata
             CREATE TABLE IF NOT EXISTS meta (
@@ -335,6 +379,114 @@ impl Database {
         Ok(())
     }
 
+    /// Populate quest tables from extracted objects (second pass).
+    ///
+    /// Reads all quest objects, classifies them by FQN, and extracts embedded
+    /// references (NPCs, phases, prerequisites) from the base64 payload.
+    /// Must be called after all objects and strings are flushed.
+    pub fn populate_quest_tables(&self) -> Result<u64> {
+        self.flush()?;
+
+        // Read phase: load names and quest objects into memory
+        let (name_cache, rows) = {
+            let conn = self.conn.lock().unwrap();
+
+            let mut name_cache: std::collections::HashMap<u32, String> =
+                std::collections::HashMap::new();
+            {
+                let mut stmt =
+                    conn.prepare("SELECT id2, text FROM strings WHERE id1 = 88")?;
+                let name_rows = stmt.query_map([], |row| {
+                    Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?))
+                })?;
+                for row in name_rows {
+                    let (id2, text) = row?;
+                    name_cache.insert(id2, text);
+                }
+            }
+
+            let mut stmt = conn.prepare(
+                "SELECT fqn, string_id, json FROM objects WHERE fqn LIKE 'qst.%' OR kind = 'Quest'",
+            )?;
+            let rows: Vec<(String, Option<u32>, String)> = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<u32>>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+
+            (name_cache, rows)
+        };
+
+        // Write phase: classify and insert into quest tables
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        let mut detail_count = 0u64;
+
+        {
+            let mut detail_stmt = tx.prepare_cached(
+                "INSERT OR REPLACE INTO quest_details (fqn, mission_type, faction, planet, class_code, companion_class, step_count) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            )?;
+            let mut npc_stmt = tx.prepare_cached(
+                "INSERT OR IGNORE INTO quest_npcs (quest_fqn, npc_fqn) VALUES (?1, ?2)",
+            )?;
+            let mut phase_stmt = tx.prepare_cached(
+                "INSERT OR IGNORE INTO quest_phases (quest_fqn, phase_fqn) VALUES (?1, ?2)",
+            )?;
+            let mut prereq_stmt = tx.prepare_cached(
+                "INSERT OR IGNORE INTO quest_prerequisites (fqn, variable) VALUES (?1, ?2)",
+            )?;
+
+            for (fqn, string_id, json_str) in &rows {
+                // Get quest name for classification overrides
+                let name = string_id
+                    .and_then(|sid| name_cache.get(&sid))
+                    .map(|s| s.as_str())
+                    .unwrap_or("");
+
+                let details = quest::classify(fqn, name);
+
+                // Count steps from payload strings (branch/step/task patterns)
+                let step_count = count_quest_steps(json_str);
+
+                detail_stmt.execute(params![
+                    details.fqn,
+                    details.mission_type,
+                    details.faction,
+                    details.planet,
+                    details.class_code,
+                    details.companion_class,
+                    step_count,
+                ])?;
+                detail_count += 1;
+
+                // Extract embedded FQN references from payload strings
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(json_str) {
+                    if let Some(strings) = json.get("strings").and_then(|s| s.as_array()) {
+                        for s in strings {
+                            if let Some(ref_str) = s.as_str() {
+                                if ref_str.starts_with("npc.") {
+                                    npc_stmt.execute(params![fqn, ref_str])?;
+                                } else if ref_str.starts_with("mpn.") {
+                                    phase_stmt.execute(params![fqn, ref_str])?;
+                                } else if ref_str.starts_with("has_") {
+                                    prereq_stmt.execute(params![fqn, ref_str])?;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        tx.commit()?;
+        Ok(detail_count)
+    }
+
     pub fn stats(&self) -> Result<Stats> {
         // Ensure all pending data is flushed before counting
         self.flush()?;
@@ -423,6 +575,26 @@ impl Database {
 
         Ok(mapping)
     }
+}
+
+/// Count quest steps by looking for branch/step/task patterns in payload strings.
+/// Pattern: `_bX_sY_tZ` where X=branch, Y=step, Z=task.
+fn count_quest_steps(json_str: &str) -> i32 {
+    use regex::Regex;
+    use std::sync::OnceLock;
+
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"_b\d+_s(\d+)").unwrap());
+
+    let mut max_step = 0i32;
+    for caps in re.captures_iter(json_str) {
+        if let Ok(n) = caps[1].parse::<i32>() {
+            if n > max_step {
+                max_step = n;
+            }
+        }
+    }
+    max_step
 }
 
 /// Derive an icon filename from a FQN for objects that lack embedded icon references.
