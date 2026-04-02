@@ -396,8 +396,7 @@ impl Database {
             let mut name_cache: std::collections::HashMap<u32, String> =
                 std::collections::HashMap::new();
             {
-                let mut stmt =
-                    conn.prepare("SELECT id2, text FROM strings WHERE id1 = 88")?;
+                let mut stmt = conn.prepare("SELECT id2, text FROM strings WHERE id1 = 88")?;
                 let name_rows = stmt.query_map([], |row| {
                     Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?))
                 })?;
