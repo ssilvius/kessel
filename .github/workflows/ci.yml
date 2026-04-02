@@ -8,6 +8,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # intel_tex_2 compiles C++ but doesn't link libstdc++ on Linux
+  RUSTFLAGS: "-C link-arg=-lstdc++"
 
 jobs:
   check:
