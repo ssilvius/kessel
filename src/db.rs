@@ -470,11 +470,11 @@ impl Database {
                         for s in strings {
                             if let Some(ref_str) = s.as_str() {
                                 if ref_str.starts_with("npc.") {
-                                    let _ = npc_stmt.execute(params![fqn, ref_str]);
+                                    npc_stmt.execute(params![fqn, ref_str])?;
                                 } else if ref_str.starts_with("mpn.") {
-                                    let _ = phase_stmt.execute(params![fqn, ref_str]);
+                                    phase_stmt.execute(params![fqn, ref_str])?;
                                 } else if ref_str.starts_with("has_") {
-                                    let _ = prereq_stmt.execute(params![fqn, ref_str]);
+                                    prereq_stmt.execute(params![fqn, ref_str])?;
                                 }
                             }
                         }
@@ -580,14 +580,17 @@ impl Database {
 /// Count quest steps by looking for branch/step/task patterns in payload strings.
 /// Pattern: `_bX_sY_tZ` where X=branch, Y=step, Z=task.
 fn count_quest_steps(json_str: &str) -> i32 {
+    use regex::Regex;
+    use std::sync::OnceLock;
+
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"_b\d+_s(\d+)").unwrap());
+
     let mut max_step = 0i32;
-    // Quick scan for step patterns without full JSON parse
-    for segment in json_str.split("_s") {
-        if let Some(end) = segment.find('_') {
-            if let Ok(n) = segment[..end].parse::<i32>() {
-                if n > max_step {
-                    max_step = n;
-                }
+    for caps in re.captures_iter(json_str) {
+        if let Ok(n) = caps[1].parse::<i32>() {
+            if n > max_step {
+                max_step = n;
             }
         }
     }
