@@ -151,7 +151,12 @@ impl GameObject {
             Self::find_embedded_fqn_end(payload)?
         };
 
-        // Scan up to 40 bytes after FQN end for CE marker
+        // Scan up to 40 bytes after FQN end for CE marker.
+        // The CE marker (3-byte BE string table ID) typically appears 8-20 bytes after the
+        // FQN in GOM payloads. 40 bytes provides headroom for objects with extra padding or
+        // intermediate fields between FQN and string_id. If CE markers are found beyond this
+        // window in practice, increase the limit (extraction validation will show NULL string_id
+        // for affected objects).
         let scan_end = (fqn_end + 40).min(payload.len().saturating_sub(3));
         for i in fqn_end..scan_end {
             if payload[i] == 0xCE && i + 4 <= payload.len() {
