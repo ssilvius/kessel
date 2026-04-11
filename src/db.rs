@@ -549,17 +549,9 @@ impl Database {
             let mut i = 0;
             while i + 9 <= payload.len() {
                 if payload[i] == 0xCF {
-                    let guid_bytes = &payload[i + 1..i + 9];
-                    let guid_u64 = u64::from_le_bytes([
-                        guid_bytes[0],
-                        guid_bytes[1],
-                        guid_bytes[2],
-                        guid_bytes[3],
-                        guid_bytes[4],
-                        guid_bytes[5],
-                        guid_bytes[6],
-                        guid_bytes[7],
-                    ]);
+                    let guid_u64 = u64::from_le_bytes(
+                        payload[i + 1..i + 9].try_into().expect("slice is 8 bytes"),
+                    );
                     let guid_hex = format!("{:016X}", guid_u64);
 
                     if let Some(target_game_id) = guid_to_game_id.get(&guid_hex) {
