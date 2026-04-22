@@ -7,6 +7,10 @@ Versions follow [Cargo semver](https://doc.rust-lang.org/cargo/reference/semver.
 
 ## [Unreleased]
 
+### Added
+
+- quest_chain table populated from GUID refs in quest payloads, linking chain members by resolved u64 identifiers
+
 ## [0.0.5] - 2026-04-02
 
 First tagged release. Extracts structured SWTOR game data from .tor archives to SQLite.
