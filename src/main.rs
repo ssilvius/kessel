@@ -361,6 +361,9 @@ fn main() -> Result<()> {
     // Second pass: populate quest tables from extracted objects
     let quest_count = db.populate_quest_tables()?;
 
+    // Third pass: build quest chain links from GUID refs in payloads
+    db.populate_quest_chain()?;
+
     // Print summary
     let stats = db.stats()?;
     println!("\nExtraction complete!");
@@ -368,7 +371,10 @@ fn main() -> Result<()> {
     println!("  File hashes scanned: {}", seen_hashes.len());
     println!();
     println!("  Objects: {}", total_objects);
-    println!("    Quests: {} ({} classified)", stats.quests, quest_count);
+    println!(
+        "    Quests: {} ({} classified, {} chain links)",
+        stats.quests, quest_count, stats.chain_links
+    );
     println!("    Abilities: {}", stats.abilities);
     println!("    Items: {}", stats.items);
     println!("    NPCs: {}", stats.npcs);

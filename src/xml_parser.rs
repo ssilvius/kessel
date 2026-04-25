@@ -37,11 +37,7 @@ pub fn parse(data: &[u8]) -> Result<GameObject> {
 
                     match key.as_str() {
                         "GUID" => obj.guid = value,
-                        "fqn" | "Id" => {
-                            if obj.fqn.is_empty() {
-                                obj.fqn = value;
-                            }
-                        }
+                        "fqn" | "Id" if obj.fqn.is_empty() => obj.fqn = value,
                         "Version" => obj.version = value.parse().unwrap_or(0),
                         "Revision" => obj.revision = value.parse().unwrap_or(0),
                         _ => {}
