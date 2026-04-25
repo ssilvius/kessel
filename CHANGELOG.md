@@ -13,6 +13,10 @@ Versions follow [Cargo semver](https://doc.rust-lang.org/cargo/reference/semver.
 - template_guid column on objects table, decoded from GOM header bytes 16-23 (kind-level template constant)
 - quest_npcs table populated by resolving a:enc.* references in quest payloads to npc.* FQNs through encounter object payloads (closes #14)
 
+### Fixed
+
+- enc / spn / plc FQN prefixes added to extraction allowlist. quest_npcs was empty after every extraction because encounter objects were filtered out before populate_quest_npcs could resolve them.
+
 ## [0.0.5] - 2026-04-02
 
 First tagged release. Extracts structured SWTOR game data from .tor archives to SQLite.

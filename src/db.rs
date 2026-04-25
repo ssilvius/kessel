@@ -584,7 +584,33 @@ impl Database {
         tx.commit()?;
         Ok(link_count)
     }
+}
 
+/// Parse the SPN-triple format that appears in quest payloads:
+///
+/// ```text
+/// spn.<faction.planet.path>;<target_fqn>;<numeric_id>
+/// ```
+///
+/// The middle segment is the entity that spawns at this point -- typically
+/// `npc.*`, sometimes `plc.*` or other kinds. Return the embedded FQN only
+/// if it starts with `npc.` (other kinds are ignored here -- this helper is
+/// scoped to NPC resolution).
+fn npc_from_spn_triple(s: &str) -> Option<String> {
+    if !s.starts_with("spn.") {
+        return None;
+    }
+    let mut parts = s.splitn(3, ';');
+    let _spn = parts.next()?;
+    let target = parts.next()?;
+    if target.starts_with("npc.") {
+        Some(target.to_string())
+    } else {
+        None
+    }
+}
+
+impl Database {
     /// Resolve `a:enc.*` references in quest payloads to `npc.*` FQNs by
     /// scanning each referenced encounter's payload, then write rows into
     /// `quest_npcs`. Runs after quest tables are populated.
@@ -648,22 +674,35 @@ impl Database {
             };
             let strings = extract_strings_from_payload(&payload);
 
-            // Quest payloads reference encounters as `a:enc.*`. The `a:` is a
-            // payload-side type marker. Match either with or without the prefix.
             let mut seen_pairs = std::collections::HashSet::new();
+            let mut emit = |npc_fqn: String, count: &mut u64| -> Result<()> {
+                if seen_pairs.insert((quest_fqn.clone(), npc_fqn.clone())) {
+                    npc_stmt.execute(rusqlite::params![quest_fqn, npc_fqn])?;
+                    *count += 1;
+                }
+                Ok(())
+            };
+
             for s in &strings {
+                // Path 1: SPN triple in quest payload -- `spn.X;npc.Y;<numeric_id>`.
+                // The middle segment is the NPC that spawns at this point. This
+                // is the direct quest -> npc reference path.
+                if let Some(npc_fqn) = npc_from_spn_triple(s) {
+                    emit(npc_fqn, &mut link_count)?;
+                    continue;
+                }
+
+                // Path 2: encounter reference (`a:enc.*` or `enc.*`) -- two-hop
+                // resolution through enc_to_npcs map. Encounters often spawn
+                // NPCs that the quest does not name directly.
                 let enc_fqn = match s.strip_prefix("a:") {
                     Some(rest) if rest.starts_with("enc.") => rest,
                     _ if s.starts_with("enc.") => s.as_str(),
                     _ => continue,
                 };
-
                 if let Some(npcs) = enc_to_npcs.get(enc_fqn) {
                     for npc_fqn in npcs {
-                        if seen_pairs.insert((quest_fqn.clone(), npc_fqn.clone())) {
-                            npc_stmt.execute(rusqlite::params![quest_fqn, npc_fqn])?;
-                            link_count += 1;
-                        }
+                        emit(npc_fqn.clone(), &mut link_count)?;
                     }
                 }
             }
@@ -834,4 +873,33 @@ fn derive_icon_from_fqn(fqn: &str) -> Option<String> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn npc_from_spn_triple_extracts_middle_segment() {
+        let s = "spn.location.korriban.class.sith_warrior.judge_and_executioner.jailer_knash;npc.location.korriban.class.sith_warrior.judge_and_executioner.jailer_knash;291310451818496";
+        assert_eq!(
+            npc_from_spn_triple(s).as_deref(),
+            Some("npc.location.korriban.class.sith_warrior.judge_and_executioner.jailer_knash")
+        );
+    }
+
+    #[test]
+    fn npc_from_spn_triple_rejects_non_spn_strings() {
+        assert!(npc_from_spn_triple("npc.korriban.foo").is_none());
+        assert!(npc_from_spn_triple("a:enc.korriban.tomb").is_none());
+        assert!(npc_from_spn_triple("Always").is_none());
+    }
+
+    #[test]
+    fn npc_from_spn_triple_rejects_non_npc_targets() {
+        // Spawn triples can also reference plc.* (placeables); this helper is
+        // scoped to NPC-only and must reject them.
+        let s = "spn.korriban.x;plc.korriban.carving;123";
+        assert!(npc_from_spn_triple(s).is_none());
+    }
 }

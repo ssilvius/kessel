@@ -64,24 +64,61 @@ pub struct GomObject {
     pub payload: Vec<u8>,
 }
 
-/// Extract length-prefixed ASCII strings from a raw GOM payload.
+/// Extract ASCII strings from a raw GOM payload.
 ///
-/// Each string is stored as a length byte followed by `len` ASCII bytes (32-126).
-/// Strings shorter than 2 bytes or longer than 199 are skipped as noise.
+/// GOM uses at least two encodings empirically:
+///
+/// 1. Canonical: `0x06 <length_byte> <ASCII>` -- common in spawn/encounter payloads.
+/// 2. With prefix: `0x06 <flag bytes> <length_byte> <ASCII>` -- common in quest payloads,
+///    e.g., `0x06 01 01 01 <len> <ASCII>`. The intermediate bytes appear to be
+///    flag/array-count metadata between the marker and the actual string.
+///
+/// To catch both, we combine two heuristics: prefer the canonical 0x06 marker
+/// pattern, and fall back to a plain `<length_byte> <ASCII>` scan everywhere
+/// else. The fallback recovers strings whose marker is followed by
+/// intermediate bytes -- it lands on the actual length byte since the
+/// intermediates fail the canonical check.
+///
+/// This is a heuristic, not a full msgpack-style decode. If a future format
+/// change introduces ambiguity, the right fix is to decode the type-tag
+/// stream properly rather than to refine the heuristics.
 pub fn extract_strings_from_payload(payload: &[u8]) -> Vec<String> {
     let mut strings = Vec::new();
     let mut i = 0;
 
-    while i < payload.len() {
+    while i + 2 <= payload.len() {
+        // Canonical: 0x06 <len> <ascii>
+        if payload[i] == 0x06 {
+            let len = payload[i + 1] as usize;
+            let start = i + 2;
+            if (2..200).contains(&len) && start + len <= payload.len() {
+                let candidate = &payload[start..start + len];
+                if candidate.iter().all(|&b| (32..127).contains(&b)) {
+                    if let Ok(s) = std::str::from_utf8(candidate) {
+                        strings.push(s.to_string());
+                        i = start + len;
+                        continue;
+                    }
+                }
+            }
+            i += 1;
+            continue;
+        }
+
+        // Fallback: <len> <ascii> directly. Catches strings preceded by
+        // intermediate bytes after the 0x06 marker (e.g., `06 01 01 01 a7 ...`)
+        // by landing on the actual length byte once the canonical scan has
+        // walked past the intermediates.
         let len = payload[i] as usize;
-        if (2..200).contains(&len) && i + 1 + len <= payload.len() {
-            let candidate = &payload[i + 1..i + 1 + len];
+        let start = i + 1;
+        if (2..200).contains(&len) && start + len <= payload.len() {
+            let candidate = &payload[start..start + len];
             if candidate.iter().all(|&b| (32..127).contains(&b)) {
                 if let Ok(s) = std::str::from_utf8(candidate) {
                     strings.push(s.to_string());
+                    i = start + len;
+                    continue;
                 }
-                i += 1 + len;
-                continue;
             }
         }
         i += 1;
@@ -354,9 +391,11 @@ pub fn parse_dblb_direct(data: &[u8]) -> Result<Vec<GomObject>> {
 mod tests {
     use super::*;
 
+    /// Encode strings the way GOM does: `0x06 <length> <ASCII>`.
     fn pack(strings: &[&str]) -> Vec<u8> {
         let mut buf = Vec::new();
         for s in strings {
+            buf.push(0x06);
             buf.push(s.len() as u8);
             buf.extend_from_slice(s.as_bytes());
         }
@@ -364,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_strings_finds_length_prefixed_ascii() {
+    fn extract_strings_finds_marker_prefixed_ascii() {
         let payload = pack(&["npc.korriban.foo", "enc.korriban.bar"]);
         let strings = extract_strings_from_payload(&payload);
         assert!(strings.contains(&"npc.korriban.foo".to_string()));
@@ -387,5 +426,55 @@ mod tests {
         let payload = pack(&["a:enc.korriban.tomb"]);
         let strings = extract_strings_from_payload(&payload);
         assert!(strings.iter().any(|s| s == "a:enc.korriban.tomb"));
+    }
+
+    #[test]
+    fn extract_strings_uses_fallback_when_marker_is_absent() {
+        // When the canonical 0x06 marker is preceded by intermediate bytes
+        // before the length byte, the fallback heuristic recovers the string
+        // by reading directly at the length byte.
+        let mut payload = vec![0x06, 0x01, 0x01, 0x01, 0x41]; // marker + intermediates + length=65
+        payload.extend_from_slice(
+            b"spn.location.korriban.mob.tomb_2_marka_ragnos.mob02.standard_m_01",
+        );
+        let strings = extract_strings_from_payload(&payload);
+        assert!(
+            strings
+                .iter()
+                .any(|s| s.starts_with("spn.location.korriban")),
+            "fallback must recover string after intermediate bytes, got {:?}",
+            strings
+        );
+    }
+
+    #[test]
+    fn extract_strings_finds_spn_triple_in_quest_payload() {
+        // Quest payloads embed NPC references inside semicolon-delimited triples:
+        // `spn.X;npc.Y;<numeric_id>`. The whole triple is one string in GOM,
+        // so the scanner must yield it intact for downstream parsing.
+        let triple = b"spn.location.korriban.class.sith_warrior.judge_and_executioner.jailer_knash;npc.location.korriban.class.sith_warrior.judge_and_executioner.jailer_knash;291310451818496";
+        let mut payload = vec![0x06, triple.len() as u8];
+        payload.extend_from_slice(triple);
+        let strings = extract_strings_from_payload(&payload);
+        assert_eq!(strings.len(), 1);
+        assert!(strings[0].starts_with("spn."));
+        assert!(strings[0].contains(";npc."));
+    }
+
+    #[test]
+    fn extract_strings_finds_full_fqn_when_marker_is_a_substring_byte() {
+        // The length byte 0x41 ('A') is itself printable ASCII. The previous
+        // heuristic incorrectly emitted "Aspn.l" because it read the marker
+        // 0x06 as length=6. With the marker scan, the full 65-char FQN is
+        // emitted instead.
+        let mut payload = vec![0x06, 0x41];
+        payload.extend_from_slice(
+            b"spn.location.korriban.mob.tomb_2_marka_ragnos.mob02.standard_m_01",
+        );
+        let strings = extract_strings_from_payload(&payload);
+        assert_eq!(
+            strings,
+            vec!["spn.location.korriban.mob.tomb_2_marka_ragnos.mob02.standard_m_01".to_string()]
+        );
     }
 }

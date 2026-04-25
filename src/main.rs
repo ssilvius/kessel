@@ -464,7 +464,11 @@ fn should_extract_object(fqn: &str, unfiltered: bool) -> bool {
         None => fqn,
     };
 
-    // Must be a known prefix type (always applied)
+    // Must be a known prefix type (always applied).
+    // enc/spn/plc are required for quest_npcs population: quest payloads
+    // reference NPCs through encounter (enc.*) and spawn (spn.*) intermediaries
+    // and through placeable (plc.*) targets. Without these, populate_quest_npcs
+    // sees an empty resolution map and writes zero rows.
     if !matches!(
         prefix,
         "abl"
@@ -482,6 +486,9 @@ fn should_extract_object(fqn: &str, unfiltered: bool) -> bool {
             | "cnv"
             | "apc"
             | "class"
+            | "enc"
+            | "spn"
+            | "plc"
     ) {
         return false;
     }
