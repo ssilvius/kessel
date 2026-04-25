@@ -636,17 +636,22 @@ impl Database {
             Ok(rows)
         }
 
-        // Pull encounter and quest rows under one lock; both are needed before writes.
-        let (enc_rows, quest_rows) = {
+        // Pull encounter, spawn, and quest rows under one lock.
+        let (enc_rows, spawn_rows, quest_rows) = {
             let conn = self.conn.lock().unwrap();
             let enc_rows = fetch_fqn_payloads(&conn, "Encounter")?;
+            let spawn_rows = fetch_fqn_payloads(&conn, "Spawn")?;
             let quest_rows = fetch_fqn_payloads(&conn, "Quest")?;
-            (enc_rows, quest_rows)
+            (enc_rows, spawn_rows, quest_rows)
         };
 
-        // Build enc_fqn -> Vec<npc_fqn> by scanning each encounter payload once.
-        let mut enc_to_npcs: HashMap<String, Vec<String>> = HashMap::new();
-        for (enc_fqn, payload_b64) in enc_rows {
+        // Build spn_fqn -> Vec<npc_fqn> by scanning each spawn payload once.
+        // Spawns are the layer between encounters and NPCs: encounter payloads
+        // reference `spn.*`, spawn payloads reference `npc.*`. Without this
+        // map, the enc -> npc resolution finds only the small subset of
+        // encounters that name NPCs directly (~166 of 9652).
+        let mut spn_to_npcs: HashMap<String, Vec<String>> = HashMap::new();
+        for (spn_fqn, payload_b64) in spawn_rows {
             let Ok(payload) = BASE64.decode(&payload_b64) else {
                 continue;
             };
@@ -654,6 +659,33 @@ impl Database {
                 .into_iter()
                 .filter(|s| s.starts_with("npc."))
                 .collect();
+            npcs.sort();
+            npcs.dedup();
+            if !npcs.is_empty() {
+                spn_to_npcs.insert(spn_fqn, npcs);
+            }
+        }
+
+        // Build enc_fqn -> Vec<npc_fqn>. An encounter's NPCs come from two
+        // sources, joined together:
+        //   1. npc.* strings directly in the encounter payload
+        //   2. spn.* strings in the encounter payload, resolved via spn_to_npcs
+        let mut enc_to_npcs: HashMap<String, Vec<String>> = HashMap::new();
+        for (enc_fqn, payload_b64) in enc_rows {
+            let Ok(payload) = BASE64.decode(&payload_b64) else {
+                continue;
+            };
+            let strings = extract_strings_from_payload(&payload);
+            let mut npcs: Vec<String> = Vec::new();
+            for s in &strings {
+                if s.starts_with("npc.") {
+                    npcs.push(s.clone());
+                } else if s.starts_with("spn.") {
+                    if let Some(spn_npcs) = spn_to_npcs.get(s) {
+                        npcs.extend(spn_npcs.iter().cloned());
+                    }
+                }
+            }
             npcs.sort();
             npcs.dedup();
             if !npcs.is_empty() {

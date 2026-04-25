@@ -66,28 +66,48 @@ pub struct GomObject {
 
 /// Extract ASCII strings from a raw GOM payload.
 ///
-/// GOM uses at least two encodings empirically:
+/// GOM uses at least three string encodings empirically:
 ///
-/// 1. Canonical: `0x06 <length_byte> <ASCII>` -- common in spawn/encounter payloads.
-/// 2. With prefix: `0x06 <flag bytes> <length_byte> <ASCII>` -- common in quest payloads,
-///    e.g., `0x06 01 01 01 <len> <ASCII>`. The intermediate bytes appear to be
-///    flag/array-count metadata between the marker and the actual string.
+/// 1. Canonical: `0x06 <len> <ASCII>` -- common in spawn payloads.
+/// 2. With prefix: `0x06 <flag bytes> <len> <ASCII>` -- common in quest payloads
+///    (e.g. `0x06 01 01 01 a7 ...`). Intermediate bytes are array-count or
+///    flag metadata between the marker and the actual length.
+/// 3. Array element: `0xD2 0x01 <index> <len> <ASCII>` -- common in encounter
+///    payloads. `0xD2 0x01` is an array-element header followed by an
+///    incrementing 1-byte index ('A', 'B', 'C', ...) before the length.
 ///
-/// To catch both, we combine two heuristics: prefer the canonical 0x06 marker
-/// pattern, and fall back to a plain `<length_byte> <ASCII>` scan everywhere
-/// else. The fallback recovers strings whose marker is followed by
-/// intermediate bytes -- it lands on the actual length byte since the
-/// intermediates fail the canonical check.
+/// We try in priority: array element first (strictest signature), canonical
+/// 0x06 next, and a bare-length fallback last. The fallback recovers strings
+/// whose marker is followed by intermediate bytes by landing on the actual
+/// length byte once the more specific patterns walk past.
 ///
-/// This is a heuristic, not a full msgpack-style decode. If a future format
+/// This is heuristic, not a full msgpack-style decode. If a future format
 /// change introduces ambiguity, the right fix is to decode the type-tag
-/// stream properly rather than to refine the heuristics.
+/// stream properly rather than to refine the heuristics further.
 pub fn extract_strings_from_payload(payload: &[u8]) -> Vec<String> {
     let mut strings = Vec::new();
     let mut i = 0;
 
-    while i + 2 <= payload.len() {
-        // Canonical: 0x06 <len> <ascii>
+    while i + 4 <= payload.len() {
+        // Pattern 3: array element `0xD2 0x01 <index> <len> <ASCII>`.
+        if payload[i] == 0xD2 && payload[i + 1] == 0x01 {
+            let len = payload[i + 3] as usize;
+            let start = i + 4;
+            if (2..200).contains(&len) && start + len <= payload.len() {
+                let candidate = &payload[start..start + len];
+                if candidate.iter().all(|&b| (32..127).contains(&b)) {
+                    if let Ok(s) = std::str::from_utf8(candidate) {
+                        strings.push(s.to_string());
+                        i = start + len;
+                        continue;
+                    }
+                }
+            }
+            i += 1;
+            continue;
+        }
+
+        // Pattern 1: canonical `0x06 <len> <ASCII>`.
         if payload[i] == 0x06 {
             let len = payload[i + 1] as usize;
             let start = i + 2;
@@ -105,10 +125,8 @@ pub fn extract_strings_from_payload(payload: &[u8]) -> Vec<String> {
             continue;
         }
 
-        // Fallback: <len> <ascii> directly. Catches strings preceded by
-        // intermediate bytes after the 0x06 marker (e.g., `06 01 01 01 a7 ...`)
-        // by landing on the actual length byte once the canonical scan has
-        // walked past the intermediates.
+        // Fallback: `<len> <ASCII>` directly. Catches pattern 2 by landing
+        // on the actual length byte once intermediates have been skipped.
         let len = payload[i] as usize;
         let start = i + 1;
         if (2..200).contains(&len) && start + len <= payload.len() {
@@ -459,6 +477,22 @@ mod tests {
         assert_eq!(strings.len(), 1);
         assert!(strings[0].starts_with("spn."));
         assert!(strings[0].contains(";npc."));
+    }
+
+    #[test]
+    fn extract_strings_recognises_array_element_d2_01_marker() {
+        // Encounter payloads encode array-element strings as
+        // `0xD2 0x01 <index> <len> <ASCII>`. Without this case the scanner's
+        // fallback heuristic produces a truncated string starting with the
+        // index byte ('A'/'B'/...) misread as length.
+        let mut payload = vec![0xD2, 0x01, b'A', 0x40]; // header + index='A' + len=0x40 (64)
+        let content = b"spn.location.tatooine.mob.hub4.green.shared.poi00_wilderness.bnt";
+        assert_eq!(content.len(), 64);
+        payload.extend_from_slice(content);
+        let strings = extract_strings_from_payload(&payload);
+        assert_eq!(strings.len(), 1);
+        assert_eq!(strings[0].as_bytes(), content);
+        assert!(!strings[0].starts_with('A'), "must not include index byte");
     }
 
     #[test]
