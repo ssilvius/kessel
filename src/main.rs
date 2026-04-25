@@ -364,6 +364,9 @@ fn main() -> Result<()> {
     // Third pass: build quest chain links from GUID refs in payloads
     db.populate_quest_chain()?;
 
+    // Fourth pass: resolve a:enc.* refs in quest payloads to npc.* via encounter payloads
+    db.populate_quest_npcs()?;
+
     // Print summary
     let stats = db.stats()?;
     println!("\nExtraction complete!");
@@ -372,8 +375,8 @@ fn main() -> Result<()> {
     println!();
     println!("  Objects: {}", total_objects);
     println!(
-        "    Quests: {} ({} classified, {} chain links)",
-        stats.quests, quest_count, stats.chain_links
+        "    Quests: {} ({} classified, {} chain links, {} npc links)",
+        stats.quests, quest_count, stats.chain_links, stats.npc_links
     );
     println!("    Abilities: {}", stats.abilities);
     println!("    Items: {}", stats.items);

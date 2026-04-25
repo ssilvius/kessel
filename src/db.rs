@@ -91,6 +91,7 @@ pub struct Stats {
     pub npcs: u64,
     pub strings: u64,
     pub chain_links: u64,
+    pub npc_links: u64,
 }
 
 impl Database {
@@ -584,6 +585,95 @@ impl Database {
         Ok(link_count)
     }
 
+    /// Resolve `a:enc.*` references in quest payloads to `npc.*` FQNs by
+    /// scanning each referenced encounter's payload, then write rows into
+    /// `quest_npcs`. Runs after quest tables are populated.
+    ///
+    /// Two-hop resolution: quest payload contains `a:enc.<faction>.<planet>...`
+    /// strings; encounter object payload contains `npc.*` strings. The `a:`
+    /// prefix is a payload-side type marker and is stripped before the lookup.
+    pub fn populate_quest_npcs(&self) -> Result<u64> {
+        use crate::pbuk::extract_strings_from_payload;
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        use std::collections::HashMap;
+
+        fn fetch_fqn_payloads(conn: &Connection, kind: &str) -> Result<Vec<(String, String)>> {
+            let mut stmt = conn.prepare(
+                "SELECT fqn, json_extract(json, '$.payload_b64') FROM objects WHERE kind = ?1",
+            )?;
+            let rows: Vec<(String, String)> = stmt
+                .query_map([kind], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(rows)
+        }
+
+        // Pull encounter and quest rows under one lock; both are needed before writes.
+        let (enc_rows, quest_rows) = {
+            let conn = self.conn.lock().unwrap();
+            let enc_rows = fetch_fqn_payloads(&conn, "Encounter")?;
+            let quest_rows = fetch_fqn_payloads(&conn, "Quest")?;
+            (enc_rows, quest_rows)
+        };
+
+        // Build enc_fqn -> Vec<npc_fqn> by scanning each encounter payload once.
+        let mut enc_to_npcs: HashMap<String, Vec<String>> = HashMap::new();
+        for (enc_fqn, payload_b64) in enc_rows {
+            let Ok(payload) = BASE64.decode(&payload_b64) else {
+                continue;
+            };
+            let mut npcs: Vec<String> = extract_strings_from_payload(&payload)
+                .into_iter()
+                .filter(|s| s.starts_with("npc."))
+                .collect();
+            npcs.sort();
+            npcs.dedup();
+            if !npcs.is_empty() {
+                enc_to_npcs.insert(enc_fqn, npcs);
+            }
+        }
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut npc_stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO quest_npcs (quest_fqn, npc_fqn) VALUES (?1, ?2)",
+        )?;
+
+        let mut link_count = 0u64;
+        for (quest_fqn, payload_b64) in &quest_rows {
+            let Ok(payload) = BASE64.decode(payload_b64) else {
+                continue;
+            };
+            let strings = extract_strings_from_payload(&payload);
+
+            // Quest payloads reference encounters as `a:enc.*`. The `a:` is a
+            // payload-side type marker. Match either with or without the prefix.
+            let mut seen_pairs = std::collections::HashSet::new();
+            for s in &strings {
+                let enc_fqn = match s.strip_prefix("a:") {
+                    Some(rest) if rest.starts_with("enc.") => rest,
+                    _ if s.starts_with("enc.") => s.as_str(),
+                    _ => continue,
+                };
+
+                if let Some(npcs) = enc_to_npcs.get(enc_fqn) {
+                    for npc_fqn in npcs {
+                        if seen_pairs.insert((quest_fqn.clone(), npc_fqn.clone())) {
+                            npc_stmt.execute(rusqlite::params![quest_fqn, npc_fqn])?;
+                            link_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        drop(npc_stmt);
+        tx.commit()?;
+        Ok(link_count)
+    }
+
     pub fn stats(&self) -> Result<Stats> {
         // Ensure all pending data is flushed before counting
         self.flush()?;
@@ -597,6 +687,8 @@ impl Database {
         let strings: u64 = conn.query_row("SELECT COUNT(*) FROM strings", [], |row| row.get(0))?;
         let chain_links: u64 =
             conn.query_row("SELECT COUNT(*) FROM quest_chain", [], |row| row.get(0))?;
+        let npc_links: u64 =
+            conn.query_row("SELECT COUNT(*) FROM quest_npcs", [], |row| row.get(0))?;
 
         Ok(Stats {
             quests,
@@ -605,6 +697,7 @@ impl Database {
             npcs,
             strings,
             chain_links,
+            npc_links,
         })
     }
 

@@ -11,6 +11,7 @@ Versions follow [Cargo semver](https://doc.rust-lang.org/cargo/reference/semver.
 
 - quest_chain table populated from GUID refs in quest payloads, linking chain members by resolved u64 identifiers
 - template_guid column on objects table, decoded from GOM header bytes 16-23 (kind-level template constant)
+- quest_npcs table populated by resolving a:enc.* references in quest payloads to npc.* FQNs through encounter object payloads (closes #14)
 
 ## [0.0.5] - 2026-04-02
 
