@@ -4,11 +4,28 @@ use crate::pbuk::GomObject;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Read 8 little-endian bytes from `header` starting at `offset` and format as
+/// 16-char uppercase hex. Returns empty string if the header is too short.
+fn read_header_guid(header: &[u8], offset: usize) -> String {
+    let end = offset + 8;
+    if header.len() < end {
+        return String::new();
+    }
+    let bytes: [u8; 8] = header[offset..end].try_into().unwrap();
+    format!("{:016X}", u64::from_le_bytes(bytes))
+}
+
 /// Generic game object extracted from GOM
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GameObject {
-    /// Global unique identifier (from GOM header)
+    /// Global unique identifier (from GOM header bytes 0-7)
     pub guid: String,
+
+    /// Kind-level template GUID (from GOM header bytes 16-23, little-endian u64
+    /// formatted as 16-char hex). Constant per kind (Quest=c767e4f9..., Npc=bde17800...,
+    /// Item=0ecd1a01..., Ability=d2f48302...) with <1% variant outliers. Empirically
+    /// verified across 154K objects 2026-04-23.
+    pub template_guid: String,
 
     /// Fully qualified name (e.g., "qst.class.warrior.act1.the_hunt")
     pub fqn: String,
@@ -70,23 +87,9 @@ impl GameObject {
         }
         .to_string();
 
-        // Extract GUID from header bytes 0-7 (little-endian u64)
-        let guid = if gom.header.len() >= 8 {
-            let guid_bytes = &gom.header[0..8];
-            let guid_u64 = u64::from_le_bytes([
-                guid_bytes[0],
-                guid_bytes[1],
-                guid_bytes[2],
-                guid_bytes[3],
-                guid_bytes[4],
-                guid_bytes[5],
-                guid_bytes[6],
-                guid_bytes[7],
-            ]);
-            format!("{:016X}", guid_u64)
-        } else {
-            String::new()
-        };
+        // Bytes 0-7: content GUID. Bytes 16-23: kind-level template GUID.
+        let guid = read_header_guid(&gom.header, 0);
+        let template_guid = read_header_guid(&gom.header, 16);
 
         // Compute game_id: sha256(fqn:guid)[0:16] - deterministic compound ID
         let game_id = crate::hash::compute_game_id(&gom.fqn, &guid);
@@ -122,6 +125,7 @@ impl GameObject {
 
         Self {
             guid,
+            template_guid,
             fqn: gom.fqn.clone(),
             game_id,
             kind,

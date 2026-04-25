@@ -13,6 +13,7 @@ use crate::stb::StbEntry;
 /// Serialized object ready for batch insert
 struct PendingObject {
     guid: String,
+    template_guid: String,
     fqn: String,
     game_id: String,
     kind: String,
@@ -118,6 +119,7 @@ impl Database {
             -- Raw game objects table (everything we extract)
             CREATE TABLE IF NOT EXISTS objects (
                 guid TEXT PRIMARY KEY,
+                template_guid TEXT NOT NULL DEFAULT '',
                 fqn TEXT NOT NULL,
                 game_id TEXT NOT NULL,
                 kind TEXT NOT NULL,
@@ -136,6 +138,7 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_objects_for_export ON objects(for_export);
             CREATE INDEX IF NOT EXISTS idx_objects_string_id ON objects(string_id);
             CREATE INDEX IF NOT EXISTS idx_objects_icon_name ON objects(icon_name);
+            CREATE INDEX IF NOT EXISTS idx_objects_template_guid ON objects(template_guid);
 
             -- Localized strings table (from STB files)
             CREATE TABLE IF NOT EXISTS strings (
@@ -228,6 +231,7 @@ impl Database {
         let json_str = serde_json::to_string(&obj.json)?;
         let pending = PendingObject {
             guid: obj.guid.clone(),
+            template_guid: obj.template_guid.clone(),
             fqn: obj.fqn.clone(),
             game_id: obj.game_id.clone(),
             kind: obj.kind.clone(),
@@ -294,9 +298,10 @@ impl Database {
         {
             let mut stmt = tx.prepare_cached(
                 r#"
-                INSERT INTO objects (guid, fqn, game_id, kind, icon_name, string_id, for_export, version, revision, json)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                INSERT INTO objects (guid, template_guid, fqn, game_id, kind, icon_name, string_id, for_export, version, revision, json)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                 ON CONFLICT(guid) DO UPDATE SET
+                    template_guid = excluded.template_guid,
                     fqn = excluded.fqn,
                     game_id = excluded.game_id,
                     kind = excluded.kind,
@@ -313,6 +318,7 @@ impl Database {
             for obj in &batch {
                 stmt.execute(params![
                     obj.guid,
+                    obj.template_guid,
                     obj.fqn,
                     obj.game_id,
                     obj.kind,
