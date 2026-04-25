@@ -64,29 +64,36 @@ pub struct GomObject {
     pub payload: Vec<u8>,
 }
 
+/// Extract length-prefixed ASCII strings from a raw GOM payload.
+///
+/// Each string is stored as a length byte followed by `len` ASCII bytes (32-126).
+/// Strings shorter than 2 bytes or longer than 199 are skipped as noise.
+pub fn extract_strings_from_payload(payload: &[u8]) -> Vec<String> {
+    let mut strings = Vec::new();
+    let mut i = 0;
+
+    while i < payload.len() {
+        let len = payload[i] as usize;
+        if (2..200).contains(&len) && i + 1 + len <= payload.len() {
+            let candidate = &payload[i + 1..i + 1 + len];
+            if candidate.iter().all(|&b| (32..127).contains(&b)) {
+                if let Ok(s) = std::str::from_utf8(candidate) {
+                    strings.push(s.to_string());
+                }
+                i += 1 + len;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    strings
+}
+
 impl GomObject {
     /// Try to extract strings from the binary payload
     pub fn extract_strings(&self) -> Vec<String> {
-        let mut strings = Vec::new();
-        let mut i = 0;
-
-        while i < self.payload.len() {
-            // Look for length-prefixed strings (common in GOM format)
-            let len = self.payload[i] as usize;
-            if len > 0 && len < 200 && i + 1 + len <= self.payload.len() {
-                let potential_string = &self.payload[i + 1..i + 1 + len];
-                if potential_string.iter().all(|&b| (32..127).contains(&b)) && len >= 2 {
-                    if let Ok(s) = std::str::from_utf8(potential_string) {
-                        strings.push(s.to_string());
-                    }
-                    i += 1 + len;
-                    continue;
-                }
-            }
-            i += 1;
-        }
-
-        strings
+        extract_strings_from_payload(&self.payload)
     }
 }
 
@@ -340,5 +347,45 @@ pub fn parse_dblb_direct(data: &[u8]) -> Result<Vec<GomObject>> {
         parse_object_dblb(&data[16..])
     } else {
         parse_object_dblb(data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pack(strings: &[&str]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        for s in strings {
+            buf.push(s.len() as u8);
+            buf.extend_from_slice(s.as_bytes());
+        }
+        buf
+    }
+
+    #[test]
+    fn extract_strings_finds_length_prefixed_ascii() {
+        let payload = pack(&["npc.korriban.foo", "enc.korriban.bar"]);
+        let strings = extract_strings_from_payload(&payload);
+        assert!(strings.contains(&"npc.korriban.foo".to_string()));
+        assert!(strings.contains(&"enc.korriban.bar".to_string()));
+    }
+
+    #[test]
+    fn extract_strings_skips_short_runs() {
+        // Length 1 is below the minimum (2) and should be skipped, not yielded.
+        let payload = pack(&["x", "npc.real"]);
+        let strings = extract_strings_from_payload(&payload);
+        assert!(!strings.iter().any(|s| s == "x"));
+        assert!(strings.iter().any(|s| s == "npc.real"));
+    }
+
+    #[test]
+    fn extract_strings_handles_a_prefix_encounter_refs() {
+        // Quest payloads reference encounters with the `a:` type marker.
+        // The free function returns the raw string; callers strip the prefix.
+        let payload = pack(&["a:enc.korriban.tomb"]);
+        let strings = extract_strings_from_payload(&payload);
+        assert!(strings.iter().any(|s| s == "a:enc.korriban.tomb"));
     }
 }
