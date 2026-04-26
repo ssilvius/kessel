@@ -826,8 +826,9 @@ impl Database {
 /// Extract the destination planet component from a transit tracking/journal string.
 ///
 /// Matches strings containing `_to_{dest}` where `{dest}` consists of lowercase
-/// letters and underscores. Strips a leading `the_` if present (e.g. `the_imperial_transit_station`
-/// is returned as-is; the caller filters by checking for a matching intro quest).
+/// letters and underscores. Strips a leading `the_` if present. The caller filters
+/// by checking for a matching intro quest, so non-planet results (e.g. `imperial_transit_station`)
+/// are silently dropped.
 fn extract_transit_dest(s: &str) -> Option<String> {
     let idx = s.find("_to_")?;
     let after = &s[idx + 4..];
