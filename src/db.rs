@@ -669,9 +669,8 @@ impl Database {
         let mut guid_to_game_id: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
         {
-            let mut stmt = conn.prepare(
-                "SELECT guid, game_id FROM objects WHERE fqn LIKE 'qst.%'",
-            )?;
+            let mut stmt =
+                conn.prepare("SELECT guid, game_id FROM objects WHERE fqn LIKE 'qst.%'")?;
             let rows = stmt.query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?;
