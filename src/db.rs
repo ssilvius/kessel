@@ -654,13 +654,90 @@ impl Database {
         Ok(detail_count)
     }
 
-    // populate_quest_chain (PR #11) was removed in #19. Its 0xCF + 8-byte LE
-    // u64 hypothesis produced zero rows on real data: brute-force search of
-    // every payload across 260,448 objects for any quest's content GUID
-    // returned no matches. Quest content GUIDs are kessel-internal-only;
-    // they are not cross-referenced statically. quest_chain may be reused
-    // later for a different link mechanism (e.g. mpn-derived edges); keep
-    // the table but stop populating with the broken approach.
+    /// Populate `quest_chain` by scanning every quest payload for `0xCF` type
+    /// markers followed by 8 bytes that decode as a big-endian GUID belonging
+    /// to another quest object.
+    ///
+    /// The previous attempt (PR #11, removed in #19) read the 8 bytes as
+    /// little-endian and found zero matches. GUIDs in SWTOR payloads are stored
+    /// big-endian; flipping to BE produces real chain links (e.g. broken_blades
+    /// -> breaking_the_blades bonus, revanites_revealed -> intro_rishii_village).
+    pub fn populate_quest_chain(&self) -> Result<u64> {
+        let conn = self.conn.lock().unwrap();
+
+        // Build a map of GUID (uppercase hex) -> game_id for all quest objects.
+        let mut guid_to_game_id: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT guid, game_id FROM objects WHERE fqn LIKE 'qst.%'",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows.filter_map(|r| r.ok()) {
+                guid_to_game_id.insert(row.0.to_uppercase(), row.1);
+            }
+        }
+
+        let payloads = {
+            let mut stmt = conn.prepare(
+                "SELECT guid, game_id, json_extract(json, '$.payload_b64') \
+                 FROM objects WHERE fqn LIKE 'qst.%'",
+            )?;
+            let rows: Vec<(String, String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        };
+
+        let tx = conn.unchecked_transaction()?;
+        let mut count: u64 = 0;
+
+        for (src_guid, src_game_id, payload_b64) in &payloads {
+            use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+            let payload = match BASE64.decode(payload_b64) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+
+            let mut i = 0;
+            while i + 9 <= payload.len() {
+                if payload[i] == 0xCF {
+                    // 8 bytes big-endian GUID
+                    let ref_guid = payload[i + 1..i + 9]
+                        .iter()
+                        .map(|b| format!("{:02X}", b))
+                        .collect::<String>();
+
+                    if ref_guid != src_guid.to_uppercase() {
+                        if let Some(target_game_id) = guid_to_game_id.get(&ref_guid) {
+                            tx.execute(
+                                "INSERT OR IGNORE INTO quest_chain \
+                                 (source_game_id, target_game_id, link_type) \
+                                 VALUES (?1, ?2, 'guid_ref')",
+                                params![src_game_id, target_game_id],
+                            )?;
+                            count += 1;
+                        }
+                    }
+                    i += 9;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+
+        tx.commit()?;
+        Ok(count)
+    }
 }
 
 /// Parse a conquest objective FQN (`ach.conquests.<category>.<sub>...<leaf>`)

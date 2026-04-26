@@ -382,6 +382,9 @@ fn main() -> Result<()> {
     // Eighth pass: aggregate NPCs and rewards across each mission's phase tree
     db.populate_mission_data()?;
 
+    // Ninth pass: build quest chain links from 0xCF big-endian GUID refs
+    db.populate_quest_chain()?;
+
     // Print summary
     let stats = db.stats()?;
     println!("\nExtraction complete!");
