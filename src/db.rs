@@ -564,94 +564,13 @@ impl Database {
         Ok(detail_count)
     }
 
-    /// Build quest chain links from GUID references in quest payloads.
-    ///
-    /// Scans each quest's binary payload for 0xCF + 8-byte LE GUID patterns.
-    /// Each resolved GUID that belongs to another quest object becomes a
-    /// "guid_ref" link in the quest_chain table. This is a second-pass operation
-    /// that must run after all objects are inserted.
-    pub fn populate_quest_chain(&self) -> Result<u64> {
-        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-
-        // Build guid → game_id map for all quest objects
-        let (guid_to_game_id, quest_rows) = {
-            let conn = self.conn.lock().unwrap();
-
-            let mut guid_map: std::collections::HashMap<String, String> =
-                std::collections::HashMap::new();
-            {
-                let mut stmt =
-                    conn.prepare("SELECT guid, game_id FROM objects WHERE kind = 'Quest'")?;
-                let rows = stmt.query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })?;
-                for row in rows {
-                    let (guid, game_id) = row?;
-                    guid_map.insert(guid, game_id);
-                }
-            }
-
-            // Load quest payloads: game_id + payload_b64 from stored JSON
-            let mut payload_stmt = conn.prepare(
-                "SELECT game_id, json_extract(json, '$.payload_b64') FROM objects WHERE kind = 'Quest'",
-            )?;
-            let rows: Vec<(String, String)> = payload_stmt
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })?
-                .filter_map(|r| r.ok())
-                .collect();
-
-            (guid_map, rows)
-        };
-
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-
-        let mut chain_stmt = tx.prepare_cached(
-            "INSERT OR IGNORE INTO quest_chain (source_game_id, target_game_id, link_type) VALUES (?1, ?2, ?3)",
-        )?;
-
-        let mut link_count = 0u64;
-
-        for (source_game_id, payload_b64) in &quest_rows {
-            let payload = match BASE64.decode(payload_b64) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
-
-            // Scan payload for 0xCF + 8-byte LE GUID patterns
-            let mut i = 0;
-            while i + 9 <= payload.len() {
-                if payload[i] == 0xCF {
-                    let guid_u64 = u64::from_le_bytes(
-                        payload[i + 1..i + 9].try_into().expect("slice is 8 bytes"),
-                    );
-                    let guid_hex = format!("{:016X}", guid_u64);
-
-                    if let Some(target_game_id) = guid_to_game_id.get(&guid_hex) {
-                        // Skip self-references
-                        if target_game_id != source_game_id {
-                            chain_stmt.execute(rusqlite::params![
-                                source_game_id,
-                                target_game_id,
-                                "guid_ref",
-                            ])?;
-                            link_count += 1;
-                        }
-                    }
-
-                    i += 9; // skip past the 8 GUID bytes
-                } else {
-                    i += 1;
-                }
-            }
-        }
-
-        drop(chain_stmt);
-        tx.commit()?;
-        Ok(link_count)
-    }
+    // populate_quest_chain (PR #11) was removed in #19. Its 0xCF + 8-byte LE
+    // u64 hypothesis produced zero rows on real data: brute-force search of
+    // every payload across 260,448 objects for any quest's content GUID
+    // returned no matches. Quest content GUIDs are kessel-internal-only;
+    // they are not cross-referenced statically. quest_chain may be reused
+    // later for a different link mechanism (e.g. mpn-derived edges); keep
+    // the table but stop populating with the broken approach.
 }
 
 /// Pull `(fqn, payload_b64)` tuples for every object of `kind`. Used by
