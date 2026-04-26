@@ -17,6 +17,7 @@ Versions follow [Cargo semver](https://doc.rust-lang.org/cargo/reference/semver.
 - bonus_missions view flattening `mpn.*.bonus.*` mission-phase objects with their parent quest FQN guess -- helps close the kessel/CSV row-count gap (#25)
 - spawn_runtime_ids table populated from SPN-triple numerics in quest payloads -- bridges combat-log entity events to kessel's content GUIDs once the log format is verified. Closes #31.
 - gui/planetaryconquest.stb and gui/galacticcommand.stb extracted into the strings table. Conquest theme names ("Total Galactic War", "The Trade Emporium", etc.) and "Invasion Bonus" category mappings now queryable. Closes #39.
+- missions table unifying qst.* objects with mpn-prefix groupings. SWTOR's mission identity is encoded as either a qst.* object OR a unique path-prefix of mpn.* phases (alliance alerts, many class-story missions, etc. live only as the latter). Closes #34. Goes from 1,315 quest identities to ~3,950 mission identities.
 
 ### Fixed
 
