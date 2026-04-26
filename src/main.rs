@@ -385,6 +385,9 @@ fn main() -> Result<()> {
     // Ninth pass: build quest chain links from 0xCF big-endian GUID refs
     db.populate_quest_chain()?;
 
+    // Tenth pass: build planet_transition chain links from leaving_ quest strings
+    db.populate_planet_transitions()?;
+
     // Print summary
     let stats = db.stats()?;
     println!("\nExtraction complete!");

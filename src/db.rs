@@ -737,6 +737,106 @@ impl Database {
         tx.commit()?;
         Ok(count)
     }
+
+    /// Populate `quest_chain` with `planet_transition` links by scanning every
+    /// `leaving_{planet}` quest for strings that name the destination.
+    ///
+    /// Pattern: strings containing `_to_{planet}` (e.g. `jrn_start_take_the_shuttle_to_dromund_kaas`)
+    /// are used to locate the class intro quest at that planet. Strings that name
+    /// intermediate stops (e.g. `the_imperial_transit_station`) produce no match
+    /// and are silently skipped.
+    pub fn populate_planet_transitions(&self) -> Result<u64> {
+        let conn = self.conn.lock().unwrap();
+
+        // Build lookup: fqn -> game_id for all intro quests.
+        let mut intro_map: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT fqn, game_id FROM objects WHERE fqn LIKE 'qst.location.%.class.%.intro'",
+            )?;
+            let rows =
+                stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+            for row in rows.filter_map(|r| r.ok()) {
+                intro_map.insert(row.0, row.1);
+            }
+        }
+
+        let mut leaving_quests: Vec<(String, String, String)> = Vec::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT fqn, game_id, json_extract(json, '$.strings') \
+                 FROM objects \
+                 WHERE fqn LIKE 'qst.location.%.class.%.leaving_%' \
+                   AND json_extract(json, '$.strings') IS NOT NULL",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            for row in rows.filter_map(|r| r.ok()) {
+                leaving_quests.push(row);
+            }
+        }
+
+        let tx = conn.unchecked_transaction()?;
+        let mut count: u64 = 0;
+
+        for (fqn, game_id, strings_json) in &leaving_quests {
+            // Extract class segment: qst.location.{planet}.class.{class}.leaving_{planet}
+            let parts: Vec<&str> = fqn.split('.').collect();
+            let class_pos = parts.iter().position(|&p| p == "class");
+            let class = match class_pos {
+                Some(i) if i + 1 < parts.len() => parts[i + 1],
+                _ => continue,
+            };
+
+            let strings: Vec<String> = match serde_json::from_str(strings_json) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            // Scan strings for `_to_{dest}` patterns; try each as a planet FQN component.
+            for s in &strings {
+                if let Some(dest) = extract_transit_dest(s) {
+                    let intro_fqn =
+                        format!("qst.location.{}.class.{}.intro", dest, class);
+                    if let Some(target_game_id) = intro_map.get(&intro_fqn) {
+                        tx.execute(
+                            "INSERT OR IGNORE INTO quest_chain \
+                             (source_game_id, target_game_id, link_type) \
+                             VALUES (?1, ?2, 'planet_transition')",
+                            params![game_id, target_game_id],
+                        )?;
+                        count += 1;
+                        break;
+                    }
+                }
+            }
+        }
+
+        tx.commit()?;
+        Ok(count)
+    }
+}
+
+/// Extract the destination planet component from a transit tracking/journal string.
+///
+/// Matches strings containing `_to_{dest}` where `{dest}` consists of lowercase
+/// letters and underscores. Strips a leading `the_` if present (e.g. `the_imperial_transit_station`
+/// is returned as-is; the caller filters by checking for a matching intro quest).
+fn extract_transit_dest(s: &str) -> Option<String> {
+    let idx = s.find("_to_")?;
+    let after = &s[idx + 4..];
+    let dest = after.strip_prefix("the_").unwrap_or(after);
+    if !dest.is_empty() && dest.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+        Some(dest.to_string())
+    } else {
+        None
+    }
 }
 
 /// Parse a conquest objective FQN (`ach.conquests.<category>.<sub>...<leaf>`)
