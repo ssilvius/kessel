@@ -67,7 +67,8 @@ impl GameObject {
         // Extract kind from FQN prefix (e.g., "itm" from "itm.gen.lots...")
         let kind = if let Some(pos) = gom.fqn.find('.') {
             match &gom.fqn[..pos] {
-                "qst" | "mpn" => "Quest",
+                "qst" => "Quest",
+                "mpn" => "Phase",
                 "abl" => "Ability",
                 "itm" => "Item",
                 "npc" => "Npc",

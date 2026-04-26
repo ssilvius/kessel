@@ -92,6 +92,7 @@ pub struct Stats {
     pub strings: u64,
     pub chain_links: u64,
     pub npc_links: u64,
+    pub reward_links: u64,
 }
 
 impl Database {
@@ -154,9 +155,14 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_strings_locale ON strings(locale);
             CREATE INDEX IF NOT EXISTS idx_strings_id2 ON strings(id2);
 
-            -- Typed views for convenience
+            -- Typed views for convenience.
+            -- Post-#23: kind='Quest' includes only qst.* objects.
+            -- Mission phases (mpn.*) are kind='Phase' -- see `phases` view.
             CREATE VIEW IF NOT EXISTS quests AS
-                SELECT * FROM objects WHERE kind = 'Quest' OR fqn LIKE 'qst.%';
+                SELECT * FROM objects WHERE kind = 'Quest';
+
+            CREATE VIEW IF NOT EXISTS phases AS
+                SELECT * FROM objects WHERE kind = 'Phase';
 
             CREATE VIEW IF NOT EXISTS abilities AS
                 SELECT * FROM objects WHERE kind = 'Ability' OR fqn LIKE 'abl.%';
@@ -211,6 +217,53 @@ impl Database {
                 link_type TEXT NOT NULL,
                 PRIMARY KEY (source_game_id, target_game_id)
             );
+
+            -- Quest rewards (variable names extracted from payloads, e.g.
+            -- 'quest_reward_adrenal'). Variable names are categories
+            -- (adrenal, medpac, alignment) -- specific items are engine-
+            -- resolved at runtime and not in payload data.
+            CREATE TABLE IF NOT EXISTS quest_rewards (
+                quest_fqn       TEXT NOT NULL,
+                reward_variable TEXT NOT NULL,
+                PRIMARY KEY (quest_fqn, reward_variable)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_quest_rewards_variable ON quest_rewards(reward_variable);
+
+            -- Quest descriptions: first journal entry per quest, surfaced as
+            -- a view over the strings table. Mirrors the CSV's "Mission
+            -- Description" column. Per the design doc, journal text is at
+            -- STB id1 200-600 range; the first entry is the description.
+            CREATE VIEW IF NOT EXISTS quest_descriptions AS
+                SELECT
+                    o.fqn AS quest_fqn,
+                    s.text AS description
+                FROM objects o
+                JOIN strings s ON s.id2 = o.string_id
+                WHERE o.kind = 'Quest'
+                  AND s.id1 BETWEEN 200 AND 600
+                  AND s.id1 = (
+                      SELECT MIN(s2.id1) FROM strings s2
+                      WHERE s2.id2 = o.string_id AND s2.id1 BETWEEN 200 AND 600
+                  );
+
+            -- Bonus missions flattened from mpn.*.bonus.* phases. The CSV
+            -- treats these as separate mission rows; in GOM data they are
+            -- mission phases of a parent quest. This view exposes them
+            -- with parent FQN for editorial/CSV-style queries.
+            CREATE VIEW IF NOT EXISTS bonus_missions AS
+                SELECT
+                    o.fqn AS bonus_fqn,
+                    -- Parent quest FQN: drop the trailing `.bonus.<name>`
+                    -- and any segments after `.bonus`. The mpn.* prefix
+                    -- swaps to qst.* for the parent.
+                    'qst.' || substr(
+                        o.fqn,
+                        5,
+                        instr(o.fqn, '.bonus.') - 5
+                    ) AS parent_quest_fqn_guess
+                FROM objects o
+                WHERE o.fqn LIKE 'mpn.%.bonus.%';
 
             -- Extraction metadata
             CREATE TABLE IF NOT EXISTS meta (
@@ -414,9 +467,8 @@ impl Database {
                 }
             }
 
-            let mut stmt = conn.prepare(
-                "SELECT fqn, string_id, json FROM objects WHERE fqn LIKE 'qst.%' OR kind = 'Quest'",
-            )?;
+            let mut stmt =
+                conn.prepare("SELECT fqn, string_id, json FROM objects WHERE kind = 'Quest'")?;
             let rows: Vec<(String, Option<u32>, String)> = stmt
                 .query_map([], |row| {
                     Ok((
@@ -586,6 +638,20 @@ impl Database {
     }
 }
 
+/// Pull `(fqn, payload_b64)` tuples for every object of `kind`. Used by
+/// the populate_* passes that need to walk binary payloads.
+fn fetch_fqn_payloads(conn: &Connection, kind: &str) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn
+        .prepare("SELECT fqn, json_extract(json, '$.payload_b64') FROM objects WHERE kind = ?1")?;
+    let rows: Vec<(String, String)> = stmt
+        .query_map([kind], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
+}
+
 /// Parse the SPN-triple format that appears in quest payloads:
 ///
 /// ```text
@@ -622,19 +688,6 @@ impl Database {
         use crate::pbuk::extract_strings_from_payload;
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
         use std::collections::HashMap;
-
-        fn fetch_fqn_payloads(conn: &Connection, kind: &str) -> Result<Vec<(String, String)>> {
-            let mut stmt = conn.prepare(
-                "SELECT fqn, json_extract(json, '$.payload_b64') FROM objects WHERE kind = ?1",
-            )?;
-            let rows: Vec<(String, String)> = stmt
-                .query_map([kind], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })?
-                .filter_map(|r| r.ok())
-                .collect();
-            Ok(rows)
-        }
 
         // Pull encounter, spawn, and quest rows under one lock.
         let (enc_rows, spawn_rows, quest_rows) = {
@@ -745,6 +798,43 @@ impl Database {
         Ok(link_count)
     }
 
+    /// Extract `quest_reward_*` variable names from each quest payload and
+    /// write rows into `quest_rewards`. Variable names are categories
+    /// (adrenal, medpac, alignment, gift); specific items are runtime-resolved
+    /// by the engine and not in payload data.
+    pub fn populate_quest_rewards(&self) -> Result<u64> {
+        use crate::pbuk::extract_strings_from_payload;
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
+        let quest_rows: Vec<(String, String)> = {
+            let conn = self.conn.lock().unwrap();
+            fetch_fqn_payloads(&conn, "Quest")?
+        };
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO quest_rewards (quest_fqn, reward_variable) VALUES (?1, ?2)",
+        )?;
+
+        let mut count = 0u64;
+        for (quest_fqn, payload_b64) in &quest_rows {
+            let Ok(payload) = BASE64.decode(payload_b64) else {
+                continue;
+            };
+            for s in extract_strings_from_payload(&payload) {
+                if s.starts_with("quest_reward_") {
+                    stmt.execute(rusqlite::params![quest_fqn, s])?;
+                    count += 1;
+                }
+            }
+        }
+
+        drop(stmt);
+        tx.commit()?;
+        Ok(count)
+    }
+
     pub fn stats(&self) -> Result<Stats> {
         // Ensure all pending data is flushed before counting
         self.flush()?;
@@ -760,6 +850,8 @@ impl Database {
             conn.query_row("SELECT COUNT(*) FROM quest_chain", [], |row| row.get(0))?;
         let npc_links: u64 =
             conn.query_row("SELECT COUNT(*) FROM quest_npcs", [], |row| row.get(0))?;
+        let reward_links: u64 =
+            conn.query_row("SELECT COUNT(*) FROM quest_rewards", [], |row| row.get(0))?;
 
         Ok(Stats {
             quests,
@@ -769,6 +861,7 @@ impl Database {
             strings,
             chain_links,
             npc_links,
+            reward_links,
         })
     }
 

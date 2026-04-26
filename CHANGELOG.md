@@ -12,12 +12,16 @@ Versions follow [Cargo semver](https://doc.rust-lang.org/cargo/reference/semver.
 - quest_chain table populated from GUID refs in quest payloads, linking chain members by resolved u64 identifiers
 - template_guid column on objects table, decoded from GOM header bytes 16-23 (kind-level template constant)
 - quest_npcs table populated by resolving a:enc.* references in quest payloads to npc.* FQNs through encounter object payloads (closes #14)
+- quest_rewards table populated by extracting `quest_reward_*` variable names from quest payloads (closes #24)
+- quest_descriptions view exposing each quest's first journal entry (STB id1 200-600 range) -- mirrors the CSV "Mission Description" column
+- bonus_missions view flattening `mpn.*.bonus.*` mission-phase objects with their parent quest FQN guess -- helps close the kessel/CSV row-count gap (#25)
 
 ### Fixed
 
 - enc / spn / plc FQN prefixes added to extraction allowlist. quest_npcs was empty after every extraction because encounter objects were filtered out before populate_quest_npcs could resolve them.
 - Extended quest_npcs resolution to three hops (quest -> enc -> spn -> npc). Encounter payloads contain spawn references, not NPC references directly; without the spawn-to-NPC step, encounter resolution found zero rows.
 - String scanner recognises a third encoding pattern: `0xD2 0x01 <index> <len> <ASCII>` for array-element strings in encounter payloads. The previous heuristic produced truncated strings (e.g. `Gspn.location...ban` instead of the full FQN).
+- mpn.* objects now classify as `kind='Phase'` (was `kind='Quest'`). Mission phases were inflating the Quest count 8x and polluting `quest_details` with phase-shaped rows that were never real missions. New `phases` view exposes them. Closes #23.
 
 ## [0.0.5] - 2026-04-02
 
