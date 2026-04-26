@@ -25,6 +25,10 @@ Versions follow [Cargo semver](https://doc.rust-lang.org/cargo/reference/semver.
 - mpn.* objects now classify as `kind='Phase'` (was `kind='Quest'`). Mission phases were inflating the Quest count 8x and polluting `quest_details` with phase-shaped rows that were never real missions. New `phases` view exposes them. Closes #23.
 - Spawn-prefix fallback in populate_quest_npcs: encounters that reference a base spawn name (e.g. `spn.X.multi.isen`) which the engine resolves at runtime to variants (`isen_no_weapon`, `isen_captured`) now resolve to the underlying NPC via prefix-match. Closes the_devoted_ones case from #27.
 
+### Removed
+
+- populate_quest_chain (PR #11's 0xCF GUID-ref hypothesis). Brute-force search confirmed quest content GUIDs are not cross-referenced statically -- the function produced zero rows on every real extraction. Closes #19. The `quest_chain` table is retained for future link mechanisms (e.g. mpn-derived edges).
+
 ## [0.0.5] - 2026-04-02
 
 First tagged release. Extracts structured SWTOR game data from .tor archives to SQLite.

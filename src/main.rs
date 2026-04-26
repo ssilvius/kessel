@@ -361,16 +361,16 @@ fn main() -> Result<()> {
     // Second pass: populate quest tables from extracted objects
     let quest_count = db.populate_quest_tables()?;
 
-    // Third pass: build quest chain links from GUID refs in payloads
-    db.populate_quest_chain()?;
+    // (Quest chain population removed in #19: PR #11's 0xCF GUID-ref
+    // hypothesis produced zero rows on real data.)
 
-    // Fourth pass: resolve a:enc.* refs in quest payloads to npc.* via encounter payloads
+    // Third pass: resolve a:enc.* refs in quest payloads to npc.* via encounter payloads
     db.populate_quest_npcs()?;
 
-    // Fifth pass: extract quest_reward_* variable names from quest payloads
+    // Fourth pass: extract quest_reward_* variable names from quest payloads
     db.populate_quest_rewards()?;
 
-    // Sixth pass: extract spawn runtime IDs from SPN triples (combat-log bridge)
+    // Fifth pass: extract spawn runtime IDs from SPN triples (combat-log bridge)
     db.populate_spawn_runtime_ids()?;
 
     // Print summary
