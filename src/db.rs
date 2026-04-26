@@ -94,6 +94,7 @@ pub struct Stats {
     pub npc_links: u64,
     pub reward_links: u64,
     pub runtime_ids: u64,
+    pub missions: u64,
 }
 
 impl Database {
@@ -218,6 +219,23 @@ impl Database {
                 link_type TEXT NOT NULL,
                 PRIMARY KEY (source_game_id, target_game_id)
             );
+
+            -- Missions: unified mission identities from two sources.
+            --
+            -- 1. Every qst.* object is a mission (source='qst').
+            -- 2. Every unique mpn-prefix grouping (a path-prefix of mpn.* objects
+            --    formed by dropping the leaf segment) that has no qst.* parent
+            --    is also a mission (source='mpn-prefix'). These are typically
+            --    alliance alerts, side missions encoded purely as phase trees,
+            --    and other content that lives only as mpn.* phases.
+            --
+            -- Closes the 3.9k vs 1.3k gap from #34.
+            CREATE TABLE IF NOT EXISTS missions (
+                mission_fqn TEXT PRIMARY KEY,
+                source      TEXT NOT NULL  -- 'qst' or 'mpn-prefix'
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_missions_source ON missions(source);
 
             -- Spawn runtime IDs: every SPN triple `spn.X;target.Y;<id>` in a
             -- quest payload becomes one row. The numeric ID may be the runtime
@@ -828,6 +846,80 @@ impl Database {
         Ok(count)
     }
 
+    /// Populate `missions` from two sources:
+    ///
+    /// 1. Every `qst.*` object becomes a row with `source='qst'`.
+    /// 2. Every unique mpn-prefix (path with the leaf phase segment dropped)
+    ///    that does not already exist as a qst.* counterpart becomes a row
+    ///    with `source='mpn-prefix'`.
+    ///
+    /// The mpn-prefix derivation: for `mpn.A.B.C.D`, the mission identity
+    /// is `mpn.A.B.C` (drop the last segment). The qst.* counterpart check
+    /// rewrites `mpn.X` -> `qst.X` and looks for that fqn in the qst set.
+    pub fn populate_missions(&self) -> Result<u64> {
+        use std::collections::HashSet;
+
+        let (qst_fqns, phase_fqns): (Vec<String>, Vec<String>) = {
+            let conn = self.conn.lock().unwrap();
+
+            let mut qst_stmt = conn.prepare("SELECT fqn FROM objects WHERE kind = 'Quest'")?;
+            let qst_fqns: Vec<String> = qst_stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+            drop(qst_stmt);
+
+            let mut phase_stmt = conn.prepare("SELECT fqn FROM objects WHERE kind = 'Phase'")?;
+            let phase_fqns: Vec<String> = phase_stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+            drop(phase_stmt);
+
+            (qst_fqns, phase_fqns)
+        };
+
+        let qst_set: HashSet<&str> = qst_fqns.iter().map(|s| s.as_str()).collect();
+
+        // Derive mpn-prefix groupings: for each phase, drop the last segment
+        // and compute the qst.* counterpart. Skip if a qst.* counterpart exists.
+        let mut mpn_prefixes: HashSet<String> = HashSet::new();
+        for phase in &phase_fqns {
+            // Phase is `mpn.A.B.C.D`; mission prefix is `mpn.A.B.C`.
+            let Some(last_dot) = phase.rfind('.') else {
+                continue;
+            };
+            let prefix = &phase[..last_dot];
+            // Skip if the qst.* counterpart already covers this mission identity.
+            // mpn-prefix `mpn.X` -> qst.* `qst.X`.
+            let qst_equivalent = format!("qst{}", &prefix[3..]);
+            if qst_set.contains(qst_equivalent.as_str()) {
+                continue;
+            }
+            mpn_prefixes.insert(prefix.to_string());
+        }
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO missions (mission_fqn, source) VALUES (?1, ?2)",
+        )?;
+
+        let mut count = 0u64;
+        for fqn in &qst_fqns {
+            stmt.execute(rusqlite::params![fqn, "qst"])?;
+            count += 1;
+        }
+        for prefix in &mpn_prefixes {
+            stmt.execute(rusqlite::params![prefix, "mpn-prefix"])?;
+            count += 1;
+        }
+
+        drop(stmt);
+        tx.commit()?;
+        Ok(count)
+    }
+
     pub fn stats(&self) -> Result<Stats> {
         // Ensure all pending data is flushed before counting
         self.flush()?;
@@ -849,6 +941,8 @@ impl Database {
             conn.query_row("SELECT COUNT(*) FROM spawn_runtime_ids", [], |row| {
                 row.get(0)
             })?;
+        let missions: u64 =
+            conn.query_row("SELECT COUNT(*) FROM missions", [], |row| row.get(0))?;
 
         Ok(Stats {
             quests,
@@ -860,6 +954,7 @@ impl Database {
             npc_links,
             reward_links,
             runtime_ids,
+            missions,
         })
     }
 
