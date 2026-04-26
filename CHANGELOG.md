@@ -12,6 +12,9 @@ Versions follow [Cargo semver](https://doc.rust-lang.org/cargo/reference/semver.
 - quest_chain table populated from GUID refs in quest payloads, linking chain members by resolved u64 identifiers
 - template_guid column on objects table, decoded from GOM header bytes 16-23 (kind-level template constant)
 - quest_npcs table populated by resolving a:enc.* references in quest payloads to npc.* FQNs through encounter object payloads (closes #14)
+- quest_rewards table populated by extracting `quest_reward_*` variable names from quest payloads (closes #24)
+- quest_descriptions view exposing each quest's first journal entry (STB id1 200-600 range) -- mirrors the CSV "Mission Description" column
+- bonus_missions view flattening `mpn.*.bonus.*` mission-phase objects with their parent quest FQN guess -- helps close the kessel/CSV row-count gap (#25)
 
 ### Fixed
 

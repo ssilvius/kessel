@@ -367,6 +367,9 @@ fn main() -> Result<()> {
     // Fourth pass: resolve a:enc.* refs in quest payloads to npc.* via encounter payloads
     db.populate_quest_npcs()?;
 
+    // Fifth pass: extract quest_reward_* variable names from quest payloads
+    db.populate_quest_rewards()?;
+
     // Print summary
     let stats = db.stats()?;
     println!("\nExtraction complete!");
@@ -375,8 +378,8 @@ fn main() -> Result<()> {
     println!();
     println!("  Objects: {}", total_objects);
     println!(
-        "    Quests: {} ({} classified, {} chain links, {} npc links)",
-        stats.quests, quest_count, stats.chain_links, stats.npc_links
+        "    Quests: {} ({} classified, {} chain links, {} npc links, {} reward links)",
+        stats.quests, quest_count, stats.chain_links, stats.npc_links, stats.reward_links
     );
     println!("    Abilities: {}", stats.abilities);
     println!("    Items: {}", stats.items);
