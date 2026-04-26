@@ -755,8 +755,9 @@ impl Database {
             let mut stmt = conn.prepare(
                 "SELECT fqn, game_id FROM objects WHERE fqn LIKE 'qst.location.%.class.%.intro'",
             )?;
-            let rows =
-                stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
             for row in rows.filter_map(|r| r.ok()) {
                 intro_map.insert(row.0, row.1);
             }
@@ -802,8 +803,7 @@ impl Database {
             // Scan strings for `_to_{dest}` patterns; try each as a planet FQN component.
             for s in &strings {
                 if let Some(dest) = extract_transit_dest(s) {
-                    let intro_fqn =
-                        format!("qst.location.{}.class.{}.intro", dest, class);
+                    let intro_fqn = format!("qst.location.{}.class.{}.intro", dest, class);
                     if let Some(target_game_id) = intro_map.get(&intro_fqn) {
                         tx.execute(
                             "INSERT OR IGNORE INTO quest_chain \
