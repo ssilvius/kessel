@@ -736,6 +736,18 @@ impl Database {
                 } else if s.starts_with("spn.") {
                     if let Some(spn_npcs) = spn_to_npcs.get(s) {
                         npcs.extend(spn_npcs.iter().cloned());
+                    } else {
+                        // Some encounters reference a base spawn name like
+                        // `spn.X.multi.isen` that the engine resolves at
+                        // runtime to a variant (`isen_no_weapon`,
+                        // `isen_captured`). Fall back to prefix-match on
+                        // `<base>_*` so the underlying character resolves.
+                        let prefix = format!("{}_", s);
+                        for (spn_fqn, spn_npcs) in &spn_to_npcs {
+                            if spn_fqn.starts_with(&prefix) {
+                                npcs.extend(spn_npcs.iter().cloned());
+                            }
+                        }
                     }
                 }
             }
