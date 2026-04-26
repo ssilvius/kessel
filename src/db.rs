@@ -167,6 +167,36 @@ impl Database {
             CREATE VIEW IF NOT EXISTS phases AS
                 SELECT * FROM objects WHERE kind = 'Phase';
 
+            -- Conquest invasion-bonus mappings: each row is a string like
+            -- "Invasion Bonus - Flashpoints, Warzones" describing the bonus
+            -- category set highlighted by some conquest theme. The theme to
+            -- bonus pairing is engine-driven (server-side rotation); the
+            -- bonus catalog itself is static and lives here.
+            CREATE VIEW IF NOT EXISTS conquest_invasion_bonuses AS
+                SELECT id1, locale, substr(text, length('Invasion Bonus - ') + 1) AS categories
+                FROM strings
+                WHERE fqn LIKE 'str.gui.planetaryconquest%'
+                  AND text LIKE 'Invasion Bonus - %';
+
+            -- Conquest theme strings. Heuristic filter: planetaryconquest
+            -- entries that aren't UI chrome. Theme-name vs theme-description
+            -- pairing is left to consumers since the source pairing is
+            -- inconsistent (sometimes name, sometimes description first).
+            CREATE VIEW IF NOT EXISTS conquest_theme_strings AS
+                SELECT id1, locale, text
+                FROM strings
+                WHERE fqn LIKE 'str.gui.planetaryconquest%'
+                  AND id1 BETWEEN 300 AND 360
+                  AND text NOT LIKE 'Invasion Bonus - %'
+                  AND text NOT LIKE '%not authorized%'
+                  AND text NOT LIKE '%Next Objective%'
+                  AND text NOT LIKE '%Guild Rewards%'
+                  AND text NOT LIKE '%Guild Flagship%'
+                  AND text NOT LIKE '%not a member of a guild%'
+                  AND text NOT LIKE '%currently in review%'
+                  AND text NOT LIKE '%Guild Conquest point%'
+                  AND text != '%';
+
             CREATE VIEW IF NOT EXISTS abilities AS
                 SELECT * FROM objects WHERE kind = 'Ability' OR fqn LIKE 'abl.%';
 
