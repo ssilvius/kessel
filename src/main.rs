@@ -379,6 +379,9 @@ fn main() -> Result<()> {
     // Seventh pass: structure conquest objectives by category and cadence
     db.populate_conquest_objectives()?;
 
+    // Eighth pass: aggregate NPCs and rewards across each mission's phase tree
+    db.populate_mission_data()?;
+
     // Print summary
     let stats = db.stats()?;
     println!("\nExtraction complete!");
@@ -390,7 +393,10 @@ fn main() -> Result<()> {
         "    Quests: {} ({} classified, {} chain links, {} npc links, {} reward links, {} runtime ids)",
         stats.quests, quest_count, stats.chain_links, stats.npc_links, stats.reward_links, stats.runtime_ids
     );
-    println!("    Missions (qst + mpn-prefix): {}", stats.missions);
+    println!(
+        "    Missions: {} ({} npcs, {} rewards)",
+        stats.missions, stats.mission_npcs, stats.mission_rewards
+    );
     println!("    Abilities: {}", stats.abilities);
     println!("    Items: {}", stats.items);
     println!("    NPCs: {}", stats.npcs);

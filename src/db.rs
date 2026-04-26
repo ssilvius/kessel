@@ -96,6 +96,8 @@ pub struct Stats {
     pub runtime_ids: u64,
     pub missions: u64,
     pub conquest_objectives: u64,
+    pub mission_npcs: u64,
+    pub mission_rewards: u64,
 }
 
 impl Database {
@@ -282,6 +284,30 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_conquest_objectives_category ON conquest_objectives(category);
             CREATE INDEX IF NOT EXISTS idx_conquest_objectives_subcategory ON conquest_objectives(subcategory);
             CREATE INDEX IF NOT EXISTS idx_conquest_objectives_cadence ON conquest_objectives(cadence);
+
+            -- Mission NPCs: NPC references aggregated across a mission's
+            -- entire phase tree. For qst-source missions this is the quest's
+            -- own NPCs (same as quest_npcs). For mpn-prefix missions (alliance
+            -- alerts, mpn-only side missions) this aggregates NPCs from every
+            -- mpn.<prefix>.* child phase. Closes the gap where quest_npcs
+            -- only saw qst.* objects -- mission_npcs sees the full mission.
+            CREATE TABLE IF NOT EXISTS mission_npcs (
+                mission_fqn TEXT NOT NULL,
+                npc_fqn     TEXT NOT NULL,
+                PRIMARY KEY (mission_fqn, npc_fqn)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_mission_npcs_npc ON mission_npcs(npc_fqn);
+
+            -- Mission rewards: same idea -- quest_reward_* variable names
+            -- aggregated across the mission's entire phase tree.
+            CREATE TABLE IF NOT EXISTS mission_rewards (
+                mission_fqn     TEXT NOT NULL,
+                reward_variable TEXT NOT NULL,
+                PRIMARY KEY (mission_fqn, reward_variable)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_mission_rewards_variable ON mission_rewards(reward_variable);
 
             -- Spawn runtime IDs: every SPN triple `spn.X;target.Y;<id>` in a
             -- quest payload becomes one row. The numeric ID may be the runtime
@@ -1037,6 +1063,284 @@ impl Database {
         Ok(count)
     }
 
+    /// Populate `mission_npcs` and `mission_rewards` by walking each mission's
+    /// phase tree and aggregating extractions across every payload.
+    ///
+    /// For `source='qst'`, the phase set is just the quest object itself.
+    /// For `source='mpn-prefix'`, the phase set is every `mpn.<prefix>.*`
+    /// child object's payload.
+    ///
+    /// NPC resolution reuses the three-hop logic (quest -> enc -> spn -> npc
+    /// + SPN-triple direct + prefix-match fallback).
+    ///
+    /// Reward extraction is the same `quest_reward_*` scan.
+    pub fn populate_mission_data(&self) -> Result<(u64, u64)> {
+        use crate::pbuk::extract_strings_from_payload;
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        use std::collections::HashMap;
+
+        // Pull mission identities and all encounter/spawn rows under one lock.
+        let (missions, enc_rows, spawn_rows) = {
+            let conn = self.conn.lock().unwrap();
+
+            let mut mission_stmt = conn.prepare("SELECT mission_fqn, source FROM missions")?;
+            let missions: Vec<(String, String)> = mission_stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            drop(mission_stmt);
+
+            let enc_rows = fetch_fqn_payloads(&conn, "Encounter")?;
+            let spawn_rows = fetch_fqn_payloads(&conn, "Spawn")?;
+
+            (missions, enc_rows, spawn_rows)
+        };
+
+        // Build spn -> Vec<npc> map (same as populate_quest_npcs).
+        let mut spn_to_npcs: HashMap<String, Vec<String>> = HashMap::new();
+        for (spn_fqn, payload_b64) in spawn_rows {
+            let Ok(payload) = BASE64.decode(&payload_b64) else {
+                continue;
+            };
+            let mut npcs: Vec<String> = extract_strings_from_payload(&payload)
+                .into_iter()
+                .filter(|s| s.starts_with("npc."))
+                .collect();
+            npcs.sort();
+            npcs.dedup();
+            if !npcs.is_empty() {
+                spn_to_npcs.insert(spn_fqn, npcs);
+            }
+        }
+
+        // Build enc -> Vec<npc> from encounter payloads (npc directly + via spawn).
+        let mut enc_to_npcs: HashMap<String, Vec<String>> = HashMap::new();
+        for (enc_fqn, payload_b64) in enc_rows {
+            let Ok(payload) = BASE64.decode(&payload_b64) else {
+                continue;
+            };
+            let strings = extract_strings_from_payload(&payload);
+            let mut npcs: Vec<String> = Vec::new();
+            for s in &strings {
+                if s.starts_with("npc.") {
+                    npcs.push(s.clone());
+                } else if s.starts_with("spn.") {
+                    if let Some(extra) = spn_to_npcs.get(s) {
+                        npcs.extend(extra.iter().cloned());
+                    } else {
+                        let prefix = format!("{}_", s);
+                        for (spn_fqn, spn_npcs) in &spn_to_npcs {
+                            if spn_fqn.starts_with(&prefix) {
+                                npcs.extend(spn_npcs.iter().cloned());
+                            }
+                        }
+                    }
+                }
+            }
+            npcs.sort();
+            npcs.dedup();
+            if !npcs.is_empty() {
+                enc_to_npcs.insert(enc_fqn, npcs);
+            }
+        }
+
+        // Build mission_fqn -> Vec<payload_b64> from the mission's own payloads
+        // (qst object itself, and any owned cross-namespace references).
+        let mission_payloads: HashMap<String, Vec<String>> = {
+            let conn = self.conn.lock().unwrap();
+            let mut map: HashMap<String, Vec<String>> = HashMap::new();
+
+            // qst-source: the quest's payload (contains SPN triples + enc refs).
+            let mut qst_stmt = conn.prepare(
+                "SELECT fqn, json_extract(json, '$.payload_b64') FROM objects WHERE kind = 'Quest'",
+            )?;
+            for (fqn, b64) in qst_stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+            {
+                map.entry(fqn).or_default().push(b64);
+            }
+            drop(qst_stmt);
+
+            map
+        };
+
+        // Build mission_fqn -> Vec<npc_fqn> from path-namespace co-location.
+        // For each mission, find all npc/spn/enc objects whose FQN sits inside
+        // the mission's path stem (e.g. mpn.location.ord_mantell.class.trooper.
+        // mannett_point owns npc.location.ord_mantell.class.trooper.mannett_point.*).
+        // mpn phase payloads themselves are empty of NPC refs, so path-namespace
+        // is the primary signal for mpn-only missions.
+        let mission_namespace_npcs: HashMap<String, Vec<String>> = {
+            let conn = self.conn.lock().unwrap();
+
+            // Pull all objects with FQNs we care about.
+            let mut stmt = conn.prepare(
+                "SELECT fqn, kind, json_extract(json, '$.payload_b64') FROM objects \
+                 WHERE kind IN ('Npc', 'Spawn', 'Encounter')",
+            )?;
+            let rows: Vec<(String, String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            drop(stmt);
+
+            // Build mission_stem -> mission_fqn map for prefix lookup.
+            // Stem is the mission_fqn with its leading segment (qst./mpn.) stripped.
+            let mut stem_to_mission: HashMap<String, String> = HashMap::new();
+            for (mission_fqn, _) in &missions {
+                if let Some(idx) = mission_fqn.find('.') {
+                    let stem = &mission_fqn[idx + 1..];
+                    stem_to_mission.insert(stem.to_string(), mission_fqn.clone());
+                }
+            }
+
+            // For each candidate object, derive its stem (drop leading prefix),
+            // and find the longest matching mission stem (greedy match).
+            // Then resolve to NPC FQNs via direct/spawn/encounter scan.
+            let mut map: HashMap<String, Vec<String>> = HashMap::new();
+            for (fqn, kind, payload_b64) in rows {
+                let Some(idx) = fqn.find('.') else { continue };
+                let obj_stem = &fqn[idx + 1..];
+
+                // Find a mission stem that is a prefix of this object's stem.
+                // Walk from the longest possible prefix down to handle nested
+                // namespaces correctly.
+                let mut owning_mission: Option<&String> = None;
+                let mut owning_len = 0usize;
+                for (mission_stem, mission_fqn) in &stem_to_mission {
+                    if obj_stem.starts_with(mission_stem)
+                        && obj_stem.len() > mission_stem.len()
+                        && obj_stem.as_bytes()[mission_stem.len()] == b'.'
+                        && mission_stem.len() > owning_len
+                    {
+                        owning_mission = Some(mission_fqn);
+                        owning_len = mission_stem.len();
+                    }
+                }
+                let Some(mission_fqn) = owning_mission else {
+                    continue;
+                };
+
+                let entry = map.entry(mission_fqn.clone()).or_default();
+                match kind.as_str() {
+                    "Npc" => entry.push(fqn.clone()),
+                    "Spawn" => {
+                        if let Ok(payload) = BASE64.decode(&payload_b64) {
+                            for s in extract_strings_from_payload(&payload) {
+                                if s.starts_with("npc.") {
+                                    entry.push(s);
+                                }
+                            }
+                        }
+                    }
+                    "Encounter" => {
+                        if let Some(npcs) = enc_to_npcs.get(&fqn) {
+                            entry.extend(npcs.iter().cloned());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Dedup each mission's npc list.
+            for npcs in map.values_mut() {
+                npcs.sort();
+                npcs.dedup();
+            }
+
+            map
+        };
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut npc_stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO mission_npcs (mission_fqn, npc_fqn) VALUES (?1, ?2)",
+        )?;
+        let mut reward_stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO mission_rewards (mission_fqn, reward_variable) VALUES (?1, ?2)",
+        )?;
+
+        let mut npc_count = 0u64;
+        let mut reward_count = 0u64;
+
+        for (mission_fqn, _source) in &missions {
+            let mut seen_npcs: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut seen_rewards: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+
+            // Source 1: namespace co-located NPCs (any npc/spn/enc object whose
+            // FQN sits inside the mission's path stem). Primary signal for
+            // mpn-only missions.
+            if let Some(npcs) = mission_namespace_npcs.get(mission_fqn) {
+                for n in npcs {
+                    seen_npcs.insert(n.clone());
+                }
+            }
+
+            // Source 2: mission's own payload (catches cross-namespace refs
+            // like J&E referencing Tremel from `npc...multi.overseer_tremel`).
+            // Empty for mpn-only missions; rich for qst-source.
+            if let Some(payloads) = mission_payloads.get(mission_fqn) {
+                for payload_b64 in payloads {
+                    let Ok(payload) = BASE64.decode(payload_b64) else {
+                        continue;
+                    };
+                    for s in extract_strings_from_payload(&payload) {
+                        if s.starts_with("npc.") {
+                            seen_npcs.insert(s);
+                            continue;
+                        }
+                        if let Some(npc) = npc_from_spn_triple(&s) {
+                            seen_npcs.insert(npc);
+                            continue;
+                        }
+                        let enc_fqn = match s.strip_prefix("a:") {
+                            Some(rest) if rest.starts_with("enc.") => Some(rest.to_string()),
+                            _ if s.starts_with("enc.") => Some(s.clone()),
+                            _ => None,
+                        };
+                        if let Some(enc) = enc_fqn {
+                            if let Some(npcs) = enc_to_npcs.get(&enc) {
+                                for n in npcs {
+                                    seen_npcs.insert(n.clone());
+                                }
+                            }
+                            continue;
+                        }
+                        if s.starts_with("quest_reward_") {
+                            seen_rewards.insert(s);
+                        }
+                    }
+                }
+            }
+
+            for npc_fqn in &seen_npcs {
+                npc_stmt.execute(rusqlite::params![mission_fqn, npc_fqn])?;
+                npc_count += 1;
+            }
+            for reward_variable in &seen_rewards {
+                reward_stmt.execute(rusqlite::params![mission_fqn, reward_variable])?;
+                reward_count += 1;
+            }
+        }
+
+        drop(npc_stmt);
+        drop(reward_stmt);
+        tx.commit()?;
+        Ok((npc_count, reward_count))
+    }
+
     pub fn stats(&self) -> Result<Stats> {
         // Ensure all pending data is flushed before counting
         self.flush()?;
@@ -1064,6 +1368,10 @@ impl Database {
             conn.query_row("SELECT COUNT(*) FROM conquest_objectives", [], |row| {
                 row.get(0)
             })?;
+        let mission_npcs: u64 =
+            conn.query_row("SELECT COUNT(*) FROM mission_npcs", [], |row| row.get(0))?;
+        let mission_rewards: u64 =
+            conn.query_row("SELECT COUNT(*) FROM mission_rewards", [], |row| row.get(0))?;
 
         Ok(Stats {
             quests,
@@ -1077,6 +1385,8 @@ impl Database {
             runtime_ids,
             missions,
             conquest_objectives,
+            mission_npcs,
+            mission_rewards,
         })
     }
 
