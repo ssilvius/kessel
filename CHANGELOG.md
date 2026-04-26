@@ -21,6 +21,7 @@ Versions follow [Cargo semver](https://doc.rust-lang.org/cargo/reference/semver.
 - conquest_objectives table: structured view of `ach.conquests.*` (713 rows) with category, subcategory, and cadence parsed from FQN segments. Categories: chapter / class / crafting / event / flashpoint / galactic_seasons / location / operation / spvp / uprisings / quest / weekly. Cadence: weekly / daily / null. Closes #36.
 - conquest_invasion_bonuses view exposing each "Invasion Bonus - <categories>" string from planetaryconquest as (id1, categories) rows. The theme-to-bonus rotation is server-side (per Sean: published as iCal feed); kessel publishes the static catalog of bonus category sets.
 - conquest_theme_strings view: filtered planetaryconquest strings in the theme id1 range (300-360), excluding UI chrome. Themes have inconsistent name/description ordering in the source so the view leaves pairing to consumers.
+- mission_npcs and mission_rewards tables aggregating NPC and reward extractions across each mission's phase tree. For qst-source missions, this is the quest's own payload. For mpn-prefix missions, this walks every `mpn.<prefix>.*` child phase. mpn-only missions (alliance alerts, class-story side missions like Mannett Point) now get their NPCs and rewards extracted -- they were silently zero before because populate_quest_npcs only iterated `kind='Quest'`.
 
 ### Fixed
 
