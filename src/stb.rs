@@ -203,17 +203,11 @@ pub fn should_extract_stb(path: &str) -> bool {
         return false;
     }
 
-    // Check if it's a root-level STB (no subdirectories after /str/)
     if let Some(str_pos) = normalized.find("/str/") {
         let after_str = &normalized[str_pos + 5..]; // skip "/str/"
 
-        // Root level means no more slashes before .stb
-        if after_str.contains('/') {
-            return false; // Has subdirectory, skip
-        }
-
-        // Check for our target files
-        let target_files = [
+        // Root-level STBs (no subdirectory): primary object kinds.
+        const ROOT_TARGETS: &[&str] = &[
             "abl.stb",
             "tal.stb",
             "itm.stb",
@@ -223,8 +217,20 @@ pub fn should_extract_stb(path: &str) -> bool {
             "ach.stb",
             "schem.stb",
         ];
+        if !after_str.contains('/') {
+            return ROOT_TARGETS.contains(&after_str);
+        }
 
-        return target_files.contains(&after_str);
+        // Selected nested STBs that contain category labels not in the
+        // root-level kind tables. planetaryconquest carries conquest theme
+        // names; galacticcommand carries Eternal Empire reward-track labels.
+        const NESTED_TARGETS: &[&str] = &["gui/planetaryconquest.stb", "gui/galacticcommand.stb"];
+        for target in NESTED_TARGETS {
+            if after_str == *target {
+                return true;
+            }
+        }
+        return false;
     }
 
     false
