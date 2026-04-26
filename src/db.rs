@@ -155,9 +155,14 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_strings_locale ON strings(locale);
             CREATE INDEX IF NOT EXISTS idx_strings_id2 ON strings(id2);
 
-            -- Typed views for convenience
+            -- Typed views for convenience.
+            -- Post-#23: kind='Quest' includes only qst.* objects.
+            -- Mission phases (mpn.*) are kind='Phase' -- see `phases` view.
             CREATE VIEW IF NOT EXISTS quests AS
-                SELECT * FROM objects WHERE kind = 'Quest' OR fqn LIKE 'qst.%';
+                SELECT * FROM objects WHERE kind = 'Quest';
+
+            CREATE VIEW IF NOT EXISTS phases AS
+                SELECT * FROM objects WHERE kind = 'Phase';
 
             CREATE VIEW IF NOT EXISTS abilities AS
                 SELECT * FROM objects WHERE kind = 'Ability' OR fqn LIKE 'abl.%';
@@ -462,9 +467,8 @@ impl Database {
                 }
             }
 
-            let mut stmt = conn.prepare(
-                "SELECT fqn, string_id, json FROM objects WHERE fqn LIKE 'qst.%' OR kind = 'Quest'",
-            )?;
+            let mut stmt =
+                conn.prepare("SELECT fqn, string_id, json FROM objects WHERE kind = 'Quest'")?;
             let rows: Vec<(String, Option<u32>, String)> = stmt
                 .query_map([], |row| {
                     Ok((
