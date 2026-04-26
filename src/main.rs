@@ -370,6 +370,9 @@ fn main() -> Result<()> {
     // Fifth pass: extract quest_reward_* variable names from quest payloads
     db.populate_quest_rewards()?;
 
+    // Sixth pass: extract spawn runtime IDs from SPN triples (combat-log bridge)
+    db.populate_spawn_runtime_ids()?;
+
     // Print summary
     let stats = db.stats()?;
     println!("\nExtraction complete!");
@@ -378,8 +381,8 @@ fn main() -> Result<()> {
     println!();
     println!("  Objects: {}", total_objects);
     println!(
-        "    Quests: {} ({} classified, {} chain links, {} npc links, {} reward links)",
-        stats.quests, quest_count, stats.chain_links, stats.npc_links, stats.reward_links
+        "    Quests: {} ({} classified, {} chain links, {} npc links, {} reward links, {} runtime ids)",
+        stats.quests, quest_count, stats.chain_links, stats.npc_links, stats.reward_links, stats.runtime_ids
     );
     println!("    Abilities: {}", stats.abilities);
     println!("    Items: {}", stats.items);

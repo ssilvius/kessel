@@ -93,6 +93,7 @@ pub struct Stats {
     pub chain_links: u64,
     pub npc_links: u64,
     pub reward_links: u64,
+    pub runtime_ids: u64,
 }
 
 impl Database {
@@ -217,6 +218,21 @@ impl Database {
                 link_type TEXT NOT NULL,
                 PRIMARY KEY (source_game_id, target_game_id)
             );
+
+            -- Spawn runtime IDs: every SPN triple `spn.X;target.Y;<id>` in a
+            -- quest payload becomes one row. The numeric ID may be the runtime
+            -- node ID the combat log emits when the entity is interacted with
+            -- (hypothesis from #20, awaiting log verification). Even if it
+            -- turns out to be packed coordinates, the bridge data lives here.
+            CREATE TABLE IF NOT EXISTS spawn_runtime_ids (
+                spn_fqn     TEXT NOT NULL,
+                target_fqn  TEXT NOT NULL,
+                runtime_id  INTEGER NOT NULL,
+                PRIMARY KEY (spn_fqn, target_fqn, runtime_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_spawn_runtime_ids_target ON spawn_runtime_ids(target_fqn);
+            CREATE INDEX IF NOT EXISTS idx_spawn_runtime_ids_runtime ON spawn_runtime_ids(runtime_id);
 
             -- Quest rewards (variable names extracted from payloads, e.g.
             -- 'quest_reward_adrenal'). Variable names are categories
@@ -658,19 +674,27 @@ fn fetch_fqn_payloads(conn: &Connection, kind: &str) -> Result<Vec<(String, Stri
 /// spn.<faction.planet.path>;<target_fqn>;<numeric_id>
 /// ```
 ///
-/// The middle segment is the entity that spawns at this point -- typically
-/// `npc.*`, sometimes `plc.*` or other kinds. Return the embedded FQN only
-/// if it starts with `npc.` (other kinds are ignored here -- this helper is
-/// scoped to NPC resolution).
-fn npc_from_spn_triple(s: &str) -> Option<String> {
+/// Returns all three parts, or None if the string is not a well-formed
+/// SPN triple. Caller decides whether to keep based on `target_fqn`'s
+/// prefix (npc/plc/etc.).
+fn parse_spn_triple(s: &str) -> Option<(String, String, u64)> {
     if !s.starts_with("spn.") {
         return None;
     }
     let mut parts = s.splitn(3, ';');
-    let _spn = parts.next()?;
-    let target = parts.next()?;
+    let spn_fqn = parts.next()?;
+    let target_fqn = parts.next()?;
+    let numeric_str = parts.next()?;
+    let runtime_id = numeric_str.parse::<u64>().ok()?;
+    Some((spn_fqn.to_string(), target_fqn.to_string(), runtime_id))
+}
+
+/// Convenience: extract just the npc.* target from an SPN triple, or None
+/// if the triple is malformed or its target is not an NPC.
+fn npc_from_spn_triple(s: &str) -> Option<String> {
+    let (_spn, target, _id) = parse_spn_triple(s)?;
     if target.starts_with("npc.") {
-        Some(target.to_string())
+        Some(target)
     } else {
         None
     }
@@ -810,6 +834,44 @@ impl Database {
         Ok(link_count)
     }
 
+    /// Extract every SPN triple (`spn.X;target.Y;<numeric>`) from quest
+    /// payloads and write rows into `spawn_runtime_ids`. The numeric is
+    /// kept as-is for the combat-log bridge: it may be a runtime node ID,
+    /// packed coordinates, or both. Decoding waits on combat log capture
+    /// (#20).
+    pub fn populate_spawn_runtime_ids(&self) -> Result<u64> {
+        use crate::pbuk::extract_strings_from_payload;
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
+        let quest_rows: Vec<(String, String)> = {
+            let conn = self.conn.lock().unwrap();
+            fetch_fqn_payloads(&conn, "Quest")?
+        };
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO spawn_runtime_ids (spn_fqn, target_fqn, runtime_id) VALUES (?1, ?2, ?3)",
+        )?;
+
+        let mut count = 0u64;
+        for (_quest_fqn, payload_b64) in &quest_rows {
+            let Ok(payload) = BASE64.decode(payload_b64) else {
+                continue;
+            };
+            for s in extract_strings_from_payload(&payload) {
+                if let Some((spn_fqn, target_fqn, runtime_id)) = parse_spn_triple(&s) {
+                    stmt.execute(rusqlite::params![spn_fqn, target_fqn, runtime_id as i64,])?;
+                    count += 1;
+                }
+            }
+        }
+
+        drop(stmt);
+        tx.commit()?;
+        Ok(count)
+    }
+
     /// Extract `quest_reward_*` variable names from each quest payload and
     /// write rows into `quest_rewards`. Variable names are categories
     /// (adrenal, medpac, alignment, gift); specific items are runtime-resolved
@@ -864,6 +926,10 @@ impl Database {
             conn.query_row("SELECT COUNT(*) FROM quest_npcs", [], |row| row.get(0))?;
         let reward_links: u64 =
             conn.query_row("SELECT COUNT(*) FROM quest_rewards", [], |row| row.get(0))?;
+        let runtime_ids: u64 =
+            conn.query_row("SELECT COUNT(*) FROM spawn_runtime_ids", [], |row| {
+                row.get(0)
+            })?;
 
         Ok(Stats {
             quests,
@@ -874,6 +940,7 @@ impl Database {
             chain_links,
             npc_links,
             reward_links,
+            runtime_ids,
         })
     }
 
@@ -1015,6 +1082,26 @@ fn derive_icon_from_fqn(fqn: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_spn_triple_extracts_all_three_parts() {
+        let s = "spn.location.korriban.foo;npc.location.korriban.bar;291310451818496";
+        let (spn, target, id) = parse_spn_triple(s).unwrap();
+        assert_eq!(spn, "spn.location.korriban.foo");
+        assert_eq!(target, "npc.location.korriban.bar");
+        assert_eq!(id, 291310451818496);
+    }
+
+    #[test]
+    fn parse_spn_triple_rejects_missing_runtime_id() {
+        // Two segments only, no numeric.
+        assert!(parse_spn_triple("spn.X;npc.Y").is_none());
+    }
+
+    #[test]
+    fn parse_spn_triple_rejects_non_numeric_third_segment() {
+        assert!(parse_spn_triple("spn.X;npc.Y;not_a_number").is_none());
+    }
 
     #[test]
     fn npc_from_spn_triple_extracts_middle_segment() {

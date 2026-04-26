@@ -15,6 +15,7 @@ Versions follow [Cargo semver](https://doc.rust-lang.org/cargo/reference/semver.
 - quest_rewards table populated by extracting `quest_reward_*` variable names from quest payloads (closes #24)
 - quest_descriptions view exposing each quest's first journal entry (STB id1 200-600 range) -- mirrors the CSV "Mission Description" column
 - bonus_missions view flattening `mpn.*.bonus.*` mission-phase objects with their parent quest FQN guess -- helps close the kessel/CSV row-count gap (#25)
+- spawn_runtime_ids table populated from SPN-triple numerics in quest payloads -- bridges combat-log entity events to kessel's content GUIDs once the log format is verified. Closes #31.
 
 ### Fixed
 
