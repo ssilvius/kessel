@@ -24,6 +24,7 @@ Versions follow [Cargo semver](https://doc.rust-lang.org/cargo/reference/semver.
 - String scanner recognises a third encoding pattern: `0xD2 0x01 <index> <len> <ASCII>` for array-element strings in encounter payloads. The previous heuristic produced truncated strings (e.g. `Gspn.location...ban` instead of the full FQN).
 - mpn.* objects now classify as `kind='Phase'` (was `kind='Quest'`). Mission phases were inflating the Quest count 8x and polluting `quest_details` with phase-shaped rows that were never real missions. New `phases` view exposes them. Closes #23.
 - Spawn-prefix fallback in populate_quest_npcs: encounters that reference a base spawn name (e.g. `spn.X.multi.isen`) which the engine resolves at runtime to variants (`isen_no_weapon`, `isen_captured`) now resolve to the underlying NPC via prefix-match. Closes the_devoted_ones case from #27.
+- string_id type-marker decoder tries 3-byte big-endian before 4-byte little-endian. The previous LE32-first order was poisoning achievement IDs by absorbing a trailing 0x00 separator byte. Achievement string_id coverage 42% -> 99.9%; conquest objectives specifically went 0% -> 100% (687/687). No regression on quests/items/talents. Closes #37.
 
 ### Removed
 

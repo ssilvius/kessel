@@ -228,18 +228,23 @@ impl GameObject {
                 {
                     let id_bytes = &payload[after_type + 2..after_type + 6];
 
-                    // Try 4-byte little-endian first (discipline talents)
-                    let le32 =
-                        u32::from_le_bytes([id_bytes[0], id_bytes[1], id_bytes[2], id_bytes[3]]);
-                    if (MIN_STRING_ID..=MAX_STRING_ID).contains(&le32) {
-                        return Some(le32);
-                    }
-
-                    // Fall back to 3-byte big-endian (GSF talents: tal.spvp.*)
+                    // Try 3-byte big-endian first -- the canonical GOM encoding
+                    // for string IDs after CE markers (qst, npc, itm, ach, cnv).
+                    // A 0x00 separator/flag byte typically follows the 3-byte
+                    // ID, which the LE32 decode would incorrectly absorb.
                     let be24 =
                         (id_bytes[0] as u32) << 16 | (id_bytes[1] as u32) << 8 | id_bytes[2] as u32;
                     if (MIN_STRING_ID..=MAX_STRING_ID).contains(&be24) {
                         return Some(be24);
+                    }
+
+                    // Fall back to 4-byte little-endian -- discipline talents
+                    // and a few other contexts use this. Order swapped from
+                    // pre-#37 because LE32 was poisoning achievement IDs.
+                    let le32 =
+                        u32::from_le_bytes([id_bytes[0], id_bytes[1], id_bytes[2], id_bytes[3]]);
+                    if (MIN_STRING_ID..=MAX_STRING_ID).contains(&le32) {
+                        return Some(le32);
                     }
                 }
             }
