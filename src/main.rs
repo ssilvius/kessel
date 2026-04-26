@@ -373,8 +373,11 @@ fn main() -> Result<()> {
     // Fifth pass: extract spawn runtime IDs from SPN triples (combat-log bridge)
     db.populate_spawn_runtime_ids()?;
 
-    // Seventh pass: derive mission identities from qst.* + mpn-prefix groupings
+    // Sixth pass: derive mission identities from qst.* + mpn-prefix groupings
     db.populate_missions()?;
+
+    // Seventh pass: structure conquest objectives by category and cadence
+    db.populate_conquest_objectives()?;
 
     // Print summary
     let stats = db.stats()?;
@@ -391,6 +394,7 @@ fn main() -> Result<()> {
     println!("    Abilities: {}", stats.abilities);
     println!("    Items: {}", stats.items);
     println!("    NPCs: {}", stats.npcs);
+    println!("    Conquest objectives: {}", stats.conquest_objectives);
     println!();
     println!("  Strings: {}", stats.strings);
     if args.icons {

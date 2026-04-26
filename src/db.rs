@@ -95,6 +95,7 @@ pub struct Stats {
     pub reward_links: u64,
     pub runtime_ids: u64,
     pub missions: u64,
+    pub conquest_objectives: u64,
 }
 
 impl Database {
@@ -236,6 +237,21 @@ impl Database {
             );
 
             CREATE INDEX IF NOT EXISTS idx_missions_source ON missions(source);
+
+            -- Conquest objectives: structured view of `ach.conquests.*` with
+            -- category and cadence parsed from the FQN. After PR #38 these
+            -- have working string_id resolution to names/descriptions.
+            CREATE TABLE IF NOT EXISTS conquest_objectives (
+                fqn         TEXT PRIMARY KEY,
+                category    TEXT NOT NULL,   -- chapter|class|crafting|event|flashpoint|galactic_seasons|location|operation|spvp|uprisings|quest|weekly
+                subcategory TEXT,            -- e.g. 'tatooine' (location), 'bounty' (event), 'bounty_hunter' (class)
+                cadence     TEXT,            -- 'weekly' | 'daily' | NULL
+                string_id   INTEGER
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_conquest_objectives_category ON conquest_objectives(category);
+            CREATE INDEX IF NOT EXISTS idx_conquest_objectives_subcategory ON conquest_objectives(subcategory);
+            CREATE INDEX IF NOT EXISTS idx_conquest_objectives_cadence ON conquest_objectives(cadence);
 
             -- Spawn runtime IDs: every SPN triple `spn.X;target.Y;<id>` in a
             -- quest payload becomes one row. The numeric ID may be the runtime
@@ -591,6 +607,38 @@ impl Database {
     // the table but stop populating with the broken approach.
 }
 
+/// Parse a conquest objective FQN (`ach.conquests.<category>.<sub>...<leaf>`)
+/// into (category, subcategory, cadence) where cadence is one of:
+///   - `Some("weekly")` if the leaf ends with `_weekly` or path contains `.weekly.`
+///   - `Some("daily")` if the path contains `.daily.`
+///   - `None` for repeatable / any-cadence objectives
+fn parse_conquest_fqn(fqn: &str) -> (String, Option<String>, Option<String>) {
+    // Expected shape: ach.conquests.<category>[.<subcategory>][...].<leaf>
+    let parts: Vec<&str> = fqn.split('.').collect();
+    if parts.len() < 4 || parts[0] != "ach" || parts[1] != "conquests" {
+        return ("unknown".to_string(), None, None);
+    }
+    let category = parts[2].to_string();
+    let subcategory = if parts.len() >= 5 {
+        Some(parts[3].to_string())
+    } else {
+        None
+    };
+
+    // Cadence: leaf-suffix or path-segment match.
+    let leaf = parts.last().copied().unwrap_or("");
+    let path_segments = &parts[..];
+    let cadence = if leaf.ends_with("_weekly") || path_segments.contains(&"weekly") {
+        Some("weekly".to_string())
+    } else if leaf.ends_with("_daily") || path_segments.contains(&"daily") {
+        Some("daily".to_string())
+    } else {
+        None
+    };
+
+    (category, subcategory, cadence)
+}
+
 /// Pull `(fqn, payload_b64)` tuples for every object of `kind`. Used by
 /// the populate_* passes that need to walk binary payloads.
 fn fetch_fqn_payloads(conn: &Connection, kind: &str) -> Result<Vec<(String, String)>> {
@@ -885,13 +933,10 @@ impl Database {
         // and compute the qst.* counterpart. Skip if a qst.* counterpart exists.
         let mut mpn_prefixes: HashSet<String> = HashSet::new();
         for phase in &phase_fqns {
-            // Phase is `mpn.A.B.C.D`; mission prefix is `mpn.A.B.C`.
             let Some(last_dot) = phase.rfind('.') else {
                 continue;
             };
             let prefix = &phase[..last_dot];
-            // Skip if the qst.* counterpart already covers this mission identity.
-            // mpn-prefix `mpn.X` -> qst.* `qst.X`.
             let qst_equivalent = format!("qst{}", &prefix[3..]);
             if qst_set.contains(qst_equivalent.as_str()) {
                 continue;
@@ -912,6 +957,48 @@ impl Database {
         }
         for prefix in &mpn_prefixes {
             stmt.execute(rusqlite::params![prefix, "mpn-prefix"])?;
+            count += 1;
+        }
+
+        drop(stmt);
+        tx.commit()?;
+        Ok(count)
+    }
+
+    /// Populate `conquest_objectives` from `ach.conquests.*` achievements.
+    /// Parses FQN segments to derive category, subcategory, and cadence.
+    pub fn populate_conquest_objectives(&self) -> Result<u64> {
+        let rows: Vec<(String, Option<u32>)> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT fqn, string_id FROM objects WHERE kind = 'Achievement' AND fqn LIKE 'ach.conquests.%'",
+            )?;
+            let result: Vec<(String, Option<u32>)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<u32>>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            drop(stmt);
+            result
+        };
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut stmt = tx.prepare_cached(
+            "INSERT OR REPLACE INTO conquest_objectives (fqn, category, subcategory, cadence, string_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+
+        let mut count = 0u64;
+        for (fqn, string_id) in &rows {
+            let (category, subcategory, cadence) = parse_conquest_fqn(fqn);
+            stmt.execute(rusqlite::params![
+                fqn,
+                category,
+                subcategory,
+                cadence,
+                string_id
+            ])?;
             count += 1;
         }
 
@@ -943,6 +1030,10 @@ impl Database {
             })?;
         let missions: u64 =
             conn.query_row("SELECT COUNT(*) FROM missions", [], |row| row.get(0))?;
+        let conquest_objectives: u64 =
+            conn.query_row("SELECT COUNT(*) FROM conquest_objectives", [], |row| {
+                row.get(0)
+            })?;
 
         Ok(Stats {
             quests,
@@ -955,6 +1046,7 @@ impl Database {
             reward_links,
             runtime_ids,
             missions,
+            conquest_objectives,
         })
     }
 
@@ -1139,5 +1231,51 @@ mod tests {
         // scoped to NPC-only and must reject them.
         let s = "spn.korriban.x;plc.korriban.carving;123";
         assert!(npc_from_spn_triple(s).is_none());
+    }
+
+    #[test]
+    fn conquest_fqn_class_with_subcategory() {
+        let (cat, sub, cad) =
+            parse_conquest_fqn("ach.conquests.class.bounty_hunter.abilities.carbonize");
+        assert_eq!(cat, "class");
+        assert_eq!(sub.as_deref(), Some("bounty_hunter"));
+        assert_eq!(cad, None);
+    }
+
+    #[test]
+    fn conquest_fqn_location_with_planet() {
+        let (cat, sub, _) =
+            parse_conquest_fqn("ach.conquests.location.tatooine.complete_any_mission");
+        assert_eq!(cat, "location");
+        assert_eq!(sub.as_deref(), Some("tatooine"));
+    }
+
+    #[test]
+    fn conquest_fqn_weekly_suffix() {
+        let (_, _, cad) = parse_conquest_fqn("ach.conquests.crafting.craft_any_weekly");
+        assert_eq!(cad.as_deref(), Some("weekly"));
+    }
+
+    #[test]
+    fn conquest_fqn_weekly_segment_in_path() {
+        let (cat, _, cad) = parse_conquest_fqn(
+            "ach.conquests.galactic_seasons.priority_objectives.weekly.fp_vet_hutt",
+        );
+        assert_eq!(cat, "galactic_seasons");
+        assert_eq!(cad.as_deref(), Some("weekly"));
+    }
+
+    #[test]
+    fn conquest_fqn_daily_segment_in_path() {
+        let (_, _, cad) = parse_conquest_fqn(
+            "ach.conquests.galactic_seasons.priority_objectives.daily.heroics_out_rim",
+        );
+        assert_eq!(cad.as_deref(), Some("daily"));
+    }
+
+    #[test]
+    fn conquest_fqn_rejects_non_conquest() {
+        let (cat, _, _) = parse_conquest_fqn("ach.alliance.alliance_growth.specialists.x");
+        assert_eq!(cat, "unknown");
     }
 }
