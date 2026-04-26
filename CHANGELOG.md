@@ -19,6 +19,8 @@ Versions follow [Cargo semver](https://doc.rust-lang.org/cargo/reference/semver.
 - gui/planetaryconquest.stb and gui/galacticcommand.stb extracted into the strings table. Conquest theme names ("Total Galactic War", "The Trade Emporium", etc.) and "Invasion Bonus" category mappings now queryable. Closes #39.
 - missions table unifying qst.* objects with mpn-prefix groupings. SWTOR's mission identity is encoded as either a qst.* object OR a unique path-prefix of mpn.* phases (alliance alerts, many class-story missions, etc. live only as the latter). Closes #34. Goes from 1,315 quest identities to ~3,950 mission identities.
 - conquest_objectives table: structured view of `ach.conquests.*` (713 rows) with category, subcategory, and cadence parsed from FQN segments. Categories: chapter / class / crafting / event / flashpoint / galactic_seasons / location / operation / spvp / uprisings / quest / weekly. Cadence: weekly / daily / null. Closes #36.
+- conquest_invasion_bonuses view exposing each "Invasion Bonus - <categories>" string from planetaryconquest as (id1, categories) rows. The theme-to-bonus rotation is server-side (per Sean: published as iCal feed); kessel publishes the static catalog of bonus category sets.
+- conquest_theme_strings view: filtered planetaryconquest strings in the theme id1 range (300-360), excluding UI chrome. Themes have inconsistent name/description ordering in the source so the view leaves pairing to consumers.
 
 ### Fixed
 
