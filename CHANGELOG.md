@@ -9,7 +9,7 @@ Versions follow [Cargo semver](https://doc.rust-lang.org/cargo/reference/semver.
 
 ### Added
 
-- quest_chain table populated from GUID refs in quest payloads, linking chain members by resolved u64 identifiers
+- quest_chain table populated from `0xCF` big-endian GUID refs in quest payloads; fixes the zero-row bug from PR #11 where bytes were read as little-endian (closes #7)
 - template_guid column on objects table, decoded from GOM header bytes 16-23 (kind-level template constant)
 - quest_npcs table populated by resolving a:enc.* references in quest payloads to npc.* FQNs through encounter object payloads (closes #14)
 - quest_rewards table populated by extracting `quest_reward_*` variable names from quest payloads (closes #24)
