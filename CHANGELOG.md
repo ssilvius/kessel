@@ -16,6 +16,8 @@ Versions follow [Cargo semver](https://doc.rust-lang.org/cargo/reference/semver.
 ### Fixed
 
 - enc / spn / plc FQN prefixes added to extraction allowlist. quest_npcs was empty after every extraction because encounter objects were filtered out before populate_quest_npcs could resolve them.
+- Extended quest_npcs resolution to three hops (quest -> enc -> spn -> npc). Encounter payloads contain spawn references, not NPC references directly; without the spawn-to-NPC step, encounter resolution found zero rows.
+- String scanner recognises a third encoding pattern: `0xD2 0x01 <index> <len> <ASCII>` for array-element strings in encounter payloads. The previous heuristic produced truncated strings (e.g. `Gspn.location...ban` instead of the full FQN).
 
 ## [0.0.5] - 2026-04-02
 
