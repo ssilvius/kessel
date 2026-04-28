@@ -94,7 +94,7 @@ impl GameObject {
         let template_guid = read_header_guid(&gom.header, 16);
 
         // Compute game_id: sha256(fqn:guid)[0:16] - deterministic compound ID
-        let game_id = crate::hash::compute_game_id(&gom.fqn, &guid);
+        let game_id = crate::hash::compute_game_id(&gom.fqn);
 
         // Extract strings from payload for searchability
         let strings = gom.extract_strings();

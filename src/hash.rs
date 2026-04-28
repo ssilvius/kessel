@@ -10,16 +10,17 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-/// Compute compound ID from FQN and GUID
-/// Returns 16-character hex string: sha256(fqn:guid)[0:16]
+/// Compute game_id from normalized FQN.
+/// Returns 16-character hex string: sha256(fqn)[0:16]
 ///
-/// Deterministic and collision-resistant - if either FQN or GUID changes,
-/// the ID changes. Useful for detecting data corruption/reuse.
-pub fn compute_game_id(fqn: &str, guid: &str) -> String {
+/// Stable across patch versions — the FQN is Bioware's semantic identity
+/// for an object and does not change when the object is patched (GUID does).
+/// Enables cross-version delta tracking by joining on game_id.
+pub fn compute_game_id(fqn: &str) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(format!("{}:{}", fqn, guid));
+    hasher.update(fqn);
     let result = hasher.finalize();
-    hex::encode(&result[..8]) // 8 bytes = 16 hex chars
+    hex::encode(&result[..8])
 }
 
 /// Compute icon ID from icon name
