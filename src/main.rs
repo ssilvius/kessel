@@ -466,6 +466,12 @@ fn main() -> Result<()> {
     let schem_count = db.populate_schematic_recipes()?;
     println!("  Schematic recipes: {}", schem_count);
 
+    // Conversation -> quest references. NODE files (cnv.*) embed CF GUID
+    // refs to qst.* objects representing quests the conversation grants.
+    // The connective tissue for "which NPC's conversation gives this quest".
+    let cnv_quest_refs = db.populate_conversation_quest_refs(&args.input, &hash_dict)?;
+    println!("  Conversation -> quest refs: {}", cnv_quest_refs);
+
     // Eleventh pass: derive disciplines and discipline→ability mappings
     let (disc_count, disc_abl_count) = db.populate_disciplines()?;
 

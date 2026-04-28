@@ -269,6 +269,19 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_schematic_materials_mat ON schematic_materials(material_fqn);
             CREATE INDEX IF NOT EXISTS idx_item_details_crew_skill ON item_details(crew_skill);
 
+            -- Conversation -> quest references. NODE conversation files (cnv.*)
+            -- embed CF GUID refs to qst.* objects representing the quests
+            -- that conversation grants or affects. ~23% of NODE files carry
+            -- such refs in observed data. Populated by scanning .tor archives
+            -- for NODE entries during the populate phase.
+            CREATE TABLE IF NOT EXISTS conversation_quest_refs (
+                cnv_fqn TEXT NOT NULL,
+                quest_fqn TEXT NOT NULL,
+                PRIMARY KEY (cnv_fqn, quest_fqn)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_cnv_quest_refs_quest ON conversation_quest_refs(quest_fqn);
+
             -- Quest NPC references (npc.* FQNs embedded in payload)
             CREATE TABLE IF NOT EXISTS quest_npcs (
                 quest_fqn TEXT NOT NULL,
@@ -1038,6 +1051,126 @@ impl Database {
 
         drop(schem_stmt);
         drop(mat_stmt);
+        tx.commit()?;
+        Ok(count)
+    }
+
+    /// Populate `conversation_quest_refs` by scanning every NODE prototype
+    /// file in `tor_dir` for CF GUID refs that resolve to a known quest.
+    ///
+    /// NODE files at `/resources/systemgenerated/prototypes/<num>.node` hold
+    /// the full conversation playback data for `cnv.*` objects. The PROT
+    /// header (bytes 0x14..) carries the cnv FQN. The body contains CF E0
+    /// GUID refs; those that match a quest GUID indicate the conversation
+    /// grants or otherwise affects that quest. Empirically ~23% of NODE
+    /// files carry such refs.
+    pub fn populate_conversation_quest_refs(
+        &self,
+        tor_dir: &std::path::Path,
+        hashes: &crate::hash::HashDictionary,
+    ) -> Result<u64> {
+        use crate::myp::Archive;
+        use std::collections::{HashMap, HashSet};
+
+        let conn = self.conn.lock().unwrap();
+
+        // Quest GUID -> FQN map.
+        let quest_guid_to_fqn: HashMap<[u8; 8], String> = {
+            let mut stmt = conn.prepare("SELECT guid, fqn FROM objects WHERE kind = 'Quest'")?;
+            let collected: HashMap<[u8; 8], String> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .filter_map(|(guid_hex, fqn)| {
+                    if guid_hex.len() != 16 {
+                        return None;
+                    }
+                    let mut bytes = [0u8; 8];
+                    for i in 0..8 {
+                        bytes[i] = u8::from_str_radix(&guid_hex[i * 2..i * 2 + 2], 16).ok()?;
+                    }
+                    Some((bytes, fqn))
+                })
+                .collect();
+            collected
+        };
+
+        // Hashes for /resources/systemgenerated/prototypes/ NODE files.
+        let prototype_hashes: HashSet<u64> = hashes
+            .paths_matching("/resources/systemgenerated/prototypes/")
+            .into_iter()
+            .map(|(h, _)| h)
+            .collect();
+
+        let tor_files: Vec<std::path::PathBuf> = std::fs::read_dir(tor_dir)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|x| x == "tor").unwrap_or(false))
+            .collect();
+
+        let tx = conn.unchecked_transaction()?;
+        let mut stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO conversation_quest_refs (cnv_fqn, quest_fqn) \
+             VALUES (?1, ?2)",
+        )?;
+
+        let mut count = 0u64;
+        for tor_path in &tor_files {
+            let mut archive = match Archive::open(tor_path) {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            let entries: Vec<_> = match archive.entries() {
+                Ok(e) => e.cloned().collect(),
+                Err(_) => continue,
+            };
+            for entry in &entries {
+                if !prototype_hashes.contains(&entry.filename_hash) {
+                    continue;
+                }
+                let data = match archive.read_entry(entry) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+
+                // Extract cnv FQN from PROT header (NUL-terminated string at 0x14).
+                let fqn_start = 0x14;
+                if data.len() < fqn_start + 8 {
+                    continue;
+                }
+                let mut fqn_end = fqn_start;
+                while fqn_end < data.len() && fqn_end < fqn_start + 200 && data[fqn_end] != 0 {
+                    fqn_end += 1;
+                }
+                let cnv_fqn = String::from_utf8_lossy(&data[fqn_start..fqn_end]).to_string();
+                if !cnv_fqn.starts_with("cnv.") {
+                    continue;
+                }
+
+                // Scan for CF E0 GUID refs.
+                let mut seen_quests: HashSet<&String> = HashSet::new();
+                let mut i = 0;
+                while i + 9 <= data.len() {
+                    if data[i] == 0xCF && data[i + 1] == 0xE0 {
+                        let mut g = [0u8; 8];
+                        g.copy_from_slice(&data[i + 1..i + 9]);
+                        if let Some(quest_fqn) = quest_guid_to_fqn.get(&g) {
+                            seen_quests.insert(quest_fqn);
+                        }
+                        i += 9;
+                    } else {
+                        i += 1;
+                    }
+                }
+                for quest_fqn in seen_quests {
+                    stmt.execute(params![cnv_fqn, quest_fqn])?;
+                    count += 1;
+                }
+            }
+        }
+
+        drop(stmt);
         tx.commit()?;
         Ok(count)
     }
