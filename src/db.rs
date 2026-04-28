@@ -348,6 +348,36 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_cnv_enc_enc ON conversation_encounters(encounter_fqn);
 
+            -- Quest clusters: derived groupings to support bulk curation.
+            -- Each quest gets one row per cluster_kind it matches; a quest can
+            -- belong to multiple clusters (e.g. "class_act" and "class_planet"
+            -- for the same FQN).
+            --   cluster_kind:
+            --     class_act        -- (faction, class, act_N)
+            --     class_planet     -- qst.location.<planet>.class.<class>
+            --     world_arc_hub    -- (exp.NN, planet, faction, hub_N)
+            --     world_arc        -- (exp.NN, planet, world_arc, faction)
+            --     planet_world     -- qst.location.<planet>.world.<faction>
+            --     expansion_arc    -- (exp.NN, planet, arc_segment)
+            --     event            -- qst.event.<event_name>
+            --     alliance         -- qst.alliance.<arc>
+            --     companion        -- qst.alliance.companion.<class>
+            --     flashpoint       -- qst.flashpoint.<name>
+            --     operation        -- qst.operation.<name>
+            --     daily_area       -- qst.daily_area.<planet>
+            --     heroic           -- qst.heroic.<name>
+            --     qtr              -- qst.qtr.* (weekly conquests)
+            --     ventures         -- qst.ventures.*
+            --     galactic_seasons -- qst.exp.galactic_seasons.<season>
+            CREATE TABLE IF NOT EXISTS quest_clusters (
+                quest_fqn TEXT NOT NULL,
+                cluster_kind TEXT NOT NULL,
+                cluster_id TEXT NOT NULL,
+                PRIMARY KEY (quest_fqn, cluster_kind, cluster_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_quest_clusters_id ON quest_clusters(cluster_id);
+            CREATE INDEX IF NOT EXISTS idx_quest_clusters_kind ON quest_clusters(cluster_kind);
+
             -- Quest NPC references (npc.* FQNs embedded in payload)
             CREATE TABLE IF NOT EXISTS quest_npcs (
                 quest_fqn TEXT NOT NULL,
@@ -1412,6 +1442,42 @@ impl Database {
         Ok(count)
     }
 
+    /// Populate `quest_clusters` by classifying each quest FQN into one or
+    /// more named cluster buckets to support bulk curation.
+    ///
+    /// A quest can belong to several clusters at different granularities. For
+    /// example `qst.location.open_world.imperial.act_1.sith_warrior.legacy`
+    /// belongs to: class_act id="imperial|sith_warrior|act_1" plus
+    /// class_planet id="open_world|sith_warrior". (The act_N pattern lives
+    /// under `open_world`, so the planet bucket carries the literal token
+    /// "open_world" rather than a real planet name.)
+    pub fn populate_quest_clusters(&self) -> Result<u64> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT fqn FROM objects WHERE kind = 'Quest'")?;
+        let quest_fqns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        let tx = conn.unchecked_transaction()?;
+        let mut ins = tx.prepare_cached(
+            "INSERT OR IGNORE INTO quest_clusters (quest_fqn, cluster_kind, cluster_id) \
+             VALUES (?1, ?2, ?3)",
+        )?;
+
+        let mut count = 0u64;
+        for fqn in &quest_fqns {
+            for (kind, id) in classify_quest_clusters(fqn) {
+                ins.execute(params![fqn, kind, id])?;
+                count += 1;
+            }
+        }
+        drop(ins);
+        tx.commit()?;
+        Ok(count)
+    }
+
     /// Populate `quest_chain` with `planet_transition` links by scanning every
     /// `leaving_{planet}` quest for strings that name the destination.
     ///
@@ -1514,11 +1580,122 @@ fn extract_transit_dest(s: &str) -> Option<String> {
     }
 }
 
+/// Classify a quest FQN into zero or more (cluster_kind, cluster_id) pairs.
+///
+/// One quest can populate multiple cluster rows because the FQN encodes
+/// orthogonal axes (e.g. a class_act bucket plus an expansion bucket).
+fn classify_quest_clusters(fqn: &str) -> Vec<(&'static str, String)> {
+    let parts: Vec<&str> = fqn.split('.').collect();
+    let mut out: Vec<(&'static str, String)> = Vec::new();
+
+    if parts.len() < 2 || parts[0] != "qst" {
+        return out;
+    }
+
+    // Pattern: qst.location.open_world.<faction>.act_N.<class>.<rest>
+    if parts.len() >= 6
+        && parts[1] == "location"
+        && parts[2] == "open_world"
+        && parts[4].starts_with("act_")
+    {
+        out.push((
+            "class_act",
+            format!("{}|{}|{}", parts[3], parts[5], parts[4]),
+        ));
+    }
+
+    // Pattern: qst.location.<planet>.class.<class>.<rest>
+    if parts.len() >= 5 && parts[1] == "location" && parts[3] == "class" {
+        out.push(("class_planet", format!("{}|{}", parts[2], parts[4])));
+    }
+
+    // Pattern: qst.location.<planet>.world.<faction>.<rest>
+    if parts.len() >= 5 && parts[1] == "location" && parts[3] == "world" {
+        out.push(("planet_world", format!("{}|{}", parts[2], parts[4])));
+    }
+
+    // Pattern: qst.exp.<NN>.<planet>.world_arc.<faction>.hub_N.<rest>
+    if parts.len() >= 7
+        && parts[1] == "exp"
+        && parts[4] == "world_arc"
+        && parts[6].starts_with("hub_")
+    {
+        out.push((
+            "world_arc_hub",
+            format!("{}|{}|{}|{}", parts[2], parts[3], parts[5], parts[6]),
+        ));
+        out.push((
+            "world_arc",
+            format!("{}|{}|{}", parts[2], parts[3], parts[5]),
+        ));
+    } else if parts.len() >= 4 && parts[1] == "exp" {
+        // Generic expansion bucket: qst.exp.<NN>.<planet|seg>.<rest>
+        out.push((
+            "expansion_arc",
+            format!("{}|{}", parts[2], parts.get(3).copied().unwrap_or("")),
+        ));
+    }
+
+    // Pattern: qst.daily_area.<planet>.<rest>
+    if parts.len() >= 3 && parts[1] == "daily_area" {
+        out.push(("daily_area", parts[2].to_string()));
+    }
+
+    // Pattern: qst.heroic.<planet_or_name>.<rest>
+    if parts.len() >= 3 && parts[1] == "heroic" {
+        out.push(("heroic", parts[2].to_string()));
+    }
+
+    // Pattern: qst.flashpoint.<name>.<rest>
+    if parts.len() >= 3 && parts[1] == "flashpoint" {
+        out.push(("flashpoint", parts[2].to_string()));
+    }
+
+    // Pattern: qst.operation.<name>.<rest>
+    if parts.len() >= 3 && parts[1] == "operation" {
+        out.push(("operation", parts[2].to_string()));
+    }
+
+    // Pattern: qst.event.<event_name>.<rest>
+    if parts.len() >= 3 && parts[1] == "event" {
+        out.push(("event", parts[2].to_string()));
+    }
+
+    // Pattern: qst.alliance.companion.<class>.<rest>
+    if parts.len() >= 4 && parts[1] == "alliance" && parts[2] == "companion" {
+        out.push(("companion", parts[3].to_string()));
+    } else if parts.len() >= 3 && parts[1] == "alliance" {
+        out.push(("alliance", parts[2].to_string()));
+    }
+
+    // Pattern: qst.qtr.<rest>
+    if parts.len() >= 2 && parts[1] == "qtr" {
+        let leaf = parts.get(2).copied().unwrap_or("");
+        out.push(("qtr", leaf.to_string()));
+    }
+
+    // Pattern: qst.ventures.<rest>
+    if parts.len() >= 2 && parts[1] == "ventures" {
+        let leaf = parts.get(2).copied().unwrap_or("");
+        out.push(("ventures", leaf.to_string()));
+    }
+
+    // Galactic seasons: qst.exp.galactic_seasons.<season>.*
+    if parts.len() >= 4 && parts[1] == "exp" && parts[2] == "galactic_seasons" {
+        out.push(("galactic_seasons", parts[3].to_string()));
+    }
+    // Or qst.event.galactic_seasons.<season>.*
+    if parts.len() >= 4 && parts[1] == "event" && parts[2] == "galactic_seasons" {
+        out.push(("galactic_seasons", parts[3].to_string()));
+    }
+
+    out
+}
+
 /// Parse a conquest objective FQN (`ach.conquests.<category>.<sub>...<leaf>`)
-/// into (category, subcategory, cadence) where cadence is one of:
-///   - `Some("weekly")` if the leaf ends with `_weekly` or path contains `.weekly.`
-///   - `Some("daily")` if the path contains `.daily.`
-///   - `None` for repeatable / any-cadence objectives
+/// into (category, subcategory, cadence). Cadence is `Some("weekly")` if the
+/// leaf ends with `_weekly` or path contains `.weekly.`, `Some("daily")` if
+/// the path contains `.daily.`, otherwise `None` for repeatable objectives.
 fn parse_conquest_fqn(fqn: &str) -> (String, Option<String>, Option<String>) {
     // Expected shape: ach.conquests.<category>[.<subcategory>][...].<leaf>
     let parts: Vec<&str> = fqn.split('.').collect();

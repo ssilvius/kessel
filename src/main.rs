@@ -460,6 +460,11 @@ fn main() -> Result<()> {
     let fqn_chain_count = db.populate_quest_chain_fqn_order()?;
     println!("  Quest chain FQN-arc edges: {}", fqn_chain_count);
 
+    // Quest clusters for bulk curation. Each quest FQN gets one row per
+    // matching cluster_kind (class_act, world_arc_hub, planet_world, etc).
+    let cluster_count = db.populate_quest_clusters()?;
+    println!("  Quest cluster assignments: {}", cluster_count);
+
     // Schematic recipe extraction (#60). Pairs each itm.schem.* with its
     // schem.* companion object and decodes the recipe (output + materials
     // with quantities) from the schem.* payload's CF GUID refs.
