@@ -98,6 +98,9 @@ pub struct Stats {
     pub conquest_objectives: u64,
     pub mission_npcs: u64,
     pub mission_rewards: u64,
+    pub disciplines: u64,
+    pub discipline_abilities: u64,
+    pub talent_abilities: u64,
 }
 
 impl Database {
@@ -370,6 +373,47 @@ impl Database {
                     ) AS parent_quest_fqn_guess
                 FROM objects o
                 WHERE o.fqn LIKE 'mpn.%.bonus.%';
+
+            -- Disciplines: one row per (class, discipline) pair derived from
+            -- abl.{class}.skill.{discipline}.* FQN patterns.
+            CREATE TABLE IF NOT EXISTS disciplines (
+                class_code       TEXT NOT NULL,
+                discipline_name  TEXT NOT NULL,
+                fqn_prefix       TEXT NOT NULL,  -- e.g. "abl.jedi_knight.skill.defense"
+                PRIMARY KEY (class_code, discipline_name)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_disciplines_class ON disciplines(class_code);
+
+            -- Discipline abilities: every abl.* that belongs to a discipline,
+            -- with tier level and slot type derived from FQN segments.
+            -- tier_level: NULL for base abilities (no mods segment), else
+            --   15/23/27/35/39/43/47/51/60/64/68/73/78 from tal.* payload.
+            -- slot_type: 'core' | 'choice' | 'utility' | 'special' | 'passive' | 'base'
+            CREATE TABLE IF NOT EXISTS discipline_abilities (
+                discipline_fqn_prefix  TEXT NOT NULL,
+                ability_game_id        TEXT NOT NULL,
+                ability_fqn            TEXT NOT NULL,
+                tier_level             INTEGER,
+                slot_type              TEXT NOT NULL,
+                PRIMARY KEY (discipline_fqn_prefix, ability_game_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_discipline_abilities_disc ON discipline_abilities(discipline_fqn_prefix);
+            CREATE INDEX IF NOT EXISTS idx_discipline_abilities_abl  ON discipline_abilities(ability_game_id);
+
+            -- Talent → ability links: GUID refs decoded from tal.* payloads.
+            -- 37% of talents reference 1-3 abilities via CC 17E2840B + CF GUID pattern.
+            CREATE TABLE IF NOT EXISTS talent_abilities (
+                talent_game_id   TEXT NOT NULL,
+                talent_fqn       TEXT NOT NULL,
+                ability_game_id  TEXT NOT NULL,
+                ability_fqn      TEXT,           -- NULL if GUID not in our object set
+                PRIMARY KEY (talent_game_id, ability_game_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_talent_abilities_talent  ON talent_abilities(talent_game_id);
+            CREATE INDEX IF NOT EXISTS idx_talent_abilities_ability ON talent_abilities(ability_game_id);
 
             -- Extraction metadata
             CREATE TABLE IF NOT EXISTS meta (
@@ -1518,6 +1562,227 @@ impl Database {
         Ok((npc_count, reward_count))
     }
 
+    /// Populate `disciplines` and `discipline_abilities` from `abl.{class}.skill.{discipline}.*` FQNs.
+    ///
+    /// Discipline FQN structure:
+    ///   abl.{class}.skill.{discipline}.{name}              -> base/core ability
+    ///   abl.{class}.skill.{discipline}.mods.passive.{name} -> passive
+    ///   abl.{class}.skill.{discipline}.mods.tier2.{name}   -> choice (lvl 23)
+    ///   abl.{class}.skill.{discipline}.mods.tier3.{name}   -> choice (lvl 39+)
+    ///   abl.{class}.skill.{discipline}.mods.special.{name} -> special
+    ///   abl.{class}.skill.utility.{name}                   -> utility (shared)
+    ///   abl.{class}.skill.mods.tier1.{name}                -> shared mod
+    pub fn populate_disciplines(&self) -> Result<(u64, u64)> {
+        self.flush()?;
+
+        let rows: Vec<(String, String)> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt =
+                conn.prepare("SELECT fqn, game_id FROM objects WHERE fqn LIKE 'abl.%.skill.%'")?;
+            let result: Vec<(String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            result
+        };
+
+        let mut disc_set: std::collections::HashSet<(String, String, String)> =
+            std::collections::HashSet::new();
+        let mut abl_rows: Vec<(String, String, String, Option<u8>, String)> = Vec::new();
+
+        for (fqn, game_id) in &rows {
+            // abl.{class}.skill.{rest}
+            let parts: Vec<&str> = fqn.split('.').collect();
+            if parts.len() < 5 {
+                continue;
+            }
+            let class_code = parts[1];
+            let discipline_name;
+            let fqn_prefix;
+            let slot_type: &str;
+            let tier_level: Option<u8>;
+
+            // abl.{class}.skill.utility.{name} -> utility, no discipline
+            if parts[3] == "utility" {
+                discipline_name = "utility";
+                fqn_prefix = format!("abl.{}.skill.utility", class_code);
+                slot_type = "utility";
+                tier_level = None;
+            } else if parts[3] == "mods" {
+                // abl.{class}.skill.mods.tierN.{name} -> shared mod
+                discipline_name = "shared";
+                fqn_prefix = format!("abl.{}.skill.mods", class_code);
+                slot_type = "shared_mod";
+                tier_level = tier_from_segment(parts.get(4).copied());
+            } else {
+                // abl.{class}.skill.{discipline}.*
+                discipline_name = parts[3];
+                fqn_prefix = format!("abl.{}.skill.{}", class_code, discipline_name);
+
+                if parts.len() >= 7 && parts[4] == "mods" {
+                    match parts[5] {
+                        "passive" => {
+                            slot_type = "passive";
+                            tier_level = None;
+                        }
+                        "special" => {
+                            slot_type = "special";
+                            tier_level = None;
+                        }
+                        s if s.starts_with("tier") => {
+                            slot_type = "choice";
+                            tier_level = tier_from_segment(Some(s));
+                        }
+                        _ => {
+                            slot_type = "mod";
+                            tier_level = None;
+                        }
+                    }
+                } else {
+                    slot_type = "core";
+                    tier_level = None;
+                }
+            }
+
+            disc_set.insert((
+                class_code.to_string(),
+                discipline_name.to_string(),
+                fqn_prefix.clone(),
+            ));
+            abl_rows.push((
+                fqn_prefix,
+                game_id.clone(),
+                fqn.clone(),
+                tier_level,
+                slot_type.to_string(),
+            ));
+        }
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        let mut disc_count = 0u64;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR IGNORE INTO disciplines (class_code, discipline_name, fqn_prefix) VALUES (?1, ?2, ?3)",
+            )?;
+            for (class_code, discipline_name, fqn_prefix) in &disc_set {
+                stmt.execute(params![class_code, discipline_name, fqn_prefix])?;
+                disc_count += 1;
+            }
+        }
+
+        let mut abl_count = 0u64;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR IGNORE INTO discipline_abilities (discipline_fqn_prefix, ability_game_id, ability_fqn, tier_level, slot_type) VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for (disc_prefix, game_id, fqn, tier, slot) in &abl_rows {
+                stmt.execute(params![disc_prefix, game_id, fqn, tier, slot])?;
+                abl_count += 1;
+            }
+        }
+
+        tx.commit()?;
+        Ok((disc_count, abl_count))
+    }
+
+    /// Populate `talent_abilities` by decoding GUID refs from `tal.*` payloads.
+    ///
+    /// Pattern (from MAPPINGS.md): CC 17E2840B D001 CF E000 [8-byte GUID BE]
+    /// 37% of talents reference 1-3 abilities this way.
+    pub fn populate_talent_abilities(&self) -> Result<u64> {
+        self.flush()?;
+
+        // Load all talent payloads + their game_ids
+        let talents: Vec<(String, String, Vec<u8>)> = {
+            use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+            let conn = self.conn.lock().unwrap();
+            let mut stmt =
+                conn.prepare("SELECT game_id, fqn, json FROM objects WHERE kind = 'Talent'")?;
+            let raw: Vec<(String, String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            raw.into_iter()
+                .filter_map(|(game_id, fqn, json_str)| {
+                    let v: serde_json::Value = serde_json::from_str(&json_str).ok()?;
+                    let b64 = v.get("payload_b64")?.as_str()?;
+                    let payload = BASE64.decode(b64).ok()?;
+                    Some((game_id, fqn, payload))
+                })
+                .collect()
+        };
+
+        // Build guid → (game_id, fqn) lookup from all objects
+        let guid_map: std::collections::HashMap<String, (String, String)> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare("SELECT guid, game_id, fqn FROM objects")?;
+            let rows: Vec<(String, String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows.into_iter()
+                .map(|(guid, game_id, fqn)| (guid.to_uppercase(), (game_id, fqn)))
+                .collect()
+        };
+
+        let mut links: Vec<(String, String, String, Option<String>)> = Vec::new();
+
+        for (talent_game_id, talent_fqn, payload) in &talents {
+            // Scan for CC 17E2840B (or reversed: 0B84E217) followed by D0 01 CF E0 00 ...
+            // Field marker bytes (stored as found in MAPPINGS.md): CC 17 E2 84 0B
+            // After field marker: D0 01 (int8 = 1), then CF E0 00 XX XX XX XX XX XX
+            let guids = extract_ability_guids_from_talent(payload);
+            for guid_hex in guids {
+                let entry = guid_map.get(&guid_hex);
+                links.push((
+                    talent_game_id.clone(),
+                    talent_fqn.clone(),
+                    entry
+                        .as_ref()
+                        .map_or(guid_hex.clone(), |(gid, _)| gid.clone()),
+                    entry.map(|(_, fqn)| fqn.clone()),
+                ));
+            }
+        }
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO talent_abilities (talent_game_id, talent_fqn, ability_game_id, ability_fqn) VALUES (?1, ?2, ?3, ?4)",
+        )?;
+
+        let mut count = 0u64;
+        for (talent_game_id, talent_fqn, ability_game_id, ability_fqn) in &links {
+            stmt.execute(params![
+                talent_game_id,
+                talent_fqn,
+                ability_game_id,
+                ability_fqn
+            ])?;
+            count += 1;
+        }
+
+        drop(stmt);
+        tx.commit()?;
+        Ok(count)
+    }
+
     pub fn stats(&self) -> Result<Stats> {
         // Ensure all pending data is flushed before counting
         self.flush()?;
@@ -1549,6 +1814,16 @@ impl Database {
             conn.query_row("SELECT COUNT(*) FROM mission_npcs", [], |row| row.get(0))?;
         let mission_rewards: u64 =
             conn.query_row("SELECT COUNT(*) FROM mission_rewards", [], |row| row.get(0))?;
+        let disciplines: u64 =
+            conn.query_row("SELECT COUNT(*) FROM disciplines", [], |row| row.get(0))?;
+        let discipline_abilities: u64 =
+            conn.query_row("SELECT COUNT(*) FROM discipline_abilities", [], |row| {
+                row.get(0)
+            })?;
+        let talent_abilities: u64 =
+            conn.query_row("SELECT COUNT(*) FROM talent_abilities", [], |row| {
+                row.get(0)
+            })?;
 
         Ok(Stats {
             quests,
@@ -1564,6 +1839,9 @@ impl Database {
             conquest_objectives,
             mission_npcs,
             mission_rewards,
+            disciplines,
+            discipline_abilities,
+            talent_abilities,
         })
     }
 
@@ -1700,6 +1978,88 @@ fn derive_icon_from_fqn(fqn: &str) -> Option<String> {
     }
 
     None
+}
+
+/// Decode tier level from FQN segment like "tier2" → 23, "tier3" → 39, etc.
+/// Maps SWTOR's tier numbering to actual level requirements.
+fn tier_from_segment(seg: Option<&str>) -> Option<u8> {
+    match seg? {
+        "tier1" => Some(15),
+        "tier2" => Some(23),
+        "tier3" => Some(39),
+        "tier4" => Some(43),
+        "tier5" => Some(51),
+        "tier6" => Some(64),
+        "tier7" => Some(68),
+        "tier8" => Some(73),
+        _ => None,
+    }
+}
+
+/// Extract ability GUIDs from a `tal.*` payload using the documented pattern:
+///   CC 17 E2 84 0B  (field marker, may appear as CC 0B 84 E2 17 in some payloads)
+///   D0 01           (int8 = 1)
+///   CF E0 00 XX XX XX XX XX XX  (CF type tag + 8-byte GUID; E0 00 are GUID bytes 1-2)
+///
+/// Returns hex strings (uppercase, 16 chars) matching the objects.guid format.
+fn extract_ability_guids_from_talent(payload: &[u8]) -> Vec<String> {
+    let mut guids = Vec::new();
+    let len = payload.len();
+    if len < 16 {
+        return guids;
+    }
+
+    let mut i = 0;
+    while i + 16 <= len {
+        // Look for CC followed by field ID 17E2840B (either byte order)
+        if payload[i] != 0xCC {
+            i += 1;
+            continue;
+        }
+        let is_field = (i + 5 <= len)
+            && ((payload[i + 1] == 0x17
+                && payload[i + 2] == 0xE2
+                && payload[i + 3] == 0x84
+                && payload[i + 4] == 0x0B)
+                || (payload[i + 1] == 0x0B
+                    && payload[i + 2] == 0x84
+                    && payload[i + 3] == 0xE2
+                    && payload[i + 4] == 0x17));
+        if !is_field {
+            i += 1;
+            continue;
+        }
+        // Skip CC + 4-byte field ID + D0 01
+        let after = i + 5;
+        if after + 2 > len {
+            i += 1;
+            continue;
+        }
+        // D0 01 marker
+        let guid_start = if payload[after] == 0xD0 && payload[after + 1] == 0x01 {
+            after + 2
+        } else {
+            after
+        };
+        // CF [8-byte GUID BE]: E0 00 are the first two bytes of the GUID, not markers.
+        // Matches populate_quest_chain's format: payload[i+1..i+9] byte-concat hex.
+        if guid_start + 9 > len {
+            i += 1;
+            continue;
+        }
+        if payload[guid_start] == 0xCF
+            && payload[guid_start + 1] == 0xE0
+            && payload[guid_start + 2] == 0x00
+        {
+            let g = &payload[guid_start + 1..guid_start + 9];
+            let hex = g.iter().map(|b| format!("{b:02X}")).collect::<String>();
+            guids.push(hex);
+            i = guid_start + 9;
+        } else {
+            i += 1;
+        }
+    }
+    guids
 }
 
 #[cfg(test)]

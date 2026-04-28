@@ -223,7 +223,11 @@ fn main() -> Result<()> {
                         }
                     } else if pbuk::is_dblb(&data) {
                         if let Ok(objects) = pbuk::parse_dblb_direct(&data) {
-                            for obj in objects {
+                            for mut obj in objects {
+                                let Some(fqn) = normalize_fqn(&obj.fqn) else {
+                                    continue;
+                                };
+                                obj.fqn = fqn;
                                 let game_obj = schema::GameObject::from_gom(&obj);
                                 if should_extract_object(&game_obj.fqn, args.unfiltered)
                                     && !game_obj.fqn.is_empty()
@@ -242,7 +246,11 @@ fn main() -> Result<()> {
                     }
                 } else if pbuk::is_dblb(&data) {
                     if let Ok(objects) = pbuk::parse_dblb_direct(&data) {
-                        for obj in objects {
+                        for mut obj in objects {
+                            let Some(fqn) = normalize_fqn(&obj.fqn) else {
+                                continue;
+                            };
+                            obj.fqn = fqn;
                             let game_obj = schema::GameObject::from_gom(&obj);
                             if should_extract_object(&game_obj.fqn, args.unfiltered)
                                 && !game_obj.fqn.is_empty()
@@ -388,6 +396,12 @@ fn main() -> Result<()> {
     // Tenth pass: build planet_transition chain links from leaving_ quest strings
     db.populate_planet_transitions()?;
 
+    // Eleventh pass: derive disciplines and discipline→ability mappings
+    let (disc_count, disc_abl_count) = db.populate_disciplines()?;
+
+    // Twelfth pass: decode talent→ability GUID refs from tal.* payloads
+    let talent_abl_count = db.populate_talent_abilities()?;
+
     // Print summary
     let stats = db.stats()?;
     println!("\nExtraction complete!");
@@ -404,6 +418,11 @@ fn main() -> Result<()> {
         stats.missions, stats.mission_npcs, stats.mission_rewards
     );
     println!("    Abilities: {}", stats.abilities);
+    println!(
+        "    Disciplines: {} ({} ability slots, {} talent links)",
+        stats.disciplines, stats.discipline_abilities, stats.talent_abilities
+    );
+    let _ = (disc_count, disc_abl_count, talent_abl_count);
     println!("    Items: {}", stats.items);
     println!("    NPCs: {}", stats.npcs);
     println!("    Conquest objectives: {}", stats.conquest_objectives);
@@ -477,10 +496,29 @@ fn resolve_hashes_path(args: &Args) -> Result<Option<PathBuf>> {
     Ok(Some(default_path))
 }
 
+/// Normalize a GOM FQN for extraction.
+///
+/// Unversioned FQNs pass through unchanged. Versioned FQNs (`base/major/minor`)
+/// are kept only when `minor == 0` — the canonical revision — and the version
+/// suffix is stripped so the stored FQN matches the clean unversioned form.
+/// Returns None for non-zero minor versions (skip these objects).
+fn normalize_fqn(fqn: &str) -> Option<String> {
+    if !fqn.contains('/') {
+        return Some(fqn.to_string());
+    }
+    let slash1 = fqn.rfind('/')?;
+    let minor: u32 = fqn[slash1 + 1..].parse().ok()?;
+    if minor != 0 {
+        return None;
+    }
+    let base_end = fqn[..slash1].rfind('/')?;
+    Some(fqn[..base_end].to_string())
+}
+
 /// Check if a GOM object should be extracted based on FQN prefix
 fn should_extract_object(fqn: &str, unfiltered: bool) -> bool {
-    // Skip versioned duplicates: "abl.foo.bar/17/5" -> only keep base "abl.foo.bar"
-    // Always apply this - versioned paths are duplicates
+    // Safety guard: versioned FQNs should be normalized before reaching here.
+    // The extraction loops call versioned_fqn_base() first and skip non-zero minors.
     if fqn.contains('/') {
         return false;
     }
@@ -623,7 +661,11 @@ fn process_pbuk(data: &[u8], db: &db::Database, unfiltered: bool) -> Result<usiz
     let objects = pbuk::parse(data)?;
     let mut count = 0;
 
-    for obj in objects {
+    for mut obj in objects {
+        let Some(fqn) = normalize_fqn(&obj.fqn) else {
+            continue;
+        };
+        obj.fqn = fqn;
         let game_obj = schema::GameObject::from_gom(&obj);
         if should_extract_object(&game_obj.fqn, unfiltered) && !game_obj.fqn.is_empty() {
             db.insert_object(&game_obj)?;
