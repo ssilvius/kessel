@@ -11,6 +11,19 @@ use crate::schema::item;
 use crate::schema::GameObject;
 use crate::stb::StbEntry;
 
+/// Per-kind row counts inserted by `populate_conversation_refs`.
+#[derive(Default, Debug)]
+pub struct ConversationRefCounts {
+    pub quest: u64,
+    pub npc: u64,
+    pub achievement: u64,
+    pub codex: u64,
+    pub item: u64,
+    pub followup: u64,
+    pub encounter: u64,
+    pub alignment_event: u64,
+}
+
 /// Serialized object ready for batch insert
 struct PendingObject {
     guid: String,
@@ -246,7 +259,153 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_item_details_slot ON item_details(slot);
             CREATE INDEX IF NOT EXISTS idx_item_details_source ON item_details(source);
             CREATE INDEX IF NOT EXISTS idx_item_details_rarity ON item_details(rarity);
+
+            -- Schematic recipes (#60). Each itm.schem.* schematic has a
+            -- companion schem.* GOM object whose payload encodes the recipe:
+            -- output item GUID + material GUIDs with quantities. The schem.*
+            -- companion is reachable via a CF GUID ref in the itm.schem.*
+            -- payload. Output and materials are distinguished by the resolved
+            -- FQN's prefix (itm.mat.* = material, anything else = output).
+            CREATE TABLE IF NOT EXISTS schematics (
+                schematic_fqn TEXT PRIMARY KEY,
+                output_fqn TEXT,
+                output_resolved INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS schematic_materials (
+                schematic_fqn TEXT NOT NULL,
+                material_fqn TEXT NOT NULL,
+                quantity INTEGER NOT NULL,
+                PRIMARY KEY (schematic_fqn, material_fqn)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_schematic_materials_mat ON schematic_materials(material_fqn);
             CREATE INDEX IF NOT EXISTS idx_item_details_crew_skill ON item_details(crew_skill);
+
+            -- Conversation -> quest references. NODE conversation files (cnv.*)
+            -- embed CF GUID refs to qst.* objects representing the quests
+            -- that conversation grants or affects. ~23% of NODE files carry
+            -- such refs in observed data. Populated by scanning .tor archives
+            -- for NODE entries during the populate phase.
+            CREATE TABLE IF NOT EXISTS conversation_quest_refs (
+                cnv_fqn TEXT NOT NULL,
+                quest_fqn TEXT NOT NULL,
+                PRIMARY KEY (cnv_fqn, quest_fqn)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_cnv_quest_refs_quest ON conversation_quest_refs(quest_fqn);
+
+            -- Conversation -> NPC actors. CF GUID refs in NODE bodies that
+            -- match npc.* objects. NPC participants in the dialog (the cnv
+            -- FQN's name segment usually picks out the primary NPC; this
+            -- captures every actor present).
+            CREATE TABLE IF NOT EXISTS conversation_npcs (
+                cnv_fqn TEXT NOT NULL,
+                npc_fqn TEXT NOT NULL,
+                PRIMARY KEY (cnv_fqn, npc_fqn)
+            );
+            CREATE INDEX IF NOT EXISTS idx_cnv_npcs_npc ON conversation_npcs(npc_fqn);
+
+            -- Conversation -> achievement unlocks. CF GUID refs to ach.*.
+            CREATE TABLE IF NOT EXISTS conversation_achievements (
+                cnv_fqn TEXT NOT NULL,
+                achievement_fqn TEXT NOT NULL,
+                PRIMARY KEY (cnv_fqn, achievement_fqn)
+            );
+            CREATE INDEX IF NOT EXISTS idx_cnv_ach_ach ON conversation_achievements(achievement_fqn);
+
+            -- Conversation -> codex unlocks. CF GUID refs to cdx.*.
+            CREATE TABLE IF NOT EXISTS conversation_codex (
+                cnv_fqn TEXT NOT NULL,
+                codex_fqn TEXT NOT NULL,
+                PRIMARY KEY (cnv_fqn, codex_fqn)
+            );
+            CREATE INDEX IF NOT EXISTS idx_cnv_cdx_cdx ON conversation_codex(codex_fqn);
+
+            -- Conversation -> item grants. CF GUID refs to itm.* (rewards
+            -- mailed/awarded by the dialog).
+            CREATE TABLE IF NOT EXISTS conversation_items (
+                cnv_fqn TEXT NOT NULL,
+                item_fqn TEXT NOT NULL,
+                PRIMARY KEY (cnv_fqn, item_fqn)
+            );
+            CREATE INDEX IF NOT EXISTS idx_cnv_items_item ON conversation_items(item_fqn);
+
+            -- Conversation -> follow-up conversation. CF GUID refs to other
+            -- cnv.* objects (sequel dialogs, branching outcomes).
+            CREATE TABLE IF NOT EXISTS conversation_followups (
+                cnv_fqn TEXT NOT NULL,
+                target_cnv_fqn TEXT NOT NULL,
+                PRIMARY KEY (cnv_fqn, target_cnv_fqn)
+            );
+            CREATE INDEX IF NOT EXISTS idx_cnv_follow_target ON conversation_followups(target_cnv_fqn);
+
+            -- Conversation -> combat encounter. CF GUID refs to enc.* (combat
+            -- triggered by the dialog).
+            CREATE TABLE IF NOT EXISTS conversation_encounters (
+                cnv_fqn TEXT NOT NULL,
+                encounter_fqn TEXT NOT NULL,
+                PRIMARY KEY (cnv_fqn, encounter_fqn)
+            );
+            CREATE INDEX IF NOT EXISTS idx_cnv_enc_enc ON conversation_encounters(encounter_fqn);
+
+            -- Quest clusters: derived groupings to support bulk curation.
+            -- Each quest gets one row per cluster_kind it matches; a quest can
+            -- belong to multiple clusters (e.g. "class_act" and "class_planet"
+            -- for the same FQN).
+            --   cluster_kind:
+            --     class_act        -- (faction, class, act_N)
+            --     class_planet     -- qst.location.<planet>.class.<class>
+            --     world_arc_hub    -- (exp.NN, planet, faction, hub_N)
+            --     world_arc        -- (exp.NN, planet, world_arc, faction)
+            --     planet_world     -- qst.location.<planet>.world.<faction>
+            --     expansion_arc    -- (exp.NN, planet, arc_segment)
+            --     event            -- qst.event.<event_name>
+            --     alliance         -- qst.alliance.<arc>
+            --     companion        -- qst.alliance.companion.<class>
+            --     flashpoint       -- qst.flashpoint.<name>
+            --     operation        -- qst.operation.<name>
+            --     daily_area       -- qst.daily_area.<planet>
+            --     heroic           -- qst.heroic.<name>
+            --     qtr              -- qst.qtr.* (weekly conquests)
+            --     ventures         -- qst.ventures.*
+            --     galactic_seasons -- qst.exp.galactic_seasons.<season>
+            CREATE TABLE IF NOT EXISTS quest_clusters (
+                quest_fqn TEXT NOT NULL,
+                cluster_kind TEXT NOT NULL,
+                cluster_id TEXT NOT NULL,
+                PRIMARY KEY (quest_fqn, cluster_kind, cluster_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_quest_clusters_id ON quest_clusters(cluster_id);
+            CREATE INDEX IF NOT EXISTS idx_quest_clusters_kind ON quest_clusters(cluster_kind);
+
+            -- Per-conversation counts of alignment-event tokens found in NODE
+            -- bytes. SWTOR encodes alignment-coded dialog beats by attaching
+            -- audio/effect event names like `event.darkmoment_NN`,
+            -- `event.bigdarkmoment_NN`, `event.sinistermoment_NN`,
+            -- `event.heroicmoment_NN`, `event.darksidetheme.*`,
+            -- `event.lightsidetheme.*`, plus explicit `alignment_override` and
+            -- `influence_desync` tokens. The presence and count of each kind
+            -- is a coarse signal for the LS/DS/influence character of the
+            -- dialog, even though the per-choice magnitudes (LS+50/+100, etc)
+            -- are not yet decoded.
+            --   event_kind:
+            --     darkmoment        small DS choice trigger
+            --     bigdarkmoment     major DS choice trigger
+            --     sinistermoment    DS choice trigger
+            --     darksidetheme     DS music theme setter
+            --     heroicmoment      LS choice trigger
+            --     lightsidetheme    LS music theme setter
+            --     alignment_override explicit alignment override
+            --     influence_desync  companion influence event
+            --     affection_bot     companion affection-bot reaction
+            CREATE TABLE IF NOT EXISTS conversation_alignment_events (
+                cnv_fqn TEXT NOT NULL,
+                event_kind TEXT NOT NULL,
+                event_count INTEGER NOT NULL,
+                PRIMARY KEY (cnv_fqn, event_kind)
+            );
+            CREATE INDEX IF NOT EXISTS idx_cnv_align_kind ON conversation_alignment_events(event_kind);
 
             -- Quest NPC references (npc.* FQNs embedded in payload)
             CREATE TABLE IF NOT EXISTS quest_npcs (
@@ -885,6 +1044,565 @@ impl Database {
         Ok(count)
     }
 
+    /// Populate `quest_chain` with `npc_giver` links derived from the
+    /// conversation graph. For each pair of quests that share an NPC actor
+    /// in their granting conversations, emit an edge -- the same NPC giving
+    /// two quests means they're related in player flow.
+    ///
+    /// Filters to within-cluster pairs only (using quest_clusters): an NPC
+    /// who appears in both a class story conversation and a flashpoint
+    /// conversation isn't necessarily linking those two quests, but an NPC
+    /// who appears in two conversations within the same `class_planet`
+    /// bucket likely is.
+    pub fn populate_quest_chain_npc_giver(&self) -> Result<u64> {
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction()?;
+        // Use a single SQL pass with self-join to keep it simple and fast.
+        // The within-cluster filter restricts the cartesian explosion.
+        let n = tx.execute(
+            "INSERT OR IGNORE INTO quest_chain (source_game_id, target_game_id, link_type) \
+             SELECT DISTINCT \
+                 oa.game_id AS source_game_id, \
+                 ob.game_id AS target_game_id, \
+                 'npc_giver' AS link_type \
+             FROM conversation_quest_refs ra \
+             JOIN conversation_npcs cna ON cna.cnv_fqn = ra.cnv_fqn \
+             JOIN conversation_quest_refs rb \
+                 ON rb.cnv_fqn IN ( \
+                     SELECT cnv_fqn FROM conversation_npcs \
+                     WHERE npc_fqn = cna.npc_fqn \
+                 ) \
+                 AND rb.quest_fqn != ra.quest_fqn \
+             JOIN quest_clusters qca ON qca.quest_fqn = ra.quest_fqn \
+             JOIN quest_clusters qcb \
+                 ON qcb.quest_fqn = rb.quest_fqn \
+                 AND qcb.cluster_kind = qca.cluster_kind \
+                 AND qcb.cluster_id = qca.cluster_id \
+             JOIN objects oa ON oa.fqn = ra.quest_fqn AND oa.kind='Quest' \
+             JOIN objects ob ON ob.fqn = rb.quest_fqn AND ob.kind='Quest' \
+             WHERE ra.quest_fqn < rb.quest_fqn",
+            [],
+        )? as u64;
+        tx.commit()?;
+        Ok(n)
+    }
+
+    /// Populate `schematics` and `schematic_materials` from `itm.schem.*` +
+    /// `schem.*` payloads.
+    ///
+    /// Each `itm.schem.*` object's payload carries a CF GUID ref to a
+    /// companion `schem.*` object (different GOM kind, ~14k instances). The
+    /// schem.* payload encodes the recipe: a list of CF GUID refs each
+    /// followed by a quantity byte. Resolved FQNs are split by prefix:
+    /// `itm.mat.*` rows go to `schematic_materials`, anything else is treated
+    /// as the output and stored in `schematics.output_fqn`.
+    ///
+    /// The quantity byte sits immediately after each 9-byte CF marker
+    /// (`CF E0 NN NN NN NN NN NN NN`). Material values run 1-99 in observed
+    /// payloads (low-bit-set non-CF bytes); the parser clamps to 0..99 to
+    /// reject obviously-non-quantity bytes.
+    pub fn populate_schematic_recipes(&self) -> Result<u64> {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        use std::collections::HashMap;
+
+        let conn = self.conn.lock().unwrap();
+
+        // Build GUID -> FQN map for all objects (only need one lookup table).
+        let mut guid_to_fqn: HashMap<String, String> = HashMap::new();
+        {
+            let mut stmt = conn.prepare("SELECT guid, fqn FROM objects")?;
+            for row in stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+            {
+                guid_to_fqn.insert(row.0.to_uppercase(), row.1);
+            }
+        }
+
+        // Map itm.schem.<X> -> schem.<X> via the strip-prefix convention,
+        // resolved by FQN match (cheap and reliable; the CF ref out of the
+        // itm.schem.* payload would also work but adds a dump pass).
+        // Build schem.* fqn -> payload_b64 map (single scan, indexed lookup).
+        let schem_payloads: HashMap<String, String> = {
+            let mut stmt = conn.prepare(
+                "SELECT fqn, json_extract(json, '$.payload_b64') \
+                 FROM objects WHERE kind = 'schem'",
+            )?;
+            let collected: HashMap<String, String> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            collected
+        };
+
+        // Pair each itm.schem.* with its schem.* companion via the strip-prefix
+        // convention. In-memory map lookup avoids the quadratic SQL JOIN that
+        // would otherwise run REPLACE() against every row pair.
+        let itm_to_schem: Vec<(String, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT fqn FROM objects WHERE fqn LIKE 'itm.schem.%' AND kind = 'Item'",
+            )?;
+            let collected: Vec<(String, String)> = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .filter_map(|r| r.ok())
+                .filter_map(|itm_fqn| {
+                    let schem_fqn = itm_fqn.replacen("itm.schem.", "schem.", 1);
+                    schem_payloads.get(&schem_fqn).map(|p| (itm_fqn, p.clone()))
+                })
+                .collect();
+            collected
+        };
+
+        let tx = conn.unchecked_transaction()?;
+        let mut schem_stmt = tx.prepare_cached(
+            "INSERT OR REPLACE INTO schematics (schematic_fqn, output_fqn, output_resolved) \
+             VALUES (?1, ?2, ?3)",
+        )?;
+        let mut mat_stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO schematic_materials (schematic_fqn, material_fqn, quantity) \
+             VALUES (?1, ?2, ?3)",
+        )?;
+
+        let mut count = 0u64;
+        for (schematic_fqn, payload_b64) in &itm_to_schem {
+            let Ok(payload) = BASE64.decode(payload_b64) else {
+                continue;
+            };
+
+            let mut output_fqn: Option<String> = None;
+            let mut materials: Vec<(String, u32)> = Vec::new();
+
+            let mut i = 0;
+            while i + 10 <= payload.len() {
+                if payload[i] == 0xCF && payload[i + 1] == 0xE0 {
+                    let ref_guid: String = payload[i + 1..i + 9]
+                        .iter()
+                        .map(|b| format!("{:02X}", b))
+                        .collect();
+                    let qty_byte = payload[i + 9];
+                    if let Some(fqn) = guid_to_fqn.get(&ref_guid) {
+                        if fqn.starts_with("itm.mat.") {
+                            // Quantity follows the 9-byte CF marker. Reject
+                            // values >99 to avoid mistaking a continuation
+                            // byte for a quantity.
+                            let qty = if qty_byte == 0 || qty_byte > 99 {
+                                1
+                            } else {
+                                qty_byte as u32
+                            };
+                            materials.push((fqn.clone(), qty));
+                        } else if fqn.starts_with("itm.")
+                            && !fqn.starts_with("itm.schem.")
+                            && fqn != schematic_fqn
+                            && output_fqn.is_none()
+                        {
+                            output_fqn = Some(fqn.clone());
+                        }
+                    }
+                    i += 9;
+                } else {
+                    i += 1;
+                }
+            }
+
+            let resolved = output_fqn.is_some() as i32;
+            schem_stmt.execute(params![schematic_fqn, output_fqn, resolved])?;
+            count += 1;
+            for (mat_fqn, qty) in &materials {
+                mat_stmt.execute(params![schematic_fqn, mat_fqn, qty])?;
+            }
+        }
+
+        drop(schem_stmt);
+        drop(mat_stmt);
+        tx.commit()?;
+        Ok(count)
+    }
+
+    /// Populate `conversation_quest_refs` by scanning every NODE prototype
+    /// file in `tor_dir` for CF GUID refs that resolve to a known quest.
+    ///
+    /// NODE files at `/resources/systemgenerated/prototypes/<num>.node` hold
+    /// the full conversation playback data for `cnv.*` objects. The PROT
+    /// header (bytes 0x14..) carries the cnv FQN. The body contains CF E0
+    /// GUID refs; those that match a quest GUID indicate the conversation
+    /// grants or otherwise affects that quest. Empirically ~23% of NODE
+    /// files carry such refs.
+    pub fn populate_conversation_refs(
+        &self,
+        tor_dir: &std::path::Path,
+        hashes: &crate::hash::HashDictionary,
+    ) -> Result<ConversationRefCounts> {
+        use crate::myp::Archive;
+        use std::collections::{HashMap, HashSet};
+
+        let conn = self.conn.lock().unwrap();
+
+        // Build a single GUID -> (kind, fqn) map for all objects, so a single
+        // CF E0 scan resolves to its target without per-kind lookups.
+        let guid_to_kind_fqn: HashMap<[u8; 8], (String, String)> = {
+            let mut stmt = conn.prepare("SELECT guid, kind, fqn FROM objects")?;
+            let collected: HashMap<[u8; 8], (String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .filter_map(|r| r.ok())
+                .filter_map(|(guid_hex, kind, fqn)| {
+                    if guid_hex.len() != 16 {
+                        return None;
+                    }
+                    let mut bytes = [0u8; 8];
+                    for i in 0..8 {
+                        bytes[i] = u8::from_str_radix(&guid_hex[i * 2..i * 2 + 2], 16).ok()?;
+                    }
+                    Some((bytes, (kind, fqn)))
+                })
+                .collect();
+            collected
+        };
+
+        let prototype_hashes: HashSet<u64> = hashes
+            .paths_matching("/resources/systemgenerated/prototypes/")
+            .into_iter()
+            .map(|(h, _)| h)
+            .collect();
+
+        let tor_files: Vec<std::path::PathBuf> = std::fs::read_dir(tor_dir)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|x| x == "tor").unwrap_or(false))
+            .collect();
+
+        let tx = conn.unchecked_transaction()?;
+        let mut quest_stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO conversation_quest_refs (cnv_fqn, quest_fqn) VALUES (?1, ?2)",
+        )?;
+        let mut npc_stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO conversation_npcs (cnv_fqn, npc_fqn) VALUES (?1, ?2)",
+        )?;
+        let mut ach_stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO conversation_achievements (cnv_fqn, achievement_fqn) VALUES (?1, ?2)",
+        )?;
+        let mut cdx_stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO conversation_codex (cnv_fqn, codex_fqn) VALUES (?1, ?2)",
+        )?;
+        let mut item_stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO conversation_items (cnv_fqn, item_fqn) VALUES (?1, ?2)",
+        )?;
+        let mut follow_stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO conversation_followups (cnv_fqn, target_cnv_fqn) VALUES (?1, ?2)",
+        )?;
+        let mut enc_stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO conversation_encounters (cnv_fqn, encounter_fqn) VALUES (?1, ?2)",
+        )?;
+        let mut align_stmt = tx.prepare_cached(
+            "INSERT OR REPLACE INTO conversation_alignment_events (cnv_fqn, event_kind, event_count) VALUES (?1, ?2, ?3)",
+        )?;
+
+        // Alignment-event token kinds. Each entry: (kind_label, byte-needle).
+        // Order matters -- prefix patterns (bigdarkmoment) must come before
+        // their substring patterns (darkmoment) so the more specific bucket
+        // wins.
+        let align_needles: &[(&str, &[u8])] = &[
+            ("bigdarkmoment", b"event.bigdarkmoment"),
+            ("sinistermoment", b"event.sinistermoment"),
+            ("darksidetheme", b"event.darksidetheme"),
+            ("heroicmoment", b"event.heroicmoment"),
+            ("lightsidetheme", b"event.lightsidetheme"),
+            ("darkmoment", b"event.darkmoment"),
+            ("alignment_override", b"alignment_override"),
+            ("influence_desync", b"influence_desync"),
+            ("affection_bot", b"affection_bot"),
+        ];
+
+        let mut counts = ConversationRefCounts::default();
+
+        for tor_path in &tor_files {
+            let mut archive = match Archive::open(tor_path) {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            let entries: Vec<_> = match archive.entries() {
+                Ok(e) => e.cloned().collect(),
+                Err(_) => continue,
+            };
+            for entry in &entries {
+                if !prototype_hashes.contains(&entry.filename_hash) {
+                    continue;
+                }
+                let data = match archive.read_entry(entry) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+
+                let fqn_start = 0x14;
+                if data.len() < fqn_start + 8 {
+                    continue;
+                }
+                let mut fqn_end = fqn_start;
+                while fqn_end < data.len() && fqn_end < fqn_start + 200 && data[fqn_end] != 0 {
+                    fqn_end += 1;
+                }
+                let cnv_fqn = String::from_utf8_lossy(&data[fqn_start..fqn_end]).to_string();
+                if !cnv_fqn.starts_with("cnv.") {
+                    continue;
+                }
+
+                // Per-target dedup: a single conversation often references the
+                // same target multiple times (one per dialog branch); collapse.
+                let mut seen: HashSet<&str> = HashSet::new();
+                let mut i = 0;
+                while i + 9 <= data.len() {
+                    if data[i] == 0xCF && data[i + 1] == 0xE0 {
+                        let mut g = [0u8; 8];
+                        g.copy_from_slice(&data[i + 1..i + 9]);
+                        if let Some((kind, target_fqn)) = guid_to_kind_fqn.get(&g) {
+                            if seen.insert(target_fqn.as_str()) {
+                                match kind.as_str() {
+                                    "Quest" => {
+                                        quest_stmt.execute(params![cnv_fqn, target_fqn])?;
+                                        counts.quest += 1;
+                                    }
+                                    "Npc" => {
+                                        npc_stmt.execute(params![cnv_fqn, target_fqn])?;
+                                        counts.npc += 1;
+                                    }
+                                    "Achievement" => {
+                                        ach_stmt.execute(params![cnv_fqn, target_fqn])?;
+                                        counts.achievement += 1;
+                                    }
+                                    "Codex" => {
+                                        cdx_stmt.execute(params![cnv_fqn, target_fqn])?;
+                                        counts.codex += 1;
+                                    }
+                                    "Item" => {
+                                        item_stmt.execute(params![cnv_fqn, target_fqn])?;
+                                        counts.item += 1;
+                                    }
+                                    "Conversation" if target_fqn != &cnv_fqn => {
+                                        follow_stmt.execute(params![cnv_fqn, target_fqn])?;
+                                        counts.followup += 1;
+                                    }
+                                    "Encounter" => {
+                                        enc_stmt.execute(params![cnv_fqn, target_fqn])?;
+                                        counts.encounter += 1;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        i += 9;
+                    } else {
+                        i += 1;
+                    }
+                }
+
+                // Alignment-event token scan. Walk every printable string in
+                // the NODE, count occurrences per kind, write one row per
+                // (cnv, kind) with the count. The numbered suffixes
+                // (darkmoment_07, heroicmoment_15, ...) collapse into the
+                // unsuffixed kind for storage; downstream can re-scan for
+                // exact tier numbers if needed.
+                let mut align_counts: HashMap<&str, u64> = HashMap::new();
+                let mut si = 0;
+                while si < data.len() {
+                    if (32..127).contains(&data[si]) {
+                        let mut sj = si;
+                        while sj < data.len() && (32..127).contains(&data[sj]) {
+                            sj += 1;
+                        }
+                        if sj - si >= 5 {
+                            let s = &data[si..sj];
+                            for (kind, needle) in align_needles {
+                                if s.windows(needle.len()).any(|w| w == *needle) {
+                                    *align_counts.entry(*kind).or_insert(0) += 1;
+                                    break;
+                                }
+                            }
+                        }
+                        si = sj;
+                    } else {
+                        si += 1;
+                    }
+                }
+                for (kind, n) in &align_counts {
+                    align_stmt.execute(params![cnv_fqn, kind, n])?;
+                    counts.alignment_event += 1;
+                }
+            }
+        }
+
+        drop(quest_stmt);
+        drop(npc_stmt);
+        drop(ach_stmt);
+        drop(cdx_stmt);
+        drop(item_stmt);
+        drop(follow_stmt);
+        drop(enc_stmt);
+        drop(align_stmt);
+        tx.commit()?;
+        Ok(counts)
+    }
+
+    /// Populate `quest_chain` with FQN-derived arc-ordering edges.
+    ///
+    /// SWTOR quest payloads do not carry direct GUID refs for story-arc
+    /// progression -- but the FQN segments do. Two patterns encode order:
+    ///
+    /// 1. Class-story act bridges:
+    ///    `qst.location.open_world.<faction>.act_<N>.<class>.<quest>` --
+    ///    every quest at act_N within the same (faction, class) bucket
+    ///    must be done before unlocking act_(N+1). Edge per A in act_N to
+    ///    every B in act_(N+1).
+    ///
+    /// 2. Expansion world-arc hub bridges:
+    ///    `qst.exp.<NN>.<planet>.world_arc.<faction>.hub_<N>.<quest>` --
+    ///    every quest at hub_N within the same (exp, planet, faction)
+    ///    bucket must be done before unlocking hub_(N+1). Edge per A in
+    ///    hub_N to every B in hub_(N+1).
+    ///
+    /// `bonus.*` and `temp_*_prereq` placeholder quests are filtered out --
+    /// bonuses already attach via `guid_ref`, prereq placeholders are
+    /// internal artifacts not real story content.
+    ///
+    /// Edges land with `link_type='fqn_arc_order'` so consumers can filter
+    /// derived from real GUID-ref edges.
+    pub fn populate_quest_chain_fqn_order(&self) -> Result<u64> {
+        use std::collections::HashMap;
+
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT fqn, game_id FROM objects WHERE kind = 'Quest'")?;
+        let rows: Vec<(String, String)> = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        // bucket_key -> position -> Vec<game_id>
+        let mut buckets: HashMap<String, HashMap<u32, Vec<String>>> = HashMap::new();
+
+        for (fqn, game_id) in &rows {
+            if fqn.contains(".bonus.") || fqn.contains(".temp_") {
+                continue;
+            }
+            let parts: Vec<&str> = fqn.split('.').collect();
+
+            // Pattern 1: qst.location.open_world.<faction>.act_<N>.<class>.<quest>
+            if parts.len() >= 7
+                && parts[0] == "qst"
+                && parts[1] == "location"
+                && parts[2] == "open_world"
+            {
+                let faction = parts[3];
+                if let Some(n) = parts[4]
+                    .strip_prefix("act_")
+                    .and_then(|s| s.parse::<u32>().ok())
+                {
+                    let class = parts[5];
+                    let key = format!("act|{}|{}", faction, class);
+                    buckets
+                        .entry(key)
+                        .or_default()
+                        .entry(n)
+                        .or_default()
+                        .push(game_id.clone());
+                    continue;
+                }
+            }
+
+            // Pattern 2: qst.exp.<NN>.<planet>.world_arc.<faction>.hub_<N>.<quest>
+            if parts.len() >= 8 && parts[0] == "qst" && parts[1] == "exp" && parts[4] == "world_arc"
+            {
+                let exp = parts[2];
+                let planet = parts[3];
+                let faction = parts[5];
+                if let Some(n) = parts[6]
+                    .strip_prefix("hub_")
+                    .and_then(|s| s.parse::<u32>().ok())
+                {
+                    let key = format!("hub|{}|{}|{}", exp, planet, faction);
+                    buckets
+                        .entry(key)
+                        .or_default()
+                        .entry(n)
+                        .or_default()
+                        .push(game_id.clone());
+                }
+            }
+        }
+
+        let tx = conn.unchecked_transaction()?;
+        let mut count = 0u64;
+        for positions in buckets.values() {
+            let mut keys: Vec<&u32> = positions.keys().collect();
+            keys.sort();
+            for window in keys.windows(2) {
+                let (lo, hi) = (window[0], window[1]);
+                let sources = &positions[lo];
+                let targets = &positions[hi];
+                for src in sources {
+                    for tgt in targets {
+                        tx.execute(
+                            "INSERT OR IGNORE INTO quest_chain \
+                             (source_game_id, target_game_id, link_type) \
+                             VALUES (?1, ?2, 'fqn_arc_order')",
+                            params![src, tgt],
+                        )?;
+                        count += 1;
+                    }
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(count)
+    }
+
+    /// Populate `quest_clusters` by classifying each quest FQN into one or
+    /// more named cluster buckets to support bulk curation.
+    ///
+    /// A quest can belong to several clusters at different granularities. For
+    /// example `qst.location.open_world.imperial.act_1.sith_warrior.legacy`
+    /// belongs to: class_act id="imperial|sith_warrior|act_1" plus
+    /// class_planet id="open_world|sith_warrior". (The act_N pattern lives
+    /// under `open_world`, so the planet bucket carries the literal token
+    /// "open_world" rather than a real planet name.)
+    pub fn populate_quest_clusters(&self) -> Result<u64> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT fqn FROM objects WHERE kind = 'Quest'")?;
+        let quest_fqns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        let tx = conn.unchecked_transaction()?;
+        let mut ins = tx.prepare_cached(
+            "INSERT OR IGNORE INTO quest_clusters (quest_fqn, cluster_kind, cluster_id) \
+             VALUES (?1, ?2, ?3)",
+        )?;
+
+        let mut count = 0u64;
+        for fqn in &quest_fqns {
+            for (kind, id) in classify_quest_clusters(fqn) {
+                ins.execute(params![fqn, kind, id])?;
+                count += 1;
+            }
+        }
+        drop(ins);
+        tx.commit()?;
+        Ok(count)
+    }
+
     /// Populate `quest_chain` with `planet_transition` links by scanning every
     /// `leaving_{planet}` quest for strings that name the destination.
     ///
@@ -987,11 +1705,122 @@ fn extract_transit_dest(s: &str) -> Option<String> {
     }
 }
 
+/// Classify a quest FQN into zero or more (cluster_kind, cluster_id) pairs.
+///
+/// One quest can populate multiple cluster rows because the FQN encodes
+/// orthogonal axes (e.g. a class_act bucket plus an expansion bucket).
+fn classify_quest_clusters(fqn: &str) -> Vec<(&'static str, String)> {
+    let parts: Vec<&str> = fqn.split('.').collect();
+    let mut out: Vec<(&'static str, String)> = Vec::new();
+
+    if parts.len() < 2 || parts[0] != "qst" {
+        return out;
+    }
+
+    // Pattern: qst.location.open_world.<faction>.act_N.<class>.<rest>
+    if parts.len() >= 6
+        && parts[1] == "location"
+        && parts[2] == "open_world"
+        && parts[4].starts_with("act_")
+    {
+        out.push((
+            "class_act",
+            format!("{}|{}|{}", parts[3], parts[5], parts[4]),
+        ));
+    }
+
+    // Pattern: qst.location.<planet>.class.<class>.<rest>
+    if parts.len() >= 5 && parts[1] == "location" && parts[3] == "class" {
+        out.push(("class_planet", format!("{}|{}", parts[2], parts[4])));
+    }
+
+    // Pattern: qst.location.<planet>.world.<faction>.<rest>
+    if parts.len() >= 5 && parts[1] == "location" && parts[3] == "world" {
+        out.push(("planet_world", format!("{}|{}", parts[2], parts[4])));
+    }
+
+    // Pattern: qst.exp.<NN>.<planet>.world_arc.<faction>.hub_N.<rest>
+    if parts.len() >= 7
+        && parts[1] == "exp"
+        && parts[4] == "world_arc"
+        && parts[6].starts_with("hub_")
+    {
+        out.push((
+            "world_arc_hub",
+            format!("{}|{}|{}|{}", parts[2], parts[3], parts[5], parts[6]),
+        ));
+        out.push((
+            "world_arc",
+            format!("{}|{}|{}", parts[2], parts[3], parts[5]),
+        ));
+    } else if parts.len() >= 4 && parts[1] == "exp" {
+        // Generic expansion bucket: qst.exp.<NN>.<planet|seg>.<rest>
+        out.push((
+            "expansion_arc",
+            format!("{}|{}", parts[2], parts.get(3).copied().unwrap_or("")),
+        ));
+    }
+
+    // Pattern: qst.daily_area.<planet>.<rest>
+    if parts.len() >= 3 && parts[1] == "daily_area" {
+        out.push(("daily_area", parts[2].to_string()));
+    }
+
+    // Pattern: qst.heroic.<planet_or_name>.<rest>
+    if parts.len() >= 3 && parts[1] == "heroic" {
+        out.push(("heroic", parts[2].to_string()));
+    }
+
+    // Pattern: qst.flashpoint.<name>.<rest>
+    if parts.len() >= 3 && parts[1] == "flashpoint" {
+        out.push(("flashpoint", parts[2].to_string()));
+    }
+
+    // Pattern: qst.operation.<name>.<rest>
+    if parts.len() >= 3 && parts[1] == "operation" {
+        out.push(("operation", parts[2].to_string()));
+    }
+
+    // Pattern: qst.event.<event_name>.<rest>
+    if parts.len() >= 3 && parts[1] == "event" {
+        out.push(("event", parts[2].to_string()));
+    }
+
+    // Pattern: qst.alliance.companion.<class>.<rest>
+    if parts.len() >= 4 && parts[1] == "alliance" && parts[2] == "companion" {
+        out.push(("companion", parts[3].to_string()));
+    } else if parts.len() >= 3 && parts[1] == "alliance" {
+        out.push(("alliance", parts[2].to_string()));
+    }
+
+    // Pattern: qst.qtr.<rest>
+    if parts.len() >= 2 && parts[1] == "qtr" {
+        let leaf = parts.get(2).copied().unwrap_or("");
+        out.push(("qtr", leaf.to_string()));
+    }
+
+    // Pattern: qst.ventures.<rest>
+    if parts.len() >= 2 && parts[1] == "ventures" {
+        let leaf = parts.get(2).copied().unwrap_or("");
+        out.push(("ventures", leaf.to_string()));
+    }
+
+    // Galactic seasons: qst.exp.galactic_seasons.<season>.*
+    if parts.len() >= 4 && parts[1] == "exp" && parts[2] == "galactic_seasons" {
+        out.push(("galactic_seasons", parts[3].to_string()));
+    }
+    // Or qst.event.galactic_seasons.<season>.*
+    if parts.len() >= 4 && parts[1] == "event" && parts[2] == "galactic_seasons" {
+        out.push(("galactic_seasons", parts[3].to_string()));
+    }
+
+    out
+}
+
 /// Parse a conquest objective FQN (`ach.conquests.<category>.<sub>...<leaf>`)
-/// into (category, subcategory, cadence) where cadence is one of:
-///   - `Some("weekly")` if the leaf ends with `_weekly` or path contains `.weekly.`
-///   - `Some("daily")` if the path contains `.daily.`
-///   - `None` for repeatable / any-cadence objectives
+/// into (category, subcategory, cadence). Cadence is `Some("weekly")` if the
+/// leaf ends with `_weekly` or path contains `.weekly.`, `Some("daily")` if
+/// the path contains `.daily.`, otherwise `None` for repeatable objectives.
 fn parse_conquest_fqn(fqn: &str) -> (String, Option<String>, Option<String>) {
     // Expected shape: ach.conquests.<category>[.<subcategory>][...].<leaf>
     let parts: Vec<&str> = fqn.split('.').collect();
@@ -1311,12 +2140,22 @@ impl Database {
 
         // Derive mpn-prefix groupings: for each phase, drop the last segment
         // and compute the qst.* counterpart. Skip if a qst.* counterpart exists.
+        //
+        // Special case: don't collapse `stage_<N>` leaves. Multi-stage bonus
+        // missions (e.g. `mpn.X.bonus.Y.staged.Z.stage_2`) should keep each
+        // stage as its own mission, since human-curated checklists count
+        // each stage independently.
         let mut mpn_prefixes: HashSet<String> = HashSet::new();
         for phase in &phase_fqns {
             let Some(last_dot) = phase.rfind('.') else {
                 continue;
             };
-            let prefix = &phase[..last_dot];
+            let leaf = &phase[last_dot + 1..];
+            let prefix = if leaf.starts_with("stage_") {
+                phase.as_str()
+            } else {
+                &phase[..last_dot]
+            };
             let qst_equivalent = format!("qst{}", &prefix[3..]);
             if qst_set.contains(qst_equivalent.as_str()) {
                 continue;
@@ -1337,6 +2176,41 @@ impl Database {
         }
         for prefix in &mpn_prefixes {
             stmt.execute(rusqlite::params![prefix, "mpn-prefix"])?;
+            count += 1;
+        }
+
+        // Achievement-as-mission rows. SWTOR encodes some checklist content
+        // as `ach.*` instead of qst/mpn -- galactic seasons priority
+        // objectives, dynamic-event objectives, ventures progression,
+        // conquests. Add those as mission rows with source naming the
+        // achievement family.
+        let ach_fqns: Vec<String> = {
+            let mut stmt2 = tx.prepare(
+                "SELECT fqn FROM objects WHERE kind = 'Achievement' \
+                 AND ( \
+                    fqn LIKE 'ach.galactic_seasons.season_%' \
+                    OR fqn LIKE 'ach.dynamic_events.%' \
+                    OR fqn LIKE 'ach.ventures.%' \
+                    OR fqn LIKE 'ach.conquests.%' \
+                 )",
+            )?;
+            let collected: Vec<String> = stmt2
+                .query_map([], |row| row.get::<_, String>(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+            collected
+        };
+        for fqn in &ach_fqns {
+            let source = if fqn.starts_with("ach.galactic_seasons.") {
+                "achievement_gs"
+            } else if fqn.starts_with("ach.dynamic_events.") {
+                "achievement_dynamic"
+            } else if fqn.starts_with("ach.ventures.") {
+                "achievement_ventures"
+            } else {
+                "conquest"
+            };
+            stmt.execute(rusqlite::params![fqn, source])?;
             count += 1;
         }
 

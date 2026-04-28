@@ -453,6 +453,47 @@ fn main() -> Result<()> {
     // Tenth pass: build planet_transition chain links from leaving_ quest strings
     db.populate_planet_transitions()?;
 
+    // Tenth-and-a-half pass: derive arc-order chain edges from FQN structure
+    // (act_N -> act_(N+1) class story, hub_N -> hub_(N+1) world_arc).
+    // SWTOR doesn't encode story-arc progression as inter-quest GUID refs --
+    // it lives in FQN segment ordering. Edges land with link_type='fqn_arc_order'.
+    let fqn_chain_count = db.populate_quest_chain_fqn_order()?;
+    println!("  Quest chain FQN-arc edges: {}", fqn_chain_count);
+
+    // Quest clusters for bulk curation. Each quest FQN gets one row per
+    // matching cluster_kind (class_act, world_arc_hub, planet_world, etc).
+    let cluster_count = db.populate_quest_clusters()?;
+    println!("  Quest cluster assignments: {}", cluster_count);
+
+    // Schematic recipe extraction (#60). Pairs each itm.schem.* with its
+    // schem.* companion object and decodes the recipe (output + materials
+    // with quantities) from the schem.* payload's CF GUID refs.
+    let schem_count = db.populate_schematic_recipes()?;
+    println!("  Schematic recipes: {}", schem_count);
+
+    // Conversation refs from NODE files (cnv.* prototypes). One pass through
+    // the .tor archives extracts CF GUID refs to quest, npc, achievement,
+    // codex, item, follow-up conversation, and encounter targets. The
+    // connective tissue for "which NPC's conversation gives/affects what".
+    let cnv_refs = db.populate_conversation_refs(&args.input, &hash_dict)?;
+    println!(
+        "  Conversation refs: quest={} npc={} ach={} cdx={} item={} followup={} enc={} align_events={}",
+        cnv_refs.quest,
+        cnv_refs.npc,
+        cnv_refs.achievement,
+        cnv_refs.codex,
+        cnv_refs.item,
+        cnv_refs.followup,
+        cnv_refs.encounter,
+        cnv_refs.alignment_event,
+    );
+
+    // Quest_chain via NPC giver overlap. Must run AFTER both
+    // populate_quest_clusters (cluster filter) and populate_conversation_refs
+    // (the conv_quest_refs / conv_npcs join surface).
+    let npc_chain_count = db.populate_quest_chain_npc_giver()?;
+    println!("  Quest chain NPC-giver edges: {}", npc_chain_count);
+
     // Eleventh pass: derive disciplines and discipline→ability mappings
     let (disc_count, disc_abl_count) = db.populate_disciplines()?;
 
