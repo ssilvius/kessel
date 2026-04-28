@@ -13,6 +13,7 @@ Versions follow [Cargo semver](https://doc.rust-lang.org/cargo/reference/semver.
 
 ### Added
 
+- survey_prefixes dev binary (`cargo run --bin survey_prefixes`) enumerating every distinct FQN prefix found across all bucket PBUK objects with object counts. Used to audit the hardcoded extraction whitelist in `should_extract_object`. Closes #54.
 - item_details table classifying every `kind='Item'` row from FQN segments: item_kind (gear/mod/schematic/decoration/consumable/material/mtx/etc.), slot (chest/head/legs/hands/feet/waist/wrists/ear/implant/relic/mainhand/offhand/shield), weapon_type, armor_weight, rarity, item_level, source, is_schematic, crew_skill. Set name and set bonus require GOM payload parsing and are deferred to a follow-up. Closes part of #59.
 - quest_chain table populated from `0xCF` big-endian GUID refs in quest payloads; fixes the zero-row bug from PR #11 where bytes were read as little-endian (closes #7)
 - template_guid column on objects table, decoded from GOM header bytes 16-23 (kind-level template constant)
