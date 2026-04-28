@@ -156,10 +156,14 @@ WHERE o.kind = 'Ability'
   AND s.id1 = 0;
 ```
 
-id1 values by content type (approximate):
-- `0` — object name (canonical display name)
-- `1` — description / short description
-- `200–600` — quest step descriptions
+id1 mapping varies by object kind:
+
+| Kind | Name | Description / steps |
+|------|------|----------------------|
+| Ability, Item, Npc, Talent, Achievement, Codex | `id1 = 0` | `id1 = 1` |
+| Quest (`qst.*` / `mpn.*`) | `id1 = 88` | step descriptions at `id1 = 258`, `259`, `274+` (range ~200–600) |
+
+The `quest_descriptions` view selects the first quest description string in the 200–600 range. For non-quest objects, join on `id1 = 0` for name and `id1 = 1` for description.
 
 ---
 
