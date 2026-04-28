@@ -466,11 +466,21 @@ fn main() -> Result<()> {
     let schem_count = db.populate_schematic_recipes()?;
     println!("  Schematic recipes: {}", schem_count);
 
-    // Conversation -> quest references. NODE files (cnv.*) embed CF GUID
-    // refs to qst.* objects representing quests the conversation grants.
-    // The connective tissue for "which NPC's conversation gives this quest".
-    let cnv_quest_refs = db.populate_conversation_quest_refs(&args.input, &hash_dict)?;
-    println!("  Conversation -> quest refs: {}", cnv_quest_refs);
+    // Conversation refs from NODE files (cnv.* prototypes). One pass through
+    // the .tor archives extracts CF GUID refs to quest, npc, achievement,
+    // codex, item, follow-up conversation, and encounter targets. The
+    // connective tissue for "which NPC's conversation gives/affects what".
+    let cnv_refs = db.populate_conversation_refs(&args.input, &hash_dict)?;
+    println!(
+        "  Conversation refs: quest={} npc={} ach={} cdx={} item={} followup={} enc={}",
+        cnv_refs.quest,
+        cnv_refs.npc,
+        cnv_refs.achievement,
+        cnv_refs.codex,
+        cnv_refs.item,
+        cnv_refs.followup,
+        cnv_refs.encounter,
+    );
 
     // Eleventh pass: derive disciplines and discipline→ability mappings
     let (disc_count, disc_abl_count) = db.populate_disciplines()?;

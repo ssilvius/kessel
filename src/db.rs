@@ -11,6 +11,18 @@ use crate::schema::item;
 use crate::schema::GameObject;
 use crate::stb::StbEntry;
 
+/// Per-kind row counts inserted by `populate_conversation_refs`.
+#[derive(Default, Debug)]
+pub struct ConversationRefCounts {
+    pub quest: u64,
+    pub npc: u64,
+    pub achievement: u64,
+    pub codex: u64,
+    pub item: u64,
+    pub followup: u64,
+    pub encounter: u64,
+}
+
 /// Serialized object ready for batch insert
 struct PendingObject {
     guid: String,
@@ -281,6 +293,60 @@ impl Database {
             );
 
             CREATE INDEX IF NOT EXISTS idx_cnv_quest_refs_quest ON conversation_quest_refs(quest_fqn);
+
+            -- Conversation -> NPC actors. CF GUID refs in NODE bodies that
+            -- match npc.* objects. NPC participants in the dialog (the cnv
+            -- FQN's name segment usually picks out the primary NPC; this
+            -- captures every actor present).
+            CREATE TABLE IF NOT EXISTS conversation_npcs (
+                cnv_fqn TEXT NOT NULL,
+                npc_fqn TEXT NOT NULL,
+                PRIMARY KEY (cnv_fqn, npc_fqn)
+            );
+            CREATE INDEX IF NOT EXISTS idx_cnv_npcs_npc ON conversation_npcs(npc_fqn);
+
+            -- Conversation -> achievement unlocks. CF GUID refs to ach.*.
+            CREATE TABLE IF NOT EXISTS conversation_achievements (
+                cnv_fqn TEXT NOT NULL,
+                achievement_fqn TEXT NOT NULL,
+                PRIMARY KEY (cnv_fqn, achievement_fqn)
+            );
+            CREATE INDEX IF NOT EXISTS idx_cnv_ach_ach ON conversation_achievements(achievement_fqn);
+
+            -- Conversation -> codex unlocks. CF GUID refs to cdx.*.
+            CREATE TABLE IF NOT EXISTS conversation_codex (
+                cnv_fqn TEXT NOT NULL,
+                codex_fqn TEXT NOT NULL,
+                PRIMARY KEY (cnv_fqn, codex_fqn)
+            );
+            CREATE INDEX IF NOT EXISTS idx_cnv_cdx_cdx ON conversation_codex(codex_fqn);
+
+            -- Conversation -> item grants. CF GUID refs to itm.* (rewards
+            -- mailed/awarded by the dialog).
+            CREATE TABLE IF NOT EXISTS conversation_items (
+                cnv_fqn TEXT NOT NULL,
+                item_fqn TEXT NOT NULL,
+                PRIMARY KEY (cnv_fqn, item_fqn)
+            );
+            CREATE INDEX IF NOT EXISTS idx_cnv_items_item ON conversation_items(item_fqn);
+
+            -- Conversation -> follow-up conversation. CF GUID refs to other
+            -- cnv.* objects (sequel dialogs, branching outcomes).
+            CREATE TABLE IF NOT EXISTS conversation_followups (
+                cnv_fqn TEXT NOT NULL,
+                target_cnv_fqn TEXT NOT NULL,
+                PRIMARY KEY (cnv_fqn, target_cnv_fqn)
+            );
+            CREATE INDEX IF NOT EXISTS idx_cnv_follow_target ON conversation_followups(target_cnv_fqn);
+
+            -- Conversation -> combat encounter. CF GUID refs to enc.* (combat
+            -- triggered by the dialog).
+            CREATE TABLE IF NOT EXISTS conversation_encounters (
+                cnv_fqn TEXT NOT NULL,
+                encounter_fqn TEXT NOT NULL,
+                PRIMARY KEY (cnv_fqn, encounter_fqn)
+            );
+            CREATE INDEX IF NOT EXISTS idx_cnv_enc_enc ON conversation_encounters(encounter_fqn);
 
             -- Quest NPC references (npc.* FQNs embedded in payload)
             CREATE TABLE IF NOT EXISTS quest_npcs (
@@ -1064,25 +1130,30 @@ impl Database {
     /// GUID refs; those that match a quest GUID indicate the conversation
     /// grants or otherwise affects that quest. Empirically ~23% of NODE
     /// files carry such refs.
-    pub fn populate_conversation_quest_refs(
+    pub fn populate_conversation_refs(
         &self,
         tor_dir: &std::path::Path,
         hashes: &crate::hash::HashDictionary,
-    ) -> Result<u64> {
+    ) -> Result<ConversationRefCounts> {
         use crate::myp::Archive;
         use std::collections::{HashMap, HashSet};
 
         let conn = self.conn.lock().unwrap();
 
-        // Quest GUID -> FQN map.
-        let quest_guid_to_fqn: HashMap<[u8; 8], String> = {
-            let mut stmt = conn.prepare("SELECT guid, fqn FROM objects WHERE kind = 'Quest'")?;
-            let collected: HashMap<[u8; 8], String> = stmt
+        // Build a single GUID -> (kind, fqn) map for all objects, so a single
+        // CF E0 scan resolves to its target without per-kind lookups.
+        let guid_to_kind_fqn: HashMap<[u8; 8], (String, String)> = {
+            let mut stmt = conn.prepare("SELECT guid, kind, fqn FROM objects")?;
+            let collected: HashMap<[u8; 8], (String, String)> = stmt
                 .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
                 })?
                 .filter_map(|r| r.ok())
-                .filter_map(|(guid_hex, fqn)| {
+                .filter_map(|(guid_hex, kind, fqn)| {
                     if guid_hex.len() != 16 {
                         return None;
                     }
@@ -1090,13 +1161,12 @@ impl Database {
                     for i in 0..8 {
                         bytes[i] = u8::from_str_radix(&guid_hex[i * 2..i * 2 + 2], 16).ok()?;
                     }
-                    Some((bytes, fqn))
+                    Some((bytes, (kind, fqn)))
                 })
                 .collect();
             collected
         };
 
-        // Hashes for /resources/systemgenerated/prototypes/ NODE files.
         let prototype_hashes: HashSet<u64> = hashes
             .paths_matching("/resources/systemgenerated/prototypes/")
             .into_iter()
@@ -1110,12 +1180,30 @@ impl Database {
             .collect();
 
         let tx = conn.unchecked_transaction()?;
-        let mut stmt = tx.prepare_cached(
-            "INSERT OR IGNORE INTO conversation_quest_refs (cnv_fqn, quest_fqn) \
-             VALUES (?1, ?2)",
+        let mut quest_stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO conversation_quest_refs (cnv_fqn, quest_fqn) VALUES (?1, ?2)",
+        )?;
+        let mut npc_stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO conversation_npcs (cnv_fqn, npc_fqn) VALUES (?1, ?2)",
+        )?;
+        let mut ach_stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO conversation_achievements (cnv_fqn, achievement_fqn) VALUES (?1, ?2)",
+        )?;
+        let mut cdx_stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO conversation_codex (cnv_fqn, codex_fqn) VALUES (?1, ?2)",
+        )?;
+        let mut item_stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO conversation_items (cnv_fqn, item_fqn) VALUES (?1, ?2)",
+        )?;
+        let mut follow_stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO conversation_followups (cnv_fqn, target_cnv_fqn) VALUES (?1, ?2)",
+        )?;
+        let mut enc_stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO conversation_encounters (cnv_fqn, encounter_fqn) VALUES (?1, ?2)",
         )?;
 
-        let mut count = 0u64;
+        let mut counts = ConversationRefCounts::default();
+
         for tor_path in &tor_files {
             let mut archive = match Archive::open(tor_path) {
                 Ok(a) => a,
@@ -1134,7 +1222,6 @@ impl Database {
                     Err(_) => continue,
                 };
 
-                // Extract cnv FQN from PROT header (NUL-terminated string at 0x14).
                 let fqn_start = 0x14;
                 if data.len() < fqn_start + 8 {
                     continue;
@@ -1148,31 +1235,66 @@ impl Database {
                     continue;
                 }
 
-                // Scan for CF E0 GUID refs.
-                let mut seen_quests: HashSet<&String> = HashSet::new();
+                // Per-target dedup: a single conversation often references the
+                // same target multiple times (one per dialog branch); collapse.
+                let mut seen: HashSet<&str> = HashSet::new();
                 let mut i = 0;
                 while i + 9 <= data.len() {
                     if data[i] == 0xCF && data[i + 1] == 0xE0 {
                         let mut g = [0u8; 8];
                         g.copy_from_slice(&data[i + 1..i + 9]);
-                        if let Some(quest_fqn) = quest_guid_to_fqn.get(&g) {
-                            seen_quests.insert(quest_fqn);
+                        if let Some((kind, target_fqn)) = guid_to_kind_fqn.get(&g) {
+                            if seen.insert(target_fqn.as_str()) {
+                                match kind.as_str() {
+                                    "Quest" => {
+                                        quest_stmt.execute(params![cnv_fqn, target_fqn])?;
+                                        counts.quest += 1;
+                                    }
+                                    "Npc" => {
+                                        npc_stmt.execute(params![cnv_fqn, target_fqn])?;
+                                        counts.npc += 1;
+                                    }
+                                    "Achievement" => {
+                                        ach_stmt.execute(params![cnv_fqn, target_fqn])?;
+                                        counts.achievement += 1;
+                                    }
+                                    "Codex" => {
+                                        cdx_stmt.execute(params![cnv_fqn, target_fqn])?;
+                                        counts.codex += 1;
+                                    }
+                                    "Item" => {
+                                        item_stmt.execute(params![cnv_fqn, target_fqn])?;
+                                        counts.item += 1;
+                                    }
+                                    "Conversation" if target_fqn != &cnv_fqn => {
+                                        follow_stmt.execute(params![cnv_fqn, target_fqn])?;
+                                        counts.followup += 1;
+                                    }
+                                    "Encounter" => {
+                                        enc_stmt.execute(params![cnv_fqn, target_fqn])?;
+                                        counts.encounter += 1;
+                                    }
+                                    _ => {}
+                                }
+                            }
                         }
                         i += 9;
                     } else {
                         i += 1;
                     }
                 }
-                for quest_fqn in seen_quests {
-                    stmt.execute(params![cnv_fqn, quest_fqn])?;
-                    count += 1;
-                }
             }
         }
 
-        drop(stmt);
+        drop(quest_stmt);
+        drop(npc_stmt);
+        drop(ach_stmt);
+        drop(cdx_stmt);
+        drop(item_stmt);
+        drop(follow_stmt);
+        drop(enc_stmt);
         tx.commit()?;
-        Ok(count)
+        Ok(counts)
     }
 
     /// Populate `quest_chain` with FQN-derived arc-ordering edges.
