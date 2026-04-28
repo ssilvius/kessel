@@ -21,6 +21,7 @@ pub struct ConversationRefCounts {
     pub item: u64,
     pub followup: u64,
     pub encounter: u64,
+    pub alignment_event: u64,
 }
 
 /// Serialized object ready for batch insert
@@ -377,6 +378,34 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_quest_clusters_id ON quest_clusters(cluster_id);
             CREATE INDEX IF NOT EXISTS idx_quest_clusters_kind ON quest_clusters(cluster_kind);
+
+            -- Per-conversation counts of alignment-event tokens found in NODE
+            -- bytes. SWTOR encodes alignment-coded dialog beats by attaching
+            -- audio/effect event names like `event.darkmoment_NN`,
+            -- `event.bigdarkmoment_NN`, `event.sinistermoment_NN`,
+            -- `event.heroicmoment_NN`, `event.darksidetheme.*`,
+            -- `event.lightsidetheme.*`, plus explicit `alignment_override` and
+            -- `influence_desync` tokens. The presence and count of each kind
+            -- is a coarse signal for the LS/DS/influence character of the
+            -- dialog, even though the per-choice magnitudes (LS+50/+100, etc)
+            -- are not yet decoded.
+            --   event_kind:
+            --     darkmoment        small DS choice trigger
+            --     bigdarkmoment     major DS choice trigger
+            --     sinistermoment    DS choice trigger
+            --     darksidetheme     DS music theme setter
+            --     heroicmoment      LS choice trigger
+            --     lightsidetheme    LS music theme setter
+            --     alignment_override explicit alignment override
+            --     influence_desync  companion influence event
+            --     affection_bot     companion affection-bot reaction
+            CREATE TABLE IF NOT EXISTS conversation_alignment_events (
+                cnv_fqn TEXT NOT NULL,
+                event_kind TEXT NOT NULL,
+                event_count INTEGER NOT NULL,
+                PRIMARY KEY (cnv_fqn, event_kind)
+            );
+            CREATE INDEX IF NOT EXISTS idx_cnv_align_kind ON conversation_alignment_events(event_kind);
 
             -- Quest NPC references (npc.* FQNs embedded in payload)
             CREATE TABLE IF NOT EXISTS quest_npcs (
@@ -1231,6 +1260,25 @@ impl Database {
         let mut enc_stmt = tx.prepare_cached(
             "INSERT OR IGNORE INTO conversation_encounters (cnv_fqn, encounter_fqn) VALUES (?1, ?2)",
         )?;
+        let mut align_stmt = tx.prepare_cached(
+            "INSERT OR REPLACE INTO conversation_alignment_events (cnv_fqn, event_kind, event_count) VALUES (?1, ?2, ?3)",
+        )?;
+
+        // Alignment-event token kinds. Each entry: (kind_label, byte-needle).
+        // Order matters -- prefix patterns (bigdarkmoment) must come before
+        // their substring patterns (darkmoment) so the more specific bucket
+        // wins.
+        let align_needles: &[(&str, &[u8])] = &[
+            ("bigdarkmoment", b"event.bigdarkmoment"),
+            ("sinistermoment", b"event.sinistermoment"),
+            ("darksidetheme", b"event.darksidetheme"),
+            ("heroicmoment", b"event.heroicmoment"),
+            ("lightsidetheme", b"event.lightsidetheme"),
+            ("darkmoment", b"event.darkmoment"),
+            ("alignment_override", b"alignment_override"),
+            ("influence_desync", b"influence_desync"),
+            ("affection_bot", b"affection_bot"),
+        ];
 
         let mut counts = ConversationRefCounts::default();
 
@@ -1313,6 +1361,39 @@ impl Database {
                         i += 1;
                     }
                 }
+
+                // Alignment-event token scan. Walk every printable string in
+                // the NODE, count occurrences per kind, write one row per
+                // (cnv, kind) with the count. The numbered suffixes
+                // (darkmoment_07, heroicmoment_15, ...) collapse into the
+                // unsuffixed kind for storage; downstream can re-scan for
+                // exact tier numbers if needed.
+                let mut align_counts: HashMap<&str, u64> = HashMap::new();
+                let mut si = 0;
+                while si < data.len() {
+                    if (32..127).contains(&data[si]) {
+                        let mut sj = si;
+                        while sj < data.len() && (32..127).contains(&data[sj]) {
+                            sj += 1;
+                        }
+                        if sj - si >= 5 {
+                            let s = &data[si..sj];
+                            for (kind, needle) in align_needles {
+                                if s.windows(needle.len()).any(|w| w == *needle) {
+                                    *align_counts.entry(*kind).or_insert(0) += 1;
+                                    break;
+                                }
+                            }
+                        }
+                        si = sj;
+                    } else {
+                        si += 1;
+                    }
+                }
+                for (kind, n) in &align_counts {
+                    align_stmt.execute(params![cnv_fqn, kind, n])?;
+                    counts.alignment_event += 1;
+                }
             }
         }
 
@@ -1323,6 +1404,7 @@ impl Database {
         drop(item_stmt);
         drop(follow_stmt);
         drop(enc_stmt);
+        drop(align_stmt);
         tx.commit()?;
         Ok(counts)
     }

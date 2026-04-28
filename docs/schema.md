@@ -108,6 +108,15 @@ erDiagram
     objects ||--o{ quest_npcs : "quest_fqn"
     objects ||--o{ quest_phases : "quest_fqn"
     objects ||--o{ quest_chain : "game_id"
+    objects ||--o{ quest_clusters : "fqn"
+    objects ||--o| item_details : "fqn"
+    objects ||--o{ schematics : "fqn"
+    schematics ||--o{ schematic_materials : "schematic_fqn"
+    objects ||--o{ conversation_quest_refs : "fqn"
+    objects ||--o{ conversation_npcs : "fqn"
+    objects ||--o{ conversation_codex : "fqn"
+    objects ||--o{ conversation_items : "fqn"
+    objects ||--o{ conversation_alignment_events : "fqn"
     objects ||--o{ discipline_abilities : "game_id"
     objects ||--o{ talent_abilities : "game_id"
     disciplines ||--o{ discipline_abilities : "fqn_prefix"
@@ -184,13 +193,21 @@ Structured metadata derived from quest FQN and payload analysis.
 
 ### quest_chain
 
-Directed edges connecting quests in sequence (next quest, prerequisite, follow-up).
+Directed edges connecting quests in sequence. Multiple extraction passes contribute different `link_type`s.
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `source_game_id` | TEXT | `game_id` of the quest that links outward. |
 | `target_game_id` | TEXT | `game_id` of the quest being linked to. |
-| `link_type` | TEXT | `next`, `prereq`, `followup`, `planet_transition` |
+| `link_type` | TEXT | One of: `guid_ref`, `planet_transition`, `fqn_arc_order` |
+
+**link_type semantics:**
+
+- `guid_ref` — Real CF GUID reference embedded in the source quest's payload pointing at the target. In practice mostly bonus-mission attachments (~157 edges in 7.8.1.c).
+- `planet_transition` — Derived from `leaving_<planet>` quest strings; bridges class-story planet transitions.
+- `fqn_arc_order` — Derived from FQN segment ordering. For each `(faction, class)` bucket, every `qst.location.open_world.<faction>.act_N.<class>.*` quest links to every `act_(N+1)` quest. For each `(exp, planet, faction)` bucket, every `qst.exp.<NN>.<planet>.world_arc.<faction>.hub_N.*` quest links to every `hub_(N+1)` quest. Coarse: every-act_N to every-act_(N+1). Captures the act-boundary gate but not within-act ordering. ~390 edges in 7.8.1.c.
+
+Filter `WHERE link_type = 'guid_ref'` for canonical edges only; combine `guid_ref` and `fqn_arc_order` for full story-arc coverage.
 
 ### quest_npcs / quest_phases / quest_prerequisites / quest_rewards
 
@@ -206,6 +223,48 @@ Junction tables linking quests to related objects.
 **Views:**
 - `quest_descriptions` — joins quests to their first description string (id1 200–600)
 - `bonus_missions` — mpn.*. bonus.* objects with a best-guess parent quest FQN
+
+### quest_clusters
+
+Per-quest cluster assignments for bulk curation. Each quest FQN gets one row per matching `cluster_kind`. A quest can belong to several clusters at different granularities (e.g. a Sith Warrior act_1 quest belongs to both `class_act` and `class_planet`).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `quest_fqn` | TEXT | Quest FQN. |
+| `cluster_kind` | TEXT | The classification axis (see below). |
+| `cluster_id` | TEXT | Pipe-separated bucket key for that axis. |
+
+**cluster_kinds:**
+
+| Kind | FQN pattern | `cluster_id` shape |
+|------|-------------|--------------------|
+| `class_act` | `qst.location.open_world.<faction>.act_N.<class>.*` | `<faction>\|<class>\|act_N` |
+| `class_planet` | `qst.location.<planet>.class.<class>.*` | `<planet>\|<class>` |
+| `world_arc_hub` | `qst.exp.<NN>.<planet>.world_arc.<faction>.hub_N.*` | `<NN>\|<planet>\|<faction>\|hub_N` |
+| `world_arc` | same | `<NN>\|<planet>\|<faction>` |
+| `planet_world` | `qst.location.<planet>.world.<faction>.*` | `<planet>\|<faction>` |
+| `expansion_arc` | `qst.exp.<NN>.<planet>.*` (non-world_arc) | `<NN>\|<planet>` |
+| `daily_area` | `qst.daily_area.<planet>.*` | `<planet>` |
+| `heroic` | `qst.heroic.<name>.*` | `<name>` |
+| `flashpoint` | `qst.flashpoint.<name>.*` | `<name>` |
+| `operation` | `qst.operation.<name>.*` | `<name>` |
+| `event` | `qst.event.<event>.*` | `<event>` |
+| `alliance` | `qst.alliance.<arc>.*` (non-companion) | `<arc>` |
+| `companion` | `qst.alliance.companion.<class>.*` | `<class>` |
+| `qtr` | `qst.qtr.<leaf>` | `<leaf>` |
+| `ventures` | `qst.ventures.<leaf>` | `<leaf>` |
+| `galactic_seasons` | `qst.exp.galactic_seasons.<season>.*` or `qst.event.galactic_seasons.<season>.*` | `<season>` |
+
+**Curation example** — sweep all Makeb imperial world-arc quests as one unit:
+
+```sql
+SELECT q.fqn, qd.mission_type
+FROM quest_clusters qc
+JOIN objects q ON q.fqn = qc.quest_fqn
+LEFT JOIN quest_details qd ON qd.fqn = qc.quest_fqn
+WHERE qc.cluster_kind = 'world_arc'
+  AND qc.cluster_id = '01|makeb|imperial';
+```
 
 ---
 
@@ -260,6 +319,142 @@ Abilities granted or modified by talents (passive skill nodes).
 | `talent_fqn` | TEXT | Talent FQN. |
 | `ability_game_id` | TEXT | 16-char hex GUID from talent payload — may not be in the objects table. |
 | `ability_fqn` | TEXT | Resolved FQN if the GUID matches an extracted object. NULL otherwise. |
+
+---
+
+## Item tables
+
+### item_details
+
+Per-item classification derived from FQN segments. One row per `kind = 'Item'` object.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `fqn` | TEXT PK | Item FQN. |
+| `item_kind` | TEXT | `gear`, `mod`, `schematic`, `decoration`, `consumable`, `material`, `mtx`, `npc`, `loot`, `reputation`, `companion`, `custom`, `quest_token`, `test`, `other` |
+| `slot` | TEXT | `chest`, `head`, `legs`, `hands`, `feet`, `waist`, `wrists`, `ear`, `implant`, `relic`, `mainhand`, `offhand`, `shield`. NULL for non-wearables. |
+| `weapon_type` | TEXT | `lightsaber`, `polesaber`, `blaster`, `cannon`, `vibroknife`, `rifle`, `shotgun`, `sniper`, etc. NULL if not a weapon. |
+| `armor_weight` | TEXT | `light`, `medium`, `heavy`. NULL for non-armor. |
+| `rarity` | TEXT | `premium`, `prototype`, `artifact`, `legendary` |
+| `item_level` | INTEGER | Parsed from `ilvl_NNNN` or `level_NNN` segments. NULL if absent. |
+| `source` | TEXT | `flashpoint`, `operation`, `operation_or_flashpoint` (lots), `conquest`, `pvp`, `raid`, `heroic`, `command`, `mtx`, `quest`, `bis`, `random`, `sow` |
+| `is_schematic` | INTEGER | 1 for `itm.schem.*`. |
+| `crew_skill` | TEXT | `armormech`, `armstech`, `artifice`, `biochem`, `cybertech`, `synthweaving`. NULL if not detectable from FQN. |
+
+**Known gaps:** set name and set bonus require GOM payload parsing and are not yet extracted. ~6,800 items classify as `item_kind='other'` because their top-level FQN segment is outside the known shape (e.g. `itm.setbonus.*`, `itm.endgame_pvp.*`, `itm.legendary.*`, `itm.alliance.*`, `itm.event.*`, `itm.galactic_seasons.*`).
+
+### schematics
+
+Crafting recipes resolved from the companion `schem.*` GOM kind. Each `itm.schem.*` schematic has a `schem.*` companion (no `itm` prefix) whose payload encodes output + materials via CF GUID refs.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `schematic_fqn` | TEXT PK | The `itm.schem.*` FQN. |
+| `output_fqn` | TEXT | The crafted item's FQN, resolved via CF GUID ref in the schem.* payload. NULL if no resolved output. |
+| `output_resolved` | INTEGER | 1 if `output_fqn` matched a real object, 0 otherwise. |
+
+**Coverage:** ~1,933 of ~2,419 schematics resolve cleanly (80%). The strip-prefix convention `REPLACE('itm.schem.', 'schem.')` pairs each itm.schem.* with its companion schem.* by FQN.
+
+### schematic_materials
+
+Materials list per schematic, with quantities.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `schematic_fqn` | TEXT | Links to `schematics.schematic_fqn`. |
+| `material_fqn` | TEXT | An `itm.mat.*` material FQN. |
+| `quantity` | INTEGER | How many of this material the recipe needs (1–99). |
+
+**Recipe lookup:**
+
+```sql
+SELECT s.output_fqn,
+       sm.material_fqn,
+       sm.quantity
+FROM schematics s
+JOIN schematic_materials sm ON sm.schematic_fqn = s.schematic_fqn
+WHERE s.schematic_fqn = 'itm.schem.gen.quest_imp.rdps1.chest.heavy.premium.03x1_craft';
+```
+
+---
+
+## Conversation tables
+
+NODE prototype files (`/resources/systemgenerated/prototypes/<num>.node`) hold full `cnv.*` conversation playback data. The PROT header carries the cnv FQN; the body contains CF E0 GUID refs that resolve to other game objects, plus alignment-event tokens encoded as audio/effect strings. A single archive scan extracts all of this.
+
+### conversation_quest_refs
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `cnv_fqn` | TEXT | The conversation FQN (from PROT header). |
+| `quest_fqn` | TEXT | The quest the conversation grants/affects. |
+
+Join with `conversation_npcs` to find NPC givers for a quest:
+
+```sql
+SELECT DISTINCT cn.npc_fqn AS giver
+FROM conversation_quest_refs cqr
+JOIN conversation_npcs cn ON cn.cnv_fqn = cqr.cnv_fqn
+WHERE cqr.quest_fqn = 'qst.location.hoth.class.spy.assault_on_the_starbreeze';
+```
+
+### conversation_npcs
+
+NPC actors participating in each dialog. Largest junction table from NODE extraction (~25,800 rows).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `cnv_fqn` | TEXT | Conversation FQN. |
+| `npc_fqn` | TEXT | An NPC participating in the dialog. |
+
+### conversation_codex / conversation_items
+
+Codex entries unlocked and items granted by the conversation.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `cnv_fqn` | TEXT | Conversation FQN. |
+| `codex_fqn` / `item_fqn` | TEXT | Resolved target FQN. |
+
+### conversation_achievements / conversation_followups / conversation_encounters
+
+Tables exist but are empty in current data — achievements / sequel-conversations / triggered encounters are not encoded as direct CF E0 GUID refs in conversation bytes. Retained for future investigation; expect them to remain empty until a different mechanism is decoded.
+
+### conversation_alignment_events
+
+Per-conversation counts of alignment-event tokens found in NODE bytes. SWTOR encodes alignment-coded dialog beats as audio/effect event strings. The presence and count of each kind is a coarse signal for the LS/DS/influence character of a dialog.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `cnv_fqn` | TEXT | Conversation FQN. |
+| `event_kind` | TEXT | See table below. |
+| `event_count` | INTEGER | Number of distinct numbered variants of this kind found in the conversation (e.g. a dialog with `event.darkmoment_07` and `event.darkmoment_15` produces `event_kind='darkmoment'` with `event_count=2`). |
+
+**event_kind taxonomy:**
+
+| event_kind | Source token family | Meaning |
+|---|---|---|
+| `darkmoment` | `event.darkmoment_NN` | Small DS choice trigger |
+| `bigdarkmoment` | `event.bigdarkmoment_NN` | Major DS choice trigger |
+| `sinistermoment` | `event.sinistermoment_NN` | DS choice trigger |
+| `darksidetheme` | `event.darksidetheme.*` | DS music theme setter |
+| `heroicmoment` | `event.heroicmoment_NN` | LS choice trigger |
+| `lightsidetheme` | `event.lightsidetheme.*` | LS music theme setter |
+| `alignment_override` | `alignment_override` | Explicit alignment override (test/utility convs) |
+| `influence_desync` | `influence_desync` | Companion influence event |
+| `affection_bot` | `affection_bot` | Companion affection-bot reaction |
+
+**Known limit:** per-choice magnitudes (LS+50/+100, +X/-Y influence) are not yet decoded. The numbered variants (`darkmoment_07`, `darkmoment_29`, etc) likely tier by magnitude but the mapping is not yet established.
+
+**Find DS-heavy conversations:**
+
+```sql
+SELECT cnv_fqn, event_count
+FROM conversation_alignment_events
+WHERE event_kind IN ('darkmoment', 'bigdarkmoment', 'sinistermoment')
+  AND event_count >= 5
+ORDER BY event_count DESC;
+```
 
 ---
 

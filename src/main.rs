@@ -477,7 +477,7 @@ fn main() -> Result<()> {
     // connective tissue for "which NPC's conversation gives/affects what".
     let cnv_refs = db.populate_conversation_refs(&args.input, &hash_dict)?;
     println!(
-        "  Conversation refs: quest={} npc={} ach={} cdx={} item={} followup={} enc={}",
+        "  Conversation refs: quest={} npc={} ach={} cdx={} item={} followup={} enc={} align_events={}",
         cnv_refs.quest,
         cnv_refs.npc,
         cnv_refs.achievement,
@@ -485,6 +485,7 @@ fn main() -> Result<()> {
         cnv_refs.item,
         cnv_refs.followup,
         cnv_refs.encounter,
+        cnv_refs.alignment_event,
     );
 
     // Eleventh pass: derive disciplines and discipline→ability mappings
