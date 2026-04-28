@@ -382,13 +382,15 @@ fn main() -> Result<()> {
                         }
                     }
                 } else {
-                    // Unmapped icon - save to misc with original hash
+                    // Unmapped icon — name by SWTOR icon name, categorize by prefix
                     unmapped_icons += 1;
                     unknowns_writer.record(unknowns::Unknown::UnmappedIcon {
                         icon_name: icon_name.to_string(),
                         source_file: icon_path.clone(),
                     });
-                    let output_dir = args.icons_output.join("misc");
+                    let subdir = categorize_icon_by_name(&icon_name);
+                    let output_dir = args.icons_output.join(subdir);
+                    icon.icon_id = icon_name.clone();
                     if dds::save_icon(&icon, &output_dir).is_ok() {
                         total_icons += 1;
                     }
@@ -533,6 +535,28 @@ fn resolve_hashes_path(args: &Args) -> Result<Option<PathBuf>> {
 
 /// Strip `/major/minor` version suffix from a GOM FQN, or return as-is if unversioned.
 /// Callers deduplicate via `versioned_seen` so only the first-encountered variant per base FQN inserts.
+/// Infer icon subdirectory from SWTOR DDS icon name for unmapped icons.
+fn categorize_icon_by_name(name: &str) -> &'static str {
+    if name.starts_with("abl_") || name.starts_with("ability_") {
+        "abilities"
+    } else if name.starts_with("tal_") || name.starts_with("talent_") {
+        "talents"
+    } else if name.starts_with("itm_")
+        || name.starts_with("item_")
+        || name.starts_with("ipp.")
+        || name.starts_with("mtx_")
+        || name.starts_with("mtx.")
+    {
+        "items"
+    } else if name.starts_with("npc_") {
+        "npcs"
+    } else if name.starts_with("ach_") || name.starts_with("achievement_") {
+        "achievements"
+    } else {
+        "misc"
+    }
+}
+
 fn normalize_fqn(fqn: &str) -> Option<String> {
     if !fqn.contains('/') {
         return Some(fqn.to_string());
