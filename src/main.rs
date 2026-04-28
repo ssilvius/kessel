@@ -488,6 +488,12 @@ fn main() -> Result<()> {
         cnv_refs.alignment_event,
     );
 
+    // Quest_chain via NPC giver overlap. Must run AFTER both
+    // populate_quest_clusters (cluster filter) and populate_conversation_refs
+    // (the conv_quest_refs / conv_npcs join surface).
+    let npc_chain_count = db.populate_quest_chain_npc_giver()?;
+    println!("  Quest chain NPC-giver edges: {}", npc_chain_count);
+
     // Eleventh pass: derive disciplines and discipline→ability mappings
     let (disc_count, disc_abl_count) = db.populate_disciplines()?;
 

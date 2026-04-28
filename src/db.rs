@@ -1044,6 +1044,49 @@ impl Database {
         Ok(count)
     }
 
+    /// Populate `quest_chain` with `npc_giver` links derived from the
+    /// conversation graph. For each pair of quests that share an NPC actor
+    /// in their granting conversations, emit an edge -- the same NPC giving
+    /// two quests means they're related in player flow.
+    ///
+    /// Filters to within-cluster pairs only (using quest_clusters): an NPC
+    /// who appears in both a class story conversation and a flashpoint
+    /// conversation isn't necessarily linking those two quests, but an NPC
+    /// who appears in two conversations within the same `class_planet`
+    /// bucket likely is.
+    pub fn populate_quest_chain_npc_giver(&self) -> Result<u64> {
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction()?;
+        // Use a single SQL pass with self-join to keep it simple and fast.
+        // The within-cluster filter restricts the cartesian explosion.
+        let n = tx.execute(
+            "INSERT OR IGNORE INTO quest_chain (source_game_id, target_game_id, link_type) \
+             SELECT DISTINCT \
+                 oa.game_id AS source_game_id, \
+                 ob.game_id AS target_game_id, \
+                 'npc_giver' AS link_type \
+             FROM conversation_quest_refs ra \
+             JOIN conversation_npcs cna ON cna.cnv_fqn = ra.cnv_fqn \
+             JOIN conversation_quest_refs rb \
+                 ON rb.cnv_fqn IN ( \
+                     SELECT cnv_fqn FROM conversation_npcs \
+                     WHERE npc_fqn = cna.npc_fqn \
+                 ) \
+                 AND rb.quest_fqn != ra.quest_fqn \
+             JOIN quest_clusters qca ON qca.quest_fqn = ra.quest_fqn \
+             JOIN quest_clusters qcb \
+                 ON qcb.quest_fqn = rb.quest_fqn \
+                 AND qcb.cluster_kind = qca.cluster_kind \
+                 AND qcb.cluster_id = qca.cluster_id \
+             JOIN objects oa ON oa.fqn = ra.quest_fqn AND oa.kind='Quest' \
+             JOIN objects ob ON ob.fqn = rb.quest_fqn AND ob.kind='Quest' \
+             WHERE ra.quest_fqn < rb.quest_fqn",
+            [],
+        )? as u64;
+        tx.commit()?;
+        Ok(n)
+    }
+
     /// Populate `schematics` and `schematic_materials` from `itm.schem.*` +
     /// `schem.*` payloads.
     ///
@@ -2097,12 +2140,22 @@ impl Database {
 
         // Derive mpn-prefix groupings: for each phase, drop the last segment
         // and compute the qst.* counterpart. Skip if a qst.* counterpart exists.
+        //
+        // Special case: don't collapse `stage_<N>` leaves. Multi-stage bonus
+        // missions (e.g. `mpn.X.bonus.Y.staged.Z.stage_2`) should keep each
+        // stage as its own mission, since human-curated checklists count
+        // each stage independently.
         let mut mpn_prefixes: HashSet<String> = HashSet::new();
         for phase in &phase_fqns {
             let Some(last_dot) = phase.rfind('.') else {
                 continue;
             };
-            let prefix = &phase[..last_dot];
+            let leaf = &phase[last_dot + 1..];
+            let prefix = if leaf.starts_with("stage_") {
+                phase.as_str()
+            } else {
+                &phase[..last_dot]
+            };
             let qst_equivalent = format!("qst{}", &prefix[3..]);
             if qst_set.contains(qst_equivalent.as_str()) {
                 continue;
@@ -2123,6 +2176,41 @@ impl Database {
         }
         for prefix in &mpn_prefixes {
             stmt.execute(rusqlite::params![prefix, "mpn-prefix"])?;
+            count += 1;
+        }
+
+        // Achievement-as-mission rows. SWTOR encodes some checklist content
+        // as `ach.*` instead of qst/mpn -- galactic seasons priority
+        // objectives, dynamic-event objectives, ventures progression,
+        // conquests. Add those as mission rows with source naming the
+        // achievement family.
+        let ach_fqns: Vec<String> = {
+            let mut stmt2 = tx.prepare(
+                "SELECT fqn FROM objects WHERE kind = 'Achievement' \
+                 AND ( \
+                    fqn LIKE 'ach.galactic_seasons.season_%' \
+                    OR fqn LIKE 'ach.dynamic_events.%' \
+                    OR fqn LIKE 'ach.ventures.%' \
+                    OR fqn LIKE 'ach.conquests.%' \
+                 )",
+            )?;
+            let collected: Vec<String> = stmt2
+                .query_map([], |row| row.get::<_, String>(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+            collected
+        };
+        for fqn in &ach_fqns {
+            let source = if fqn.starts_with("ach.galactic_seasons.") {
+                "achievement_gs"
+            } else if fqn.starts_with("ach.dynamic_events.") {
+                "achievement_dynamic"
+            } else if fqn.starts_with("ach.ventures.") {
+                "achievement_ventures"
+            } else {
+                "conquest"
+            };
+            stmt.execute(rusqlite::params![fqn, source])?;
             count += 1;
         }
 
