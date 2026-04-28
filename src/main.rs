@@ -453,6 +453,19 @@ fn main() -> Result<()> {
     // Tenth pass: build planet_transition chain links from leaving_ quest strings
     db.populate_planet_transitions()?;
 
+    // Tenth-and-a-half pass: derive arc-order chain edges from FQN structure
+    // (act_N -> act_(N+1) class story, hub_N -> hub_(N+1) world_arc).
+    // SWTOR doesn't encode story-arc progression as inter-quest GUID refs --
+    // it lives in FQN segment ordering. Edges land with link_type='fqn_arc_order'.
+    let fqn_chain_count = db.populate_quest_chain_fqn_order()?;
+    println!("  Quest chain FQN-arc edges: {}", fqn_chain_count);
+
+    // Schematic recipe extraction (#60). Pairs each itm.schem.* with its
+    // schem.* companion object and decodes the recipe (output + materials
+    // with quantities) from the schem.* payload's CF GUID refs.
+    let schem_count = db.populate_schematic_recipes()?;
+    println!("  Schematic recipes: {}", schem_count);
+
     // Eleventh pass: derive disciplines and discipline→ability mappings
     let (disc_count, disc_abl_count) = db.populate_disciplines()?;
 
