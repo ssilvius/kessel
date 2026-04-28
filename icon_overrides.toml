@@ -1,0 +1,26 @@
+# Icon overrides for abilities whose payloads do not embed an icon reference.
+# These are typically base-class shared abilities recovered from versioned FQNs
+# where the GOM payload uses a different structure that omits the 0x06 icon tag.
+#
+# Format: [[overrides]]  fqn = "..."  icon_name = "..."
+# icon_name must match the DDS basename in /resources/gfx/icons/ (without .dds)
+
+[[overrides]]
+fqn = "abl.sith_warrior.saber_reflect"
+icon_name = "saberreflectjuggernaut"
+
+[[overrides]]
+fqn = "abl.jedi_knight.saber_reflect"
+icon_name = "saberreflectguardian"
+
+[[overrides]]
+fqn = "abl.sith_inquisitor.severing_slash"
+icon_name = "severing_slash_6_0"
+
+[[overrides]]
+fqn = "abl.sith_inquisitor.phantom_stride"
+icon_name = "ass_phantom_stride"
+
+[[overrides]]
+fqn = "abl.sith_inquisitor.skill.hatred.languishing_lashes"
+icon_name = "ass_pass_languishing_lashes"

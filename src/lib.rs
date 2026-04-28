@@ -7,6 +7,7 @@ pub mod dds;
 pub mod gifts;
 pub mod grammar;
 pub mod hash;
+pub mod icon_overrides;
 pub mod myp;
 pub mod pbuk;
 pub mod quest;

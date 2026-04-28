@@ -1,5 +1,6 @@
 //! Schema definitions for SWTOR game objects
 
+use crate::icon_overrides::IconOverrides;
 use crate::pbuk::GomObject;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -63,7 +64,7 @@ impl GameObject {
     /// - GUID extracted from header bytes (first 8 bytes as hex)
     /// - game_id = sha256(fqn:guid)[0:16] for consistent asset naming
     /// - Payload stored as base64 in JSON for later parsing
-    pub fn from_gom(gom: &GomObject) -> Self {
+    pub fn from_gom_with_overrides(gom: &GomObject, overrides: Option<&IconOverrides>) -> Self {
         // Extract kind from FQN prefix (e.g., "itm" from "itm.gen.lots...")
         let kind = if let Some(pos) = gom.fqn.find('.') {
             match &gom.fqn[..pos] {
@@ -100,10 +101,13 @@ impl GameObject {
 
         // Extract visual reference / icon name from payload
         // Abilities: icon at start, Talents: icon at end
+        // Fall back to compiled-in icon_overrides.toml for abilities whose payloads
+        // don't embed the icon reference (e.g. versioned-origin base-class abilities).
         let icon_name = if gom.fqn.starts_with("tal.") {
             Self::extract_visual_ref_reverse(&gom.payload)
         } else {
             Self::extract_visual_ref(&gom.payload)
+                .or_else(|| overrides.and_then(|o| o.get(&gom.fqn).map(str::to_string)))
         };
 
         // Extract string_id: try FQN-based first (finds 91% of quests), then type-marker fallback

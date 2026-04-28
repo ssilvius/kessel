@@ -35,7 +35,7 @@ fn test_icon_name_extraction_ability() {
     payload[19..19 + icon.len()].copy_from_slice(icon);
 
     let gom = make_gom("abl.sith_warrior.rage", payload);
-    let obj = GameObject::from_gom(&gom);
+    let obj = GameObject::from_gom_with_overrides(&gom, None);
 
     assert_eq!(obj.icon_name, Some("abl_sw_rage_icon".to_string()));
     assert_eq!(obj.kind, "Ability");
@@ -56,7 +56,7 @@ fn test_icon_name_extraction_talent() {
     payload[icon_offset + 2..icon_offset + 2 + icon_name.len()].copy_from_slice(icon_name);
 
     let gom = make_gom("tal.bounty_hunter.skill.utility.kolto_surge", payload);
-    let obj = GameObject::from_gom(&gom);
+    let obj = GameObject::from_gom_with_overrides(&gom, None);
 
     assert_eq!(obj.icon_name, Some("abl_bh_me_kolto_surge".to_string()));
     // Talents get kind mapped like other prefixes
@@ -68,7 +68,7 @@ fn test_icon_name_no_match() {
     // Payload with no valid icon pattern
     let payload = vec![0u8; 100];
     let gom = make_gom("abl.test.ability", payload);
-    let obj = GameObject::from_gom(&gom);
+    let obj = GameObject::from_gom_with_overrides(&gom, None);
 
     assert!(obj.icon_name.is_none());
 }
@@ -89,7 +89,7 @@ fn test_icon_name_skips_str_prefix() {
     payload[192..200].copy_from_slice(b"railshot");
 
     let gom = make_gom("tal.test.talent", payload);
-    let obj = GameObject::from_gom(&gom);
+    let obj = GameObject::from_gom_with_overrides(&gom, None);
 
     // Should get railshot, not str.tal
     assert_eq!(obj.icon_name, Some("railshot".to_string()));
