@@ -7,6 +7,10 @@ Versions follow [Cargo semver](https://doc.rust-lang.org/cargo/reference/semver.
 
 ## [Unreleased]
 
+### Fixed
+
+- Per-FQN extraction now keeps the highest-quality variant instead of the first-encountered. Multiple GOM objects can share an FQN across archives (canonical objects with full payload alongside stub references); the previous `HashSet`-based dedup picked whichever appeared first in archive iteration order, which produced 77% NULL string_id and 80% NULL icon_name for abilities because stubs commonly came first. `accept_variant` now scores candidates by (has string_id, has icon_name, payload size) and skips inferior ones. A `dedup_objects_by_fqn` SQL pass runs after extraction to collapse any remaining multi-GUID FQN rows down to the single best variant.
+
 ### Added
 
 - item_details table classifying every `kind='Item'` row from FQN segments: item_kind (gear/mod/schematic/decoration/consumable/material/mtx/etc.), slot (chest/head/legs/hands/feet/waist/wrists/ear/implant/relic/mainhand/offhand/shield), weapon_type, armor_weight, rarity, item_level, source, is_schematic, crew_skill. Set name and set bonus require GOM payload parsing and are deferred to a follow-up. Closes part of #59.

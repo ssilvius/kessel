@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -157,7 +157,16 @@ fn main() -> Result<()> {
     let mut total_objects = 0usize;
     let mut total_icons = 0usize;
     let mut seen_hashes: HashSet<u64> = HashSet::new();
-    let mut versioned_seen: HashSet<String> = HashSet::new();
+    // Per-FQN best-variant score so far. Many FQNs appear multiple times
+    // across archives -- some as canonical objects with full payload, some as
+    // stub references. Picking first-seen (the prior HashSet behaviour)
+    // produced 77% NULL string_id and 80% NULL icon_name for abilities because
+    // stubs frequently came first in iteration order. Scoring prefers
+    // candidates that resolved a string_id, then icon_name, then larger
+    // payloads. Better candidates are still inserted; inferior ones are
+    // skipped. A SQL dedup pass after extraction collapses any remaining
+    // multi-GUID FQNs to the best row.
+    let mut versioned_seen: HashMap<String, u64> = HashMap::new();
 
     // Buffer icons until objects are processed (need icon_name → game_id mapping)
     let mut pending_icons: Vec<(Vec<u8>, String)> = Vec::new(); // (dds_data, icon_path)
@@ -244,14 +253,14 @@ fn main() -> Result<()> {
                                 let Some(fqn) = normalize_fqn(&obj.fqn) else {
                                     continue;
                                 };
-                                if !versioned_seen.insert(fqn.clone()) {
-                                    continue;
-                                }
-                                obj.fqn = fqn;
+                                obj.fqn = fqn.clone();
                                 let game_obj = schema::GameObject::from_gom_with_overrides(
                                     &obj,
                                     icon_overrides.as_ref(),
                                 );
+                                if !accept_variant(&mut versioned_seen, &fqn, &game_obj) {
+                                    continue;
+                                }
                                 if should_extract_object(&game_obj.fqn, args.unfiltered)
                                     && !game_obj.fqn.is_empty()
                                     && db.insert_object(&game_obj).is_ok()
@@ -279,14 +288,14 @@ fn main() -> Result<()> {
                             let Some(fqn) = normalize_fqn(&obj.fqn) else {
                                 continue;
                             };
-                            if !versioned_seen.insert(fqn.clone()) {
-                                continue;
-                            }
-                            obj.fqn = fqn;
+                            obj.fqn = fqn.clone();
                             let game_obj = schema::GameObject::from_gom_with_overrides(
                                 &obj,
                                 icon_overrides.as_ref(),
                             );
+                            if !accept_variant(&mut versioned_seen, &fqn, &game_obj) {
+                                continue;
+                            }
                             if should_extract_object(&game_obj.fqn, args.unfiltered)
                                 && !game_obj.fqn.is_empty()
                                 && db.insert_object(&game_obj).is_ok()
@@ -399,6 +408,15 @@ fn main() -> Result<()> {
         if unmapped_icons > 0 {
             println!("  Unmapped icons (fallback naming): {}", unmapped_icons);
         }
+    }
+
+    // First post-extraction pass: collapse any multi-GUID FQN rows down to
+    // the single best variant per FQN. accept_variant blocked most inferior
+    // variants in-stream, but stubs inserted before a later canonical row
+    // still need cleanup here.
+    let removed_dupes = db.dedup_objects_by_fqn()?;
+    if removed_dupes > 0 {
+        println!("  Deduplicated {} inferior FQN variants", removed_dupes);
     }
 
     // Second pass: populate quest tables from extracted objects
@@ -536,7 +554,9 @@ fn resolve_hashes_path(args: &Args) -> Result<Option<PathBuf>> {
 }
 
 /// Strip `/major/minor` version suffix from a GOM FQN, or return as-is if unversioned.
-/// Callers deduplicate via `versioned_seen` so only the first-encountered variant per base FQN inserts.
+/// Callers deduplicate via `accept_variant`, which keeps the highest-quality
+/// variant per base FQN (preferring objects that resolved a string_id, then
+/// icon_name, then larger payload).
 fn normalize_fqn(fqn: &str) -> Option<String> {
     if !fqn.contains('/') {
         return Some(fqn.to_string());
@@ -693,7 +713,7 @@ fn process_pbuk(
     db: &db::Database,
     unfiltered: bool,
     overrides: Option<&icon_overrides::IconOverrides>,
-    versioned_seen: &mut HashSet<String>,
+    versioned_seen: &mut HashMap<String, u64>,
 ) -> Result<usize> {
     let objects = pbuk::parse(data)?;
     let mut count = 0;
@@ -702,11 +722,11 @@ fn process_pbuk(
         let Some(fqn) = normalize_fqn(&obj.fqn) else {
             continue;
         };
-        if !versioned_seen.insert(fqn.clone()) {
+        obj.fqn = fqn.clone();
+        let game_obj = schema::GameObject::from_gom_with_overrides(&obj, overrides);
+        if !accept_variant(versioned_seen, &fqn, &game_obj) {
             continue;
         }
-        obj.fqn = fqn;
-        let game_obj = schema::GameObject::from_gom_with_overrides(&obj, overrides);
         if should_extract_object(&game_obj.fqn, unfiltered) && !game_obj.fqn.is_empty() {
             db.insert_object(&game_obj)?;
             count += 1;
@@ -714,4 +734,33 @@ fn process_pbuk(
     }
 
     Ok(count)
+}
+
+/// Score a candidate object: prefer those that extracted a string_id, then
+/// those with an icon_name, then larger payloads. Returns a single u64 so
+/// callers can compare with `>`.
+fn score_variant(obj: &schema::GameObject) -> u64 {
+    let payload_size = obj
+        .json
+        .get("payload_size")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let has_string = obj.string_id.is_some() as u64;
+    let has_icon = obj.icon_name.is_some() as u64;
+    (has_string << 40) + (has_icon << 30) + payload_size
+}
+
+/// Return `true` if `obj` is a strictly better variant for this FQN than
+/// anything seen so far, updating the per-FQN best score. Inferior or
+/// duplicate-quality variants return `false` and should be skipped. A
+/// post-extraction SQL dedup collapses any remaining multi-GUID rows.
+fn accept_variant(seen: &mut HashMap<String, u64>, fqn: &str, obj: &schema::GameObject) -> bool {
+    let score = score_variant(obj);
+    match seen.get(fqn).copied() {
+        Some(prev) if prev >= score => false,
+        _ => {
+            seen.insert(fqn.to_string(), score);
+            true
+        }
+    }
 }
