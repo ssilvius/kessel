@@ -11,6 +11,7 @@ mod dds;
 mod gifts;
 mod grammar;
 mod hash;
+mod icon_overrides;
 mod myp;
 mod pbuk;
 mod quest;
@@ -75,6 +76,15 @@ fn main() -> Result<()> {
         Ok(g) => Some(std::sync::Arc::new(g)),
         Err(e) => {
             eprintln!("Warning: Failed to load grammar rules: {}", e);
+            None
+        }
+    };
+
+    // Load embedded icon overrides (compiled into binary)
+    let icon_overrides = match icon_overrides::IconOverrides::from_embedded() {
+        Ok(o) => Some(o),
+        Err(e) => {
+            eprintln!("Warning: Failed to load icon overrides: {}", e);
             None
         }
     };
@@ -147,6 +157,7 @@ fn main() -> Result<()> {
     let mut total_objects = 0usize;
     let mut total_icons = 0usize;
     let mut seen_hashes: HashSet<u64> = HashSet::new();
+    let mut versioned_seen: HashSet<String> = HashSet::new();
 
     // Buffer icons until objects are processed (need icon_name → game_id mapping)
     let mut pending_icons: Vec<(Vec<u8>, String)> = Vec::new(); // (dds_data, icon_path)
@@ -218,7 +229,13 @@ fn main() -> Result<()> {
                 // Process bucket files (PBUK format)
                 else if is_bucket {
                     if pbuk::is_pbuk(&data) {
-                        if let Ok(count) = process_pbuk(&data, &db, args.unfiltered) {
+                        if let Ok(count) = process_pbuk(
+                            &data,
+                            &db,
+                            args.unfiltered,
+                            icon_overrides.as_ref(),
+                            &mut versioned_seen,
+                        ) {
                             total_objects += count;
                         }
                     } else if pbuk::is_dblb(&data) {
@@ -227,8 +244,14 @@ fn main() -> Result<()> {
                                 let Some(fqn) = normalize_fqn(&obj.fqn) else {
                                     continue;
                                 };
+                                if !versioned_seen.insert(fqn.clone()) {
+                                    continue;
+                                }
                                 obj.fqn = fqn;
-                                let game_obj = schema::GameObject::from_gom(&obj);
+                                let game_obj = schema::GameObject::from_gom_with_overrides(
+                                    &obj,
+                                    icon_overrides.as_ref(),
+                                );
                                 if should_extract_object(&game_obj.fqn, args.unfiltered)
                                     && !game_obj.fqn.is_empty()
                                     && db.insert_object(&game_obj).is_ok()
@@ -241,7 +264,13 @@ fn main() -> Result<()> {
                 }
                 // Process loose PBUK/DBLB files
                 else if pbuk::is_pbuk(&data) {
-                    if let Ok(count) = process_pbuk(&data, &db, args.unfiltered) {
+                    if let Ok(count) = process_pbuk(
+                        &data,
+                        &db,
+                        args.unfiltered,
+                        icon_overrides.as_ref(),
+                        &mut versioned_seen,
+                    ) {
                         total_objects += count;
                     }
                 } else if pbuk::is_dblb(&data) {
@@ -250,8 +279,14 @@ fn main() -> Result<()> {
                             let Some(fqn) = normalize_fqn(&obj.fqn) else {
                                 continue;
                             };
+                            if !versioned_seen.insert(fqn.clone()) {
+                                continue;
+                            }
                             obj.fqn = fqn;
-                            let game_obj = schema::GameObject::from_gom(&obj);
+                            let game_obj = schema::GameObject::from_gom_with_overrides(
+                                &obj,
+                                icon_overrides.as_ref(),
+                            );
                             if should_extract_object(&game_obj.fqn, args.unfiltered)
                                 && !game_obj.fqn.is_empty()
                                 && db.insert_object(&game_obj).is_ok()
@@ -496,21 +531,13 @@ fn resolve_hashes_path(args: &Args) -> Result<Option<PathBuf>> {
     Ok(Some(default_path))
 }
 
-/// Normalize a GOM FQN for extraction.
-///
-/// Unversioned FQNs pass through unchanged. Versioned FQNs (`base/major/minor`)
-/// are kept only when `minor == 0` — the canonical revision — and the version
-/// suffix is stripped so the stored FQN matches the clean unversioned form.
-/// Returns None for non-zero minor versions (skip these objects).
+/// Strip `/major/minor` version suffix from a GOM FQN, or return as-is if unversioned.
+/// Callers deduplicate via `versioned_seen` so only the first-encountered variant per base FQN inserts.
 fn normalize_fqn(fqn: &str) -> Option<String> {
     if !fqn.contains('/') {
         return Some(fqn.to_string());
     }
     let slash1 = fqn.rfind('/')?;
-    let minor: u32 = fqn[slash1 + 1..].parse().ok()?;
-    if minor != 0 {
-        return None;
-    }
     let base_end = fqn[..slash1].rfind('/')?;
     Some(fqn[..base_end].to_string())
 }
@@ -657,7 +684,13 @@ fn should_extract_object(fqn: &str, unfiltered: bool) -> bool {
     true
 }
 
-fn process_pbuk(data: &[u8], db: &db::Database, unfiltered: bool) -> Result<usize> {
+fn process_pbuk(
+    data: &[u8],
+    db: &db::Database,
+    unfiltered: bool,
+    overrides: Option<&icon_overrides::IconOverrides>,
+    versioned_seen: &mut HashSet<String>,
+) -> Result<usize> {
     let objects = pbuk::parse(data)?;
     let mut count = 0;
 
@@ -665,8 +698,11 @@ fn process_pbuk(data: &[u8], db: &db::Database, unfiltered: bool) -> Result<usiz
         let Some(fqn) = normalize_fqn(&obj.fqn) else {
             continue;
         };
+        if !versioned_seen.insert(fqn.clone()) {
+            continue;
+        }
         obj.fqn = fqn;
-        let game_obj = schema::GameObject::from_gom(&obj);
+        let game_obj = schema::GameObject::from_gom_with_overrides(&obj, overrides);
         if should_extract_object(&game_obj.fqn, unfiltered) && !game_obj.fqn.is_empty() {
             db.insert_object(&game_obj)?;
             count += 1;
