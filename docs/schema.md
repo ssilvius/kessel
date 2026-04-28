@@ -153,12 +153,12 @@ SELECT o.fqn, s.text
 FROM objects o
 JOIN strings s ON s.id2 = o.string_id AND s.locale = 'en-us'
 WHERE o.kind = 'Ability'
-  AND s.id1 = (SELECT MIN(id1) FROM strings WHERE id2 = o.string_id AND locale = 'en-us');
+  AND s.id1 = 0;
 ```
 
 id1 values by content type (approximate):
-- `1` — object name
-- `2` — short description
+- `0` — object name (canonical display name)
+- `1` — description / short description
 - `200–600` — quest step descriptions
 
 ---
