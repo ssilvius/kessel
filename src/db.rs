@@ -597,6 +597,41 @@ impl Database {
     /// Reads all quest objects, classifies them by FQN, and extracts embedded
     /// references (NPCs, phases, prerequisites) from the base64 payload.
     /// Must be called after all objects and strings are flushed.
+    /// Collapse multi-GUID FQN rows down to one "best" row per FQN.
+    ///
+    /// During extraction, the same FQN can appear under multiple GUIDs --
+    /// canonical objects with full payload, plus stub references that share
+    /// the FQN. The in-memory accept_variant filter blocks inferior variants
+    /// that follow a superior one, but cannot retroactively remove a stub
+    /// that was inserted before the canonical version arrived. This pass
+    /// keeps the row with the highest "extraction quality" per FQN: prefers
+    /// non-NULL string_id, then non-NULL icon_name, then larger json payload.
+    pub fn dedup_objects_by_fqn(&self) -> Result<u64> {
+        self.flush()?;
+        let conn = self.conn.lock().unwrap();
+        let before: u64 = conn.query_row("SELECT COUNT(*) FROM objects", [], |r| r.get(0))?;
+
+        conn.execute(
+            r#"
+            DELETE FROM objects WHERE rowid IN (
+                SELECT rowid FROM (
+                    SELECT rowid, ROW_NUMBER() OVER (
+                        PARTITION BY fqn
+                        ORDER BY (string_id IS NOT NULL) DESC,
+                                 (icon_name IS NOT NULL) DESC,
+                                 length(json) DESC,
+                                 guid ASC
+                    ) AS rn FROM objects
+                ) WHERE rn > 1
+            )
+            "#,
+            [],
+        )?;
+
+        let after: u64 = conn.query_row("SELECT COUNT(*) FROM objects", [], |r| r.get(0))?;
+        Ok(before - after)
+    }
+
     pub fn populate_quest_tables(&self) -> Result<u64> {
         self.flush()?;
 
