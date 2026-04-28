@@ -404,6 +404,10 @@ fn main() -> Result<()> {
     // Second pass: populate quest tables from extracted objects
     let quest_count = db.populate_quest_tables()?;
 
+    // Item classification from FQN (#59): slot, rating, rarity, source, etc.
+    let item_count = db.populate_item_tables()?;
+    println!("  Items classified: {}", item_count);
+
     // (Quest chain population removed in #19: PR #11's 0xCF GUID-ref
     // hypothesis produced zero rows on real data.)
 

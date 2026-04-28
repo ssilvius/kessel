@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::grammar::Grammar;
 use crate::quest;
+use crate::schema::item;
 use crate::schema::GameObject;
 use crate::stb::StbEntry;
 
@@ -224,6 +225,28 @@ impl Database {
 
             CREATE INDEX IF NOT EXISTS idx_quest_details_type ON quest_details(mission_type);
             CREATE INDEX IF NOT EXISTS idx_quest_details_planet ON quest_details(planet);
+
+            -- Item details (classified from FQN patterns; #59).
+            -- Set name and set bonus require GOM payload parsing and are
+            -- deferred to a follow-up issue.
+            CREATE TABLE IF NOT EXISTS item_details (
+                fqn TEXT PRIMARY KEY,
+                item_kind TEXT NOT NULL,
+                slot TEXT,
+                weapon_type TEXT,
+                armor_weight TEXT,
+                rarity TEXT,
+                item_level INTEGER,
+                source TEXT,
+                is_schematic INTEGER NOT NULL DEFAULT 0,
+                crew_skill TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_item_details_kind ON item_details(item_kind);
+            CREATE INDEX IF NOT EXISTS idx_item_details_slot ON item_details(slot);
+            CREATE INDEX IF NOT EXISTS idx_item_details_source ON item_details(source);
+            CREATE INDEX IF NOT EXISTS idx_item_details_rarity ON item_details(rarity);
+            CREATE INDEX IF NOT EXISTS idx_item_details_crew_skill ON item_details(crew_skill);
 
             -- Quest NPC references (npc.* FQNs embedded in payload)
             CREATE TABLE IF NOT EXISTS quest_npcs (
@@ -696,6 +719,51 @@ impl Database {
 
         tx.commit()?;
         Ok(detail_count)
+    }
+
+    /// Populate `item_details` from every `kind = 'Item'` row by classifying
+    /// the FQN. Mirrors `populate_quest_tables` in shape.
+    pub fn populate_item_tables(&self) -> Result<u64> {
+        self.flush()?;
+
+        let rows: Vec<String> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare("SELECT fqn FROM objects WHERE kind = 'Item'")?;
+            let collected: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            collected
+        };
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut count = 0u64;
+
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR REPLACE INTO item_details (fqn, item_kind, slot, weapon_type, armor_weight, rarity, item_level, source, is_schematic, crew_skill) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            )?;
+
+            for fqn in &rows {
+                let d = item::classify(fqn);
+                stmt.execute(params![
+                    d.fqn,
+                    d.item_kind,
+                    d.slot,
+                    d.weapon_type,
+                    d.armor_weight,
+                    d.rarity,
+                    d.item_level,
+                    d.source,
+                    if d.is_schematic { 1 } else { 0 },
+                    d.crew_skill,
+                ])?;
+                count += 1;
+            }
+        }
+
+        tx.commit()?;
+        Ok(count)
     }
 
     /// Populate `quest_chain` by scanning every quest payload for `0xCF` type

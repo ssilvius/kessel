@@ -1,5 +1,7 @@
 //! Schema definitions for SWTOR game objects
 
+pub mod item;
+
 use crate::icon_overrides::IconOverrides;
 use crate::pbuk::GomObject;
 use serde::{Deserialize, Serialize};
