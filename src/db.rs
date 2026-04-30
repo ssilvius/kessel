@@ -597,6 +597,26 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_talent_abilities_talent  ON talent_abilities(talent_game_id);
             CREATE INDEX IF NOT EXISTS idx_talent_abilities_ability ON talent_abilities(ability_game_id);
 
+            -- Ability stats decoded from abl.* GOM payload (#69).
+            -- Properties live as raw [u16 LE propId][f32 LE value] pairs in
+            -- the 0x0400-0x04FF range. Verified prop IDs are mapped to
+            -- columns; all 0x04xx hits land in raw_props as JSON for the
+            -- unknowns (0x0402, 0x0404, 0x0442 etc).
+            CREATE TABLE IF NOT EXISTS ability_stats (
+                ability_game_id     TEXT PRIMARY KEY,
+                cooldown            REAL,    -- 0x0401, seconds
+                cast_time           REAL,    -- 0x041b, seconds (cast or channel)
+                channel_duration    REAL,    -- 0x0406, seconds
+                hard_cast_time      REAL,    -- 0x041a, alternate cast prop
+                force_cost          INTEGER, -- 0x0403, ranged Force users
+                resource_cost       INTEGER, -- 0x041e, energy/heat tech, force melee
+                melee_range         REAL,    -- 0x041f, meters
+                aoe_radius          REAL,    -- 0x041d, meters PBAoE
+                is_gap_closer       INTEGER, -- 0x0420 flag
+                is_knockback        INTEGER, -- 0x0421 flag
+                raw_props           TEXT     -- JSON {hex_id: f32} for all 0x04xx hits
+            );
+
             -- Extraction metadata
             CREATE TABLE IF NOT EXISTS meta (
                 key TEXT PRIMARY KEY,
@@ -1219,6 +1239,76 @@ impl Database {
 
         drop(schem_stmt);
         drop(mat_stmt);
+        tx.commit()?;
+        Ok(count)
+    }
+
+    /// Populate `ability_stats` from `abl.*` GOM payloads (#69).
+    ///
+    /// Properties are stored as raw little-endian `[u16 propId][f32 value]`
+    /// pairs in the 0x0400-0x04FF range. The scan is a sliding 6-byte window
+    /// across the payload. Known prop IDs (cooldown, cast time, costs, range,
+    /// radius, gap-closer/knockback flags) populate dedicated columns; every
+    /// 0x04xx hit also lands in `raw_props` as JSON for follow-up analysis of
+    /// unknowns (0x0402, 0x0404, 0x0442 hypothesized as scaling/tick values).
+    ///
+    /// Plausibility filters drop obvious false positives: cooldowns and cast
+    /// times must be 0..=3600s, costs 0..=500, ranges 0..=100m, flags 0.0/1.0.
+    /// See vault MAPPINGS.md lines 452-531 for verified in-game values.
+    pub fn populate_ability_stats(&self) -> Result<u64> {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
+        let conn = self.conn.lock().unwrap();
+
+        let payloads: Vec<(String, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT game_id, json_extract(json, '$.payload_b64') \
+                 FROM objects WHERE fqn LIKE 'abl.%'",
+            )?;
+            let rows: Vec<(String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        };
+
+        let tx = conn.unchecked_transaction()?;
+        let mut stmt = tx.prepare_cached(
+            "INSERT OR REPLACE INTO ability_stats \
+             (ability_game_id, cooldown, cast_time, channel_duration, \
+              hard_cast_time, force_cost, resource_cost, melee_range, \
+              aoe_radius, is_gap_closer, is_knockback, raw_props) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        )?;
+
+        let mut count: u64 = 0;
+        for (game_id, payload_b64) in &payloads {
+            let Ok(payload) = BASE64.decode(payload_b64) else {
+                continue;
+            };
+            let stats = scan_ability_props(&payload);
+            if stats.any_hit() {
+                stmt.execute(params![
+                    game_id,
+                    stats.cooldown,
+                    stats.cast_time,
+                    stats.channel_duration,
+                    stats.hard_cast_time,
+                    stats.force_cost,
+                    stats.resource_cost,
+                    stats.melee_range,
+                    stats.aoe_radius,
+                    stats.is_gap_closer,
+                    stats.is_knockback,
+                    stats.raw_props_json,
+                ])?;
+                count += 1;
+            }
+        }
+
+        drop(stmt);
         tx.commit()?;
         Ok(count)
     }
@@ -3039,6 +3129,114 @@ fn extract_ability_guids_from_talent(payload: &[u8]) -> Vec<String> {
     guids
 }
 
+/// Decoded ability properties from a single payload scan.
+#[derive(Default)]
+struct AbilityStats {
+    cooldown: Option<f32>,
+    cast_time: Option<f32>,
+    channel_duration: Option<f32>,
+    hard_cast_time: Option<f32>,
+    force_cost: Option<i32>,
+    resource_cost: Option<i32>,
+    melee_range: Option<f32>,
+    aoe_radius: Option<f32>,
+    is_gap_closer: Option<i32>,
+    is_knockback: Option<i32>,
+    raw_props_json: Option<String>,
+}
+
+impl AbilityStats {
+    fn any_hit(&self) -> bool {
+        self.cooldown.is_some()
+            || self.cast_time.is_some()
+            || self.channel_duration.is_some()
+            || self.hard_cast_time.is_some()
+            || self.force_cost.is_some()
+            || self.resource_cost.is_some()
+            || self.melee_range.is_some()
+            || self.aoe_radius.is_some()
+            || self.is_gap_closer.is_some()
+            || self.is_knockback.is_some()
+            || self.raw_props_json.is_some()
+    }
+}
+
+/// Scan an `abl.*` payload for `[u16 LE propId][f32 LE value]` pairs in the
+/// 0x0400-0x04FF range. Documented prop-ID map is in vault MAPPINGS.md
+/// lines 452-531, verified against in-game ability values.
+///
+/// The scan is brute-force byte-by-byte. Plausibility filters drop hits
+/// where the float decode falls outside the documented value range for
+/// each prop (cooldowns 0..=3600s, costs 0..=500, ranges 0..=100m, flags
+/// 0.0/1.0). Multiple hits for the same prop ID keep the first plausible
+/// value.
+fn scan_ability_props(payload: &[u8]) -> AbilityStats {
+    use std::collections::BTreeMap;
+
+    let mut stats = AbilityStats::default();
+    let mut raw: BTreeMap<u16, f32> = BTreeMap::new();
+
+    let mut i = 0;
+    while i + 6 <= payload.len() {
+        let prop_id = u16::from_le_bytes([payload[i], payload[i + 1]]);
+        if (0x0400..=0x04FF).contains(&prop_id) {
+            let value = f32::from_le_bytes([
+                payload[i + 2],
+                payload[i + 3],
+                payload[i + 4],
+                payload[i + 5],
+            ]);
+            if value.is_finite() {
+                let plausible = match prop_id {
+                    0x0401 | 0x041a | 0x041b | 0x0406 => (0.0..=3600.0).contains(&value),
+                    0x0403 | 0x041e => (0.0..=500.0).contains(&value),
+                    0x041d | 0x041f => (0.0..=100.0).contains(&value),
+                    0x0420 | 0x0421 => value == 0.0 || value == 1.0,
+                    _ => value.abs() < 1.0e6,
+                };
+                if plausible {
+                    raw.entry(prop_id).or_insert(value);
+                    match prop_id {
+                        0x0401 if stats.cooldown.is_none() => stats.cooldown = Some(value),
+                        0x041b if stats.cast_time.is_none() => stats.cast_time = Some(value),
+                        0x0406 if stats.channel_duration.is_none() => {
+                            stats.channel_duration = Some(value)
+                        }
+                        0x041a if stats.hard_cast_time.is_none() => {
+                            stats.hard_cast_time = Some(value)
+                        }
+                        0x0403 if stats.force_cost.is_none() => {
+                            stats.force_cost = Some(value as i32)
+                        }
+                        0x041e if stats.resource_cost.is_none() => {
+                            stats.resource_cost = Some(value as i32)
+                        }
+                        0x041f if stats.melee_range.is_none() => stats.melee_range = Some(value),
+                        0x041d if stats.aoe_radius.is_none() => stats.aoe_radius = Some(value),
+                        0x0420 if stats.is_gap_closer.is_none() => {
+                            stats.is_gap_closer = Some(value as i32)
+                        }
+                        0x0421 if stats.is_knockback.is_none() => {
+                            stats.is_knockback = Some(value as i32)
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+
+    if !raw.is_empty() {
+        let map: serde_json::Map<String, serde_json::Value> = raw
+            .into_iter()
+            .map(|(id, val)| (format!("0x{:04x}", id), serde_json::json!(val)))
+            .collect();
+        stats.raw_props_json = serde_json::to_string(&map).ok();
+    }
+    stats
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3131,5 +3329,66 @@ mod tests {
     fn conquest_fqn_rejects_non_conquest() {
         let (cat, _, _) = parse_conquest_fqn("ach.alliance.alliance_growth.specialists.x");
         assert_eq!(cat, "unknown");
+    }
+
+    fn synth_prop(prop_id: u16, value: f32) -> Vec<u8> {
+        let mut v = vec![0u8; 4];
+        v.extend_from_slice(&prop_id.to_le_bytes());
+        v.extend_from_slice(&value.to_le_bytes());
+        v.extend_from_slice(&[0u8; 4]);
+        v
+    }
+
+    #[test]
+    fn ability_props_decode_cooldown() {
+        let payload = synth_prop(0x0401, 15.0);
+        let stats = scan_ability_props(&payload);
+        assert_eq!(stats.cooldown, Some(15.0));
+    }
+
+    #[test]
+    fn ability_props_decode_cast_and_force_cost() {
+        let mut payload = synth_prop(0x041b, 1.5);
+        payload.extend(synth_prop(0x0403, 40.0));
+        let stats = scan_ability_props(&payload);
+        assert_eq!(stats.cast_time, Some(1.5));
+        assert_eq!(stats.force_cost, Some(40));
+    }
+
+    #[test]
+    fn ability_props_decode_aoe_radius() {
+        let payload = synth_prop(0x041d, 10.0);
+        let stats = scan_ability_props(&payload);
+        assert_eq!(stats.aoe_radius, Some(10.0));
+    }
+
+    #[test]
+    fn ability_props_decode_knockback_flag() {
+        let payload = synth_prop(0x0421, 1.0);
+        let stats = scan_ability_props(&payload);
+        assert_eq!(stats.is_knockback, Some(1));
+    }
+
+    #[test]
+    fn ability_props_reject_implausible_cooldown() {
+        let payload = synth_prop(0x0401, 99999.0);
+        let stats = scan_ability_props(&payload);
+        assert_eq!(stats.cooldown, None);
+    }
+
+    #[test]
+    fn ability_props_empty_payload_no_hits() {
+        let stats = scan_ability_props(&[]);
+        assert!(!stats.any_hit());
+    }
+
+    #[test]
+    fn ability_props_raw_props_json_includes_unknowns() {
+        let mut payload = synth_prop(0x0401, 15.0);
+        payload.extend(synth_prop(0x0420, 1.0));
+        let stats = scan_ability_props(&payload);
+        let raw = stats.raw_props_json.expect("raw_props populated");
+        assert!(raw.contains("\"0x0401\""));
+        assert!(raw.contains("\"0x0420\""));
     }
 }

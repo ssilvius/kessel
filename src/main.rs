@@ -471,6 +471,14 @@ fn main() -> Result<()> {
     let schem_count = db.populate_schematic_recipes()?;
     println!("  Schematic recipes: {}", schem_count);
 
+    // Ability stat extraction (#69). Scans abl.* payloads for [u16 propId]
+    // [f32 value] pairs in the 0x0400-0x04FF range. Verified prop IDs land
+    // in dedicated columns (cooldown, cast_time, force_cost, melee_range,
+    // aoe_radius, gap_closer/knockback flags); all hits land in raw_props
+    // JSON for follow-up analysis of unknowns.
+    let abl_stats_count = db.populate_ability_stats()?;
+    println!("  Ability stats: {}", abl_stats_count);
+
     // Conversation refs from NODE files (cnv.* prototypes). One pass through
     // the .tor archives extracts CF GUID refs to quest, npc, achievement,
     // codex, item, follow-up conversation, and encounter targets. The

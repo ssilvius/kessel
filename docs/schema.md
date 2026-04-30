@@ -86,6 +86,20 @@ erDiagram
         TEXT ability_game_id PK
         TEXT ability_fqn
     }
+    ability_stats {
+        TEXT ability_game_id PK
+        REAL cooldown
+        REAL cast_time
+        REAL channel_duration
+        REAL hard_cast_time
+        INTEGER force_cost
+        INTEGER resource_cost
+        REAL melee_range
+        REAL aoe_radius
+        INTEGER is_gap_closer
+        INTEGER is_knockback
+        TEXT raw_props
+    }
     spawn_runtime_ids {
         TEXT spn_fqn PK
         TEXT target_fqn PK
@@ -119,6 +133,7 @@ erDiagram
     objects ||--o{ conversation_alignment_events : "fqn"
     objects ||--o{ discipline_abilities : "game_id"
     objects ||--o{ talent_abilities : "game_id"
+    objects ||--o| ability_stats : "game_id"
     disciplines ||--o{ discipline_abilities : "fqn_prefix"
 ```
 
@@ -319,6 +334,27 @@ Abilities granted or modified by talents (passive skill nodes).
 | `talent_fqn` | TEXT | Talent FQN. |
 | `ability_game_id` | TEXT | 16-char hex GUID from talent payload — may not be in the objects table. |
 | `ability_fqn` | TEXT | Resolved FQN if the GUID matches an extracted object. NULL otherwise. |
+
+### ability_stats
+
+Numeric properties decoded from `abl.*` GOM payloads. Properties are stored in the payload as raw little-endian `[u16 propId][f32 value]` pairs in the 0x0400-0x04FF range. One row per ability that has at least one decoded property.
+
+| Column | Type | Prop ID | Description |
+|--------|------|---------|-------------|
+| `ability_game_id` | TEXT PK | — | Links to `objects.game_id`. |
+| `cooldown` | REAL | 0x0401 | Cooldown in seconds. |
+| `cast_time` | REAL | 0x041b | Activation time (cast or channel) in seconds. |
+| `channel_duration` | REAL | 0x0406 | Channel duration in seconds. Matches `cast_time` for channels. |
+| `hard_cast_time` | REAL | 0x041a | Alternate cast time prop seen on some abilities. |
+| `force_cost` | INTEGER | 0x0403 | Force cost for ranged Force users (Sage/Sorcerer). |
+| `resource_cost` | INTEGER | 0x041e | Energy/heat for Tech; Force cost for melee Force users. |
+| `melee_range` | REAL | 0x041f | Max range for melee abilities (meters). Standard 30m ranged abilities do not store range. |
+| `aoe_radius` | REAL | 0x041d | PBAoE radius (meters). |
+| `is_gap_closer` | INTEGER | 0x0420 | 1 if the ability is a gap-closer (force_charge, force_leap). |
+| `is_knockback` | INTEGER | 0x0421 | 1 if the ability is a knockback (force_push). |
+| `raw_props` | TEXT | — | JSON map of every 0x04xx hit `{"0xNNNN": f32, ...}`. Includes unknowns (0x0402, 0x0404, 0x0442 hypothesized as scaling/tick values). |
+
+Plausibility filters drop implausible decodes: cooldowns and cast times must be 0..=3600s, costs 0..=500, ranges 0..=100m, flags must be 0.0 or 1.0.
 
 ---
 
