@@ -88,16 +88,13 @@ erDiagram
     }
     ability_stats {
         TEXT ability_game_id PK
+        TEXT resource_pool
         REAL cooldown
         REAL cast_time
         REAL channel_duration
         REAL hard_cast_time
         INTEGER force_cost
         INTEGER resource_cost
-        REAL melee_range
-        REAL aoe_radius
-        INTEGER is_gap_closer
-        INTEGER is_knockback
         TEXT raw_props
     }
     spawn_runtime_ids {
@@ -337,24 +334,39 @@ Abilities granted or modified by talents (passive skill nodes).
 
 ### ability_stats
 
-Numeric properties decoded from `abl.*` GOM payloads. Properties are stored in the payload as raw little-endian `[u16 propId][f32 value]` pairs in the 0x0400-0x04FF range. One row per ability that has at least one decoded property.
+Properties decoded from the canonical `abl.*` payload prop block. The dominant ability template (~86% of `abl.*`) writes its property table as a contiguous run of 6-byte `[u16 LE prop_id][f32 LE value]` records starting at the sentinel `01 04 00 00 80 BF` (= 0x0401 with -1.0, an uninit marker) and ending where the next 2 bytes are not in 0x04xx. The walker reads only that block.
+
+A row is populated for every `abl.*` object whose FQN class resolves a `resource_pool`, even if its payload has no prop block (secondary template — companion / racial / legacy / space-combat / passive abilities).
 
 | Column | Type | Prop ID | Description |
 |--------|------|---------|-------------|
 | `ability_game_id` | TEXT PK | — | Links to `objects.game_id`. |
+| `resource_pool` | TEXT | — | One of `force`, `rage`, `focus`, `heat`, `ammo`, `energy`. Derived from FQN class segment. NULL for companion / racial / legacy / space-combat / spvp abilities. |
 | `cooldown` | REAL | 0x0401 | Cooldown in seconds. |
 | `cast_time` | REAL | 0x041b | Activation time (cast or channel) in seconds. |
 | `channel_duration` | REAL | 0x0406 | Channel duration in seconds. Matches `cast_time` for channels. |
 | `hard_cast_time` | REAL | 0x041a | Alternate cast time prop seen on some abilities. |
-| `force_cost` | INTEGER | 0x0403 | Force cost for ranged Force users (Sage/Sorcerer). |
-| `resource_cost` | INTEGER | 0x041e | Energy/heat for Tech; Force cost for melee Force users. |
-| `melee_range` | REAL | 0x041f | Max range for melee abilities (meters). Standard 30m ranged abilities do not store range. |
-| `aoe_radius` | REAL | 0x041d | PBAoE radius (meters). |
-| `is_gap_closer` | INTEGER | 0x0420 | 1 if the ability is a gap-closer (force_charge, force_leap). |
-| `is_knockback` | INTEGER | 0x0421 | 1 if the ability is a knockback (force_push). |
-| `raw_props` | TEXT | — | JSON map of every 0x04xx hit `{"0xNNNN": f32, ...}`. Includes unknowns (0x0402, 0x0404, 0x0442 hypothesized as scaling/tick values). |
+| `force_cost` | INTEGER | 0x0403 | Force-pool cost for sorcerer/sage abilities. Tech abilities also write 0x0403 at low values (1.0) as a scaling coefficient — the column drops values below 5 so this never lands as a cost. |
+| `resource_cost` | INTEGER | 0x041e | Heat / energy / ammo cost for tech abilities. Threshold ≥ 1 to drop sub-unit noise. |
+| `raw_props` | TEXT | — | JSON map of every in-block 0x04xx record `{"0xNNNN": f32, ...}` including unknowns (0x0402 universal animation marker, 0x041d, 0x041f, 0x0420, 0x0421 — class-context-dependent). |
 
-Plausibility filters drop implausible decodes: cooldowns and cast times must be 0..=3600s, costs 0..=500, ranges 0..=100m, flags must be 0.0 or 1.0.
+**Resource pool by class:**
+
+| FQN class segment | resource_pool |
+|---|---|
+| `sith_warrior` | rage |
+| `jedi_knight` | focus |
+| `sith_inquisitor` | force |
+| `jedi_consular` | force |
+| `bounty_hunter` | heat |
+| `trooper` | ammo |
+| `agent` | energy |
+| `smuggler` | energy |
+| anything else (companion/racial/legacy/space) | NULL |
+
+**Coverage caveats:**
+- ~14% of `abl.*` (459 rows on template `4000000002754EE0`, including `shock`, `endure_pain`, `takedown`, all companions/racials) have no prop block. They get a row only if `resource_pool` resolves; cooldown/cast/cost columns are NULL.
+- Rage and focus costs are not in this prop block — warrior/knight ability cost lives elsewhere in the payload (effect graph) and is not yet decoded. `force_cost` and `resource_cost` will be NULL for warrior/knight abilities even when they have one.
 
 ---
 
