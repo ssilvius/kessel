@@ -7,6 +7,10 @@ Versions follow [Cargo semver](https://doc.rust-lang.org/cargo/reference/semver.
 
 ## [Unreleased]
 
+### Changed
+
+- **Stat tables now ship plain decoded data, not raw hex IDs.** `gsf_talent_stats`, `gsf_ability_stats`, and `ability_stats.raw_props` previously emitted raw `stat_id` (u8) / `prop_id` (u16) bytes that consumers had to look up against a hex dictionary to interpret. They now ship plain-English `label` and `unit` strings so consumers query e.g. `WHERE label = 'cooldown_delta_seconds'` instead of `WHERE stat_id = 0x40`. Verified anchors land with `confidence = 'verified'`; cross-referenced-but-unverified ones are `confidence = 'guess'`; everything else gets a synthesised `unknown_0x<id>` label with `confidence = 'unknown'` so the row is still queryable. The dictionary is maintained at `gsf_stat_dictionary.toml` (compile-time embedded). Schema additions: `label TEXT`, `unit TEXT`, `rank INTEGER`, `confidence TEXT` columns on both GSF stat tables (raw `stat_id`/`prop_id` retained for forensics). `rank` preserves rank-progression ordering for talents like `engine_power_regen.upgrade` whose payload encodes +4/+8/+12 as three records of the same stat. `ability_stats.raw_props` JSON keys re-keyed from hex (`"0x041f"`) to plain (`"melee_range_meters"`).
+
 ### Known limitations
 
 - 11 GSF talent tier FQNs are present in the live SWTOR client but absent from the static `.tor` archive distribution this release reads (`tal.spvp.missile.sabotage_probe.tier1-5b`, `tal.spvp.laser.ion_cannon.tier_4a/5a/5b`, `tal.spvp.missile.rocket_pod.tier_5b`). Verified zero raw-byte hits across all 806K archive entries. Out of kessel scope; would need a route to client-binary / script / server-feed data. Tracked in #86. The next golden spice release should call this out in its release notes so consumers (huttspawn) know to keep their hand-curated correction SQL for those 11 until a client-side route exists.

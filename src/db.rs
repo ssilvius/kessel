@@ -641,42 +641,48 @@ impl Database {
             );
 
             -- GSF talent stats decoded from tal.spvp.* GOM payloads (#80).
-            -- Stat records have shape `[c9 01]? <stat_id:u8> 01 04 <f32 LE>`
-            -- and end at the signature `cb 19 d7 4b ?? 03`. One row per
-            -- record; ordinal preserves payload order so rank progressions
-            -- (e.g., +4%/+8%/+12%) and per-effect duplicates remain ordered.
-            -- Stat-ID semantics live in the dictionary documented at
-            -- src/schema/gsf_talent.rs (e.g., 0x40 = cooldown delta seconds,
-            -- 0x5f = firing arc degrees, 0x69 = critical hit chance %).
+            -- Records have shape `[c9 01]? <stat_id:u8> 01 04 <f32 LE>` and end
+            -- at the signature `cb 19 d7 4b ?? 03`. Stat IDs are decoded via
+            -- the embedded gsf_stat_dictionary.toml; rows ship with plain
+            -- labels and units so consumers query
+            --   WHERE label = 'cooldown_delta_seconds'
+            -- rather than a hex byte. `confidence` is verified | guess |
+            -- unknown -- callers can filter to verified-only data.
+            -- `rank` preserves rank-progression ordering when a single talent
+            -- payload encodes multiple records of the same stat (e.g.
+            -- engine_power_regen.upgrade emits +4/+8/+12 as three rows).
             CREATE TABLE IF NOT EXISTS gsf_talent_stats (
                 talent_game_id  TEXT NOT NULL,
-                ordinal         INTEGER NOT NULL,
-                stat_id         INTEGER NOT NULL,
+                label           TEXT NOT NULL,
+                unit            TEXT NOT NULL,
+                rank            INTEGER NOT NULL,
                 value           REAL NOT NULL,
-                PRIMARY KEY (talent_game_id, ordinal)
+                confidence      TEXT NOT NULL,
+                stat_id         INTEGER NOT NULL,  -- raw byte for forensics
+                PRIMARY KEY (talent_game_id, label, rank)
             );
 
-            CREATE INDEX IF NOT EXISTS idx_gsf_talent_stats_stat_id
-                ON gsf_talent_stats(stat_id);
+            CREATE INDEX IF NOT EXISTS idx_gsf_talent_stats_label
+                ON gsf_talent_stats(label);
 
-            -- Per-record numeric stats decoded from abl.spvp.* payloads (#78).
-            -- Uses the same `[u16 LE prop_id][f32 LE value]` layout as ground
-            -- abilities, but records are scattered across the payload rather
-            -- than clustered behind the -1.0 cooldown sentinel that anchors
-            -- scan_ability_props. prop_id high byte is always 0x04. Wide-format
-            -- (one row per record); consumers pivot by prop_id. Stat-ID
-            -- semantics differ from ground abilities -- e.g., 0x0402 is the
-            -- cooldown for GSF, an animation marker for ground.
+            -- GSF base ability stats decoded from abl.spvp.* payloads (#78).
+            -- Same shape as gsf_talent_stats: labels and units come from the
+            -- embedded dictionary. prop_id semantics differ from ground
+            -- abilities (0x0402 = cooldown for GSF, animation marker for
+            -- ground), so the dictionary has a separate ability_stats section.
             CREATE TABLE IF NOT EXISTS gsf_ability_stats (
                 ability_game_id TEXT NOT NULL,
-                ordinal         INTEGER NOT NULL,
-                prop_id         INTEGER NOT NULL,
+                label           TEXT NOT NULL,
+                unit            TEXT NOT NULL,
+                rank            INTEGER NOT NULL,
                 value           REAL NOT NULL,
-                PRIMARY KEY (ability_game_id, ordinal)
+                confidence      TEXT NOT NULL,
+                prop_id         INTEGER NOT NULL,  -- raw u16 for forensics
+                PRIMARY KEY (ability_game_id, label, rank)
             );
 
-            CREATE INDEX IF NOT EXISTS idx_gsf_ability_stats_prop_id
-                ON gsf_ability_stats(prop_id);
+            CREATE INDEX IF NOT EXISTS idx_gsf_ability_stats_label
+                ON gsf_ability_stats(label);
 
             -- Extraction metadata
             CREATE TABLE IF NOT EXISTS meta (
@@ -1456,9 +1462,11 @@ impl Database {
     /// 100 talents are flag-only (effects implemented on the parent ability
     /// or via script hook).
     pub fn populate_gsf_talent_stats(&self) -> Result<u64> {
+        use crate::gsf_stat_dictionary::StatDictionary;
         use crate::schema::gsf_talent::decode_gsf_stats;
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
+        let dict = StatDictionary::from_embedded()?;
         let conn = self.conn.lock().unwrap();
 
         let payloads: Vec<(String, Option<String>)> = {
@@ -1478,8 +1486,8 @@ impl Database {
         let tx = conn.unchecked_transaction()?;
         let mut stmt = tx.prepare_cached(
             "INSERT OR REPLACE INTO gsf_talent_stats \
-             (talent_game_id, ordinal, stat_id, value) \
-             VALUES (?1, ?2, ?3, ?4)",
+             (talent_game_id, label, unit, rank, value, confidence, stat_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         )?;
 
         let mut count: u64 = 0;
@@ -1488,12 +1496,23 @@ impl Database {
             let Ok(payload) = BASE64.decode(b64) else {
                 continue;
             };
+            // Per-talent rank counter so multiple records of the same stat
+            // (e.g. +4/+8/+12 rank progression) get rank=1,2,3 in payload
+            // order. Different stats start at rank 1 independently.
+            let mut rank_per_label: std::collections::HashMap<String, i64> =
+                std::collections::HashMap::new();
             for rec in decode_gsf_stats(&payload) {
+                let label = dict.talent_label(rec.stat_id);
+                let rank = rank_per_label.entry(label.label.clone()).or_insert(0);
+                *rank += 1;
                 stmt.execute(params![
                     game_id,
-                    rec.ordinal as i64,
-                    rec.stat_id as i64,
+                    label.label,
+                    label.unit,
+                    *rank,
                     rec.value as f64,
+                    label.confidence,
+                    rec.stat_id as i64,
                 ])?;
                 count += 1;
             }
@@ -1518,9 +1537,11 @@ impl Database {
     /// one record. Uncovered abilities are passive auras whose effects live
     /// on a parent activator or in script hooks.
     pub fn populate_gsf_ability_stats(&self) -> Result<u64> {
+        use crate::gsf_stat_dictionary::StatDictionary;
         use crate::schema::gsf_ability::decode_gsf_ability_stats;
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
+        let dict = StatDictionary::from_embedded()?;
         let conn = self.conn.lock().unwrap();
 
         let payloads: Vec<(String, Option<String>)> = {
@@ -1540,8 +1561,8 @@ impl Database {
         let tx = conn.unchecked_transaction()?;
         let mut stmt = tx.prepare_cached(
             "INSERT OR REPLACE INTO gsf_ability_stats \
-             (ability_game_id, ordinal, prop_id, value) \
-             VALUES (?1, ?2, ?3, ?4)",
+             (ability_game_id, label, unit, rank, value, confidence, prop_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         )?;
 
         let mut count: u64 = 0;
@@ -1550,12 +1571,20 @@ impl Database {
             let Ok(payload) = BASE64.decode(b64) else {
                 continue;
             };
+            let mut rank_per_label: std::collections::HashMap<String, i64> =
+                std::collections::HashMap::new();
             for rec in decode_gsf_ability_stats(&payload) {
+                let label = dict.ability_label(rec.prop_id);
+                let rank = rank_per_label.entry(label.label.clone()).or_insert(0);
+                *rank += 1;
                 stmt.execute(params![
                     game_id,
-                    rec.ordinal as i64,
-                    rec.prop_id as i64,
+                    label.label,
+                    label.unit,
+                    *rank,
                     rec.value as f64,
+                    label.confidence,
+                    rec.prop_id as i64,
                 ])?;
                 count += 1;
             }
@@ -3544,9 +3573,18 @@ fn scan_ability_props(payload: &[u8]) -> AbilityStats {
     }
 
     if !raw.is_empty() {
+        // Re-key raw_props from hex (`0x041f`) to plain labels
+        // (`melee_range_meters`) via the embedded dictionary so consumers
+        // can read the JSON without a hex lookup table. Unknown prop IDs
+        // get a synthesised `unknown_0x<id>` key.
+        let dict = crate::gsf_stat_dictionary::StatDictionary::from_embedded()
+            .expect("embedded gsf_stat_dictionary.toml parses");
         let map: serde_json::Map<String, serde_json::Value> = raw
             .into_iter()
-            .map(|(id, val)| (format!("0x{:04x}", id), serde_json::json!(val)))
+            .map(|(id, val)| {
+                let label = dict.ground_ability_label(id);
+                (label.label, serde_json::json!(val))
+            })
             .collect();
         stats.raw_props_json = serde_json::to_string(&map).ok();
     }
