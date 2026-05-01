@@ -597,24 +597,26 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_talent_abilities_talent  ON talent_abilities(talent_game_id);
             CREATE INDEX IF NOT EXISTS idx_talent_abilities_ability ON talent_abilities(ability_game_id);
 
-            -- Ability stats decoded from abl.* GOM payload (#69).
-            -- Properties live as raw [u16 LE propId][f32 LE value] pairs in
-            -- the 0x0400-0x04FF range. Verified prop IDs are mapped to
-            -- columns; all 0x04xx hits land in raw_props as JSON for the
-            -- unknowns (0x0402, 0x0404, 0x0442 etc).
+            -- Ability stats decoded from abl.* GOM payload (#69, refined #74).
+            -- Properties live as a contiguous run of [u16 LE propId][f32 LE
+            -- value] records starting at the sentinel 01 04 00 00 80 BF
+            -- (= 0x0401 = -1.0, an uninit marker). The block ends where the
+            -- next 2 bytes are not in 0x04xx. Walker is sentinel-anchored,
+            -- which eliminates the brute-force false positives the v1 scan
+            -- produced (force_cost=1 on warrior/agent abilities, etc).
+            -- Resource costs use a value threshold (>=5) since 0x0403 also
+            -- appears at low values for non-Force tech abilities as a
+            -- scaling coefficient, not a cost.
             CREATE TABLE IF NOT EXISTS ability_stats (
                 ability_game_id     TEXT PRIMARY KEY,
+                resource_pool       TEXT,    -- force | rage | focus | heat | ammo | energy | NULL
                 cooldown            REAL,    -- 0x0401, seconds
                 cast_time           REAL,    -- 0x041b, seconds (cast or channel)
                 channel_duration    REAL,    -- 0x0406, seconds
                 hard_cast_time      REAL,    -- 0x041a, alternate cast prop
-                force_cost          INTEGER, -- 0x0403, ranged Force users
-                resource_cost       INTEGER, -- 0x041e, energy/heat tech, force melee
-                melee_range         REAL,    -- 0x041f, meters
-                aoe_radius          REAL,    -- 0x041d, meters PBAoE
-                is_gap_closer       INTEGER, -- 0x0420 flag
-                is_knockback        INTEGER, -- 0x0421 flag
-                raw_props           TEXT     -- JSON {hex_id: f32} for all 0x04xx hits
+                force_cost          INTEGER, -- 0x0403, Force-pool cost (sorcerer/sage)
+                resource_cost       INTEGER, -- 0x041e, heat/energy/ammo cost (tech)
+                raw_props           TEXT     -- JSON {hex_id: f32} for all in-block 0x04xx records
             );
 
             -- Extraction metadata
@@ -1243,31 +1245,42 @@ impl Database {
         Ok(count)
     }
 
-    /// Populate `ability_stats` from `abl.*` GOM payloads (#69).
+    /// Populate `ability_stats` from `abl.*` GOM payloads (#74, refines #69).
     ///
-    /// Properties are stored as raw little-endian `[u16 propId][f32 value]`
-    /// pairs in the 0x0400-0x04FF range. The scan is a sliding 6-byte window
-    /// across the payload. Known prop IDs (cooldown, cast time, costs, range,
-    /// radius, gap-closer/knockback flags) populate dedicated columns; every
-    /// 0x04xx hit also lands in `raw_props` as JSON for follow-up analysis of
-    /// unknowns (0x0402, 0x0404, 0x0442 hypothesized as scaling/tick values).
+    /// The dominant ability template (~86% of abl.* objects) writes properties
+    /// as a contiguous run of 6-byte `[u16 LE prop_id][f32 LE value]` records
+    /// starting at the sentinel `01 04 00 00 80 BF` (0x0401 = -1.0, an uninit
+    /// marker). The block ends where the next 2 bytes are not in the 0x04xx
+    /// range. Walking only that block eliminates the false positives the
+    /// brute-force v1 scan produced (e.g. spurious force_cost=1 on warrior
+    /// abilities from bytes outside the prop block).
     ///
-    /// Plausibility filters drop obvious false positives: cooldowns and cast
-    /// times must be 0..=3600s, costs 0..=500, ranges 0..=100m, flags 0.0/1.0.
-    /// See vault MAPPINGS.md lines 452-531 for verified in-game values.
+    /// `resource_pool` is derived from the FQN class segment, not from the
+    /// payload. Cost columns apply a value threshold (Force cost >= 5,
+    /// resource cost >= 1) since 0x0403 is reused at low values as a scaling
+    /// coefficient on tech abilities.
+    ///
+    /// Abilities on the secondary template (4000000002754EE0, ~459 rows
+    /// including shock, endure_pain, takedown, companion abilities, racials,
+    /// space_combat) have no sentinel-anchored block; they get a row only if
+    /// their FQN resolves a `resource_pool` and no stats fields populate.
     pub fn populate_ability_stats(&self) -> Result<u64> {
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
         let conn = self.conn.lock().unwrap();
 
-        let payloads: Vec<(String, String)> = {
+        let payloads: Vec<(String, String, String)> = {
             let mut stmt = conn.prepare(
-                "SELECT game_id, json_extract(json, '$.payload_b64') \
+                "SELECT game_id, fqn, json_extract(json, '$.payload_b64') \
                  FROM objects WHERE fqn LIKE 'abl.%'",
             )?;
-            let rows: Vec<(String, String)> = stmt
+            let rows: Vec<(String, String, String)> = stmt
                 .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
                 })?
                 .filter_map(|r| r.ok())
                 .collect();
@@ -1277,31 +1290,29 @@ impl Database {
         let tx = conn.unchecked_transaction()?;
         let mut stmt = tx.prepare_cached(
             "INSERT OR REPLACE INTO ability_stats \
-             (ability_game_id, cooldown, cast_time, channel_duration, \
-              hard_cast_time, force_cost, resource_cost, melee_range, \
-              aoe_radius, is_gap_closer, is_knockback, raw_props) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             (ability_game_id, resource_pool, cooldown, cast_time, \
+              channel_duration, hard_cast_time, force_cost, resource_cost, \
+              raw_props) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         )?;
 
         let mut count: u64 = 0;
-        for (game_id, payload_b64) in &payloads {
+        for (game_id, fqn, payload_b64) in &payloads {
             let Ok(payload) = BASE64.decode(payload_b64) else {
                 continue;
             };
             let stats = scan_ability_props(&payload);
-            if stats.any_hit() {
+            let pool = resource_pool_from_fqn(fqn);
+            if stats.any_hit() || pool.is_some() {
                 stmt.execute(params![
                     game_id,
+                    pool,
                     stats.cooldown,
                     stats.cast_time,
                     stats.channel_duration,
                     stats.hard_cast_time,
                     stats.force_cost,
                     stats.resource_cost,
-                    stats.melee_range,
-                    stats.aoe_radius,
-                    stats.is_gap_closer,
-                    stats.is_knockback,
                     stats.raw_props_json,
                 ])?;
                 count += 1;
@@ -3129,7 +3140,7 @@ fn extract_ability_guids_from_talent(payload: &[u8]) -> Vec<String> {
     guids
 }
 
-/// Decoded ability properties from a single payload scan.
+/// Decoded ability properties from a single sentinel-anchored prop block.
 #[derive(Default)]
 struct AbilityStats {
     cooldown: Option<f32>,
@@ -3138,10 +3149,6 @@ struct AbilityStats {
     hard_cast_time: Option<f32>,
     force_cost: Option<i32>,
     resource_cost: Option<i32>,
-    melee_range: Option<f32>,
-    aoe_radius: Option<f32>,
-    is_gap_closer: Option<i32>,
-    is_knockback: Option<i32>,
     raw_props_json: Option<String>,
 }
 
@@ -3153,78 +3160,94 @@ impl AbilityStats {
             || self.hard_cast_time.is_some()
             || self.force_cost.is_some()
             || self.resource_cost.is_some()
-            || self.melee_range.is_some()
-            || self.aoe_radius.is_some()
-            || self.is_gap_closer.is_some()
-            || self.is_knockback.is_some()
             || self.raw_props_json.is_some()
     }
 }
 
-/// Scan an `abl.*` payload for `[u16 LE propId][f32 LE value]` pairs in the
-/// 0x0400-0x04FF range. Documented prop-ID map is in vault MAPPINGS.md
-/// lines 452-531, verified against in-game ability values.
+const ABILITY_PROP_SENTINEL: [u8; 6] = [0x01, 0x04, 0x00, 0x00, 0x80, 0xBF];
+
+/// Map an `abl.*` FQN to a normalized resource pool name. Companion, racial,
+/// legacy, space-combat and PVP abilities resolve to None — the cost columns
+/// are not meaningful for those.
+fn resource_pool_from_fqn(fqn: &str) -> Option<&'static str> {
+    let segments: Vec<&str> = fqn.split('.').collect();
+    if segments.len() < 2 || segments[0] != "abl" {
+        return None;
+    }
+    match segments[1] {
+        "sith_warrior" => Some("rage"),
+        "jedi_knight" => Some("focus"),
+        "sith_inquisitor" | "jedi_consular" => Some("force"),
+        "bounty_hunter" => Some("heat"),
+        "trooper" => Some("ammo"),
+        "agent" | "smuggler" => Some("energy"),
+        _ => None,
+    }
+}
+
+/// Walk the sentinel-anchored ability property block. Finds the first
+/// occurrence of `01 04 00 00 80 BF` (= 0x0401 with -1.0 uninit value), then
+/// reads contiguous 6-byte `[u16 LE prop_id][f32 LE value]` records until the
+/// next 2 bytes are not in the 0x04xx range. Returns an empty result for
+/// abilities on the secondary template that have no such block.
 ///
-/// The scan is brute-force byte-by-byte. Plausibility filters drop hits
-/// where the float decode falls outside the documented value range for
-/// each prop (cooldowns 0..=3600s, costs 0..=500, ranges 0..=100m, flags
-/// 0.0/1.0). Multiple hits for the same prop ID keep the first plausible
-/// value.
+/// Verified field-ID semantics (template 400000000283F4D2):
+///   0x0401 = cooldown seconds
+///   0x041b = cast / channel time seconds
+///   0x0406 = channel duration seconds
+///   0x041a = alternate hard cast time
+///   0x0403 = Force-pool cost (sorcerer/sage; tech writes a low scaling
+///            coefficient here, so values < 5 are dropped as non-cost)
+///   0x041e = heat / energy / ammo cost (tech)
+///
+/// Other in-block fields (0x041d, 0x041f, 0x0420, 0x0421, 0x0402, 0x0404)
+/// have class-context-dependent semantics that do not map cleanly to flat
+/// columns; they land in `raw_props` JSON for follow-up analysis.
 fn scan_ability_props(payload: &[u8]) -> AbilityStats {
     use std::collections::BTreeMap;
 
     let mut stats = AbilityStats::default();
-    let mut raw: BTreeMap<u16, f32> = BTreeMap::new();
+    let Some(start) = find_subslice(payload, &ABILITY_PROP_SENTINEL) else {
+        return stats;
+    };
 
-    let mut i = 0;
+    let mut raw: BTreeMap<u16, f32> = BTreeMap::new();
+    let mut i = start;
     while i + 6 <= payload.len() {
         let prop_id = u16::from_le_bytes([payload[i], payload[i + 1]]);
-        if (0x0400..=0x04FF).contains(&prop_id) {
-            let value = f32::from_le_bytes([
-                payload[i + 2],
-                payload[i + 3],
-                payload[i + 4],
-                payload[i + 5],
-            ]);
-            if value.is_finite() {
-                let plausible = match prop_id {
-                    0x0401 | 0x041a | 0x041b | 0x0406 => (0.0..=3600.0).contains(&value),
-                    0x0403 | 0x041e => (0.0..=500.0).contains(&value),
-                    0x041d | 0x041f => (0.0..=100.0).contains(&value),
-                    0x0420 | 0x0421 => value == 0.0 || value == 1.0,
-                    _ => value.abs() < 1.0e6,
-                };
-                if plausible {
-                    raw.entry(prop_id).or_insert(value);
-                    match prop_id {
-                        0x0401 if stats.cooldown.is_none() => stats.cooldown = Some(value),
-                        0x041b if stats.cast_time.is_none() => stats.cast_time = Some(value),
-                        0x0406 if stats.channel_duration.is_none() => {
-                            stats.channel_duration = Some(value)
-                        }
-                        0x041a if stats.hard_cast_time.is_none() => {
-                            stats.hard_cast_time = Some(value)
-                        }
-                        0x0403 if stats.force_cost.is_none() => {
-                            stats.force_cost = Some(value as i32)
-                        }
-                        0x041e if stats.resource_cost.is_none() => {
-                            stats.resource_cost = Some(value as i32)
-                        }
-                        0x041f if stats.melee_range.is_none() => stats.melee_range = Some(value),
-                        0x041d if stats.aoe_radius.is_none() => stats.aoe_radius = Some(value),
-                        0x0420 if stats.is_gap_closer.is_none() => {
-                            stats.is_gap_closer = Some(value as i32)
-                        }
-                        0x0421 if stats.is_knockback.is_none() => {
-                            stats.is_knockback = Some(value as i32)
-                        }
-                        _ => {}
+        if (prop_id >> 8) != 0x04 {
+            break;
+        }
+        let value = f32::from_le_bytes([
+            payload[i + 2],
+            payload[i + 3],
+            payload[i + 4],
+            payload[i + 5],
+        ]);
+        if value.is_finite() {
+            // The sentinel itself (0x0401 = -1.0) should not displace later
+            // 0x0401 records, which carry the actual cooldown.
+            let is_sentinel = prop_id == 0x0401 && value == -1.0;
+            if !is_sentinel {
+                raw.entry(prop_id).or_insert(value);
+                match prop_id {
+                    0x0401 if stats.cooldown.is_none() => stats.cooldown = Some(value),
+                    0x041b if stats.cast_time.is_none() => stats.cast_time = Some(value),
+                    0x0406 if stats.channel_duration.is_none() => {
+                        stats.channel_duration = Some(value)
                     }
+                    0x041a if stats.hard_cast_time.is_none() => stats.hard_cast_time = Some(value),
+                    0x0403 if stats.force_cost.is_none() && value >= 5.0 => {
+                        stats.force_cost = Some(value as i32)
+                    }
+                    0x041e if stats.resource_cost.is_none() && value >= 1.0 => {
+                        stats.resource_cost = Some(value as i32)
+                    }
+                    _ => {}
                 }
             }
         }
-        i += 1;
+        i += 6;
     }
 
     if !raw.is_empty() {
@@ -3235,6 +3258,13 @@ fn scan_ability_props(payload: &[u8]) -> AbilityStats {
         stats.raw_props_json = serde_json::to_string(&map).ok();
     }
     stats
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 #[cfg(test)]
@@ -3331,64 +3361,110 @@ mod tests {
         assert_eq!(cat, "unknown");
     }
 
-    fn synth_prop(prop_id: u16, value: f32) -> Vec<u8> {
-        let mut v = vec![0u8; 4];
+    fn rec(prop_id: u16, value: f32) -> Vec<u8> {
+        let mut v = Vec::with_capacity(6);
         v.extend_from_slice(&prop_id.to_le_bytes());
         v.extend_from_slice(&value.to_le_bytes());
-        v.extend_from_slice(&[0u8; 4]);
+        v
+    }
+
+    fn block(records: &[(u16, f32)]) -> Vec<u8> {
+        // 4 bytes of pre-sentinel padding so the sentinel is not at byte 0
+        // (matches the real payload shape where header bytes precede it).
+        let mut v = vec![0xAAu8; 4];
+        v.extend(rec(0x0401, -1.0));
+        for (id, val) in records {
+            v.extend(rec(*id, *val));
+        }
+        // Trailing non-0x04xx byte pair to terminate the block.
+        v.extend_from_slice(&[0x80, 0x05, 0x00, 0x00, 0x00, 0x00]);
         v
     }
 
     #[test]
     fn ability_props_decode_cooldown() {
-        let payload = synth_prop(0x0401, 15.0);
-        let stats = scan_ability_props(&payload);
+        let stats = scan_ability_props(&block(&[(0x0401, 15.0)]));
         assert_eq!(stats.cooldown, Some(15.0));
     }
 
     #[test]
     fn ability_props_decode_cast_and_force_cost() {
-        let mut payload = synth_prop(0x041b, 1.5);
-        payload.extend(synth_prop(0x0403, 40.0));
-        let stats = scan_ability_props(&payload);
+        let stats = scan_ability_props(&block(&[(0x041b, 1.5), (0x0403, 40.0)]));
         assert_eq!(stats.cast_time, Some(1.5));
         assert_eq!(stats.force_cost, Some(40));
     }
 
     #[test]
-    fn ability_props_decode_aoe_radius() {
-        let payload = synth_prop(0x041d, 10.0);
-        let stats = scan_ability_props(&payload);
-        assert_eq!(stats.aoe_radius, Some(10.0));
+    fn ability_props_drop_low_force_cost_as_scaling_coefficient() {
+        // 0x0403 = 1.0 on tech abilities is a coefficient, not a Force cost.
+        let stats = scan_ability_props(&block(&[(0x0403, 1.0)]));
+        assert_eq!(stats.force_cost, None);
     }
 
     #[test]
-    fn ability_props_decode_knockback_flag() {
-        let payload = synth_prop(0x0421, 1.0);
-        let stats = scan_ability_props(&payload);
-        assert_eq!(stats.is_knockback, Some(1));
+    fn ability_props_decode_resource_cost() {
+        let stats = scan_ability_props(&block(&[(0x041e, 15.0)]));
+        assert_eq!(stats.resource_cost, Some(15));
     }
 
     #[test]
-    fn ability_props_reject_implausible_cooldown() {
-        let payload = synth_prop(0x0401, 99999.0);
+    fn ability_props_no_sentinel_no_hits() {
+        // Secondary template: no sentinel anywhere.
+        let payload = vec![0x00; 64];
         let stats = scan_ability_props(&payload);
-        assert_eq!(stats.cooldown, None);
-    }
-
-    #[test]
-    fn ability_props_empty_payload_no_hits() {
-        let stats = scan_ability_props(&[]);
         assert!(!stats.any_hit());
     }
 
     #[test]
-    fn ability_props_raw_props_json_includes_unknowns() {
-        let mut payload = synth_prop(0x0401, 15.0);
-        payload.extend(synth_prop(0x0420, 1.0));
-        let stats = scan_ability_props(&payload);
-        let raw = stats.raw_props_json.expect("raw_props populated");
-        assert!(raw.contains("\"0x0401\""));
-        assert!(raw.contains("\"0x0420\""));
+    fn ability_props_block_terminates_at_non_04xx() {
+        // Sentinel + cooldown + non-0x04xx terminator + would-be-cast-time
+        // outside the block. cast_time must NOT be picked up.
+        let mut buf = vec![0xAAu8; 4];
+        buf.extend(rec(0x0401, -1.0));
+        buf.extend(rec(0x0401, 15.0));
+        buf.extend_from_slice(&[0x80, 0x05, 0x00, 0x00, 0x00, 0x00]); // terminator
+        buf.extend(rec(0x041b, 1.5)); // outside the block
+        let stats = scan_ability_props(&buf);
+        assert_eq!(stats.cooldown, Some(15.0));
+        assert_eq!(stats.cast_time, None);
+    }
+
+    #[test]
+    fn ability_props_sentinel_does_not_displace_real_cooldown() {
+        // 0x0401 = -1.0 is the sentinel; the next 0x0401 carries cd.
+        let stats = scan_ability_props(&block(&[(0x0401, 15.0)]));
+        assert_eq!(stats.cooldown, Some(15.0));
+    }
+
+    #[test]
+    fn resource_pool_warrior_is_rage() {
+        assert_eq!(
+            resource_pool_from_fqn("abl.sith_warrior.force_charge"),
+            Some("rage")
+        );
+    }
+
+    #[test]
+    fn resource_pool_inquisitor_is_force() {
+        assert_eq!(
+            resource_pool_from_fqn("abl.sith_inquisitor.crushing_darkness"),
+            Some("force")
+        );
+    }
+
+    #[test]
+    fn resource_pool_bounty_hunter_is_heat() {
+        assert_eq!(
+            resource_pool_from_fqn("abl.bounty_hunter.rocket_punch"),
+            Some("heat")
+        );
+    }
+
+    #[test]
+    fn resource_pool_companion_is_none() {
+        assert_eq!(
+            resource_pool_from_fqn("abl.companion.weapon_set.blaster.tank.taunt"),
+            None
+        );
     }
 }
