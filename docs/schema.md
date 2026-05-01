@@ -336,12 +336,12 @@ Abilities granted or modified by talents (passive skill nodes).
 
 Properties decoded from the canonical `abl.*` payload prop block. The dominant ability template (~86% of `abl.*`) writes its property table as a contiguous run of 6-byte `[u16 LE prop_id][f32 LE value]` records starting at the sentinel `01 04 00 00 80 BF` (= 0x0401 with -1.0, an uninit marker) and ending where the next 2 bytes are not in 0x04xx. The walker reads only that block.
 
-A row is populated for every `abl.*` object whose FQN class resolves a `resource_pool`, even if its payload has no prop block (secondary template — companion / racial / legacy / space-combat / passive abilities).
+A row is populated for every `abl.*` object whose FQN class resolves a `resource_pool`, even if its payload has no prop block (secondary template — companion / racial / legacy / on-rails Space Combat / GSF (`abl.spvp.*`) / passive abilities).
 
 | Column | Type | Prop ID | Description |
 |--------|------|---------|-------------|
 | `ability_game_id` | TEXT PK | — | Links to `objects.game_id`. |
-| `resource_pool` | TEXT | — | One of `force`, `rage`, `focus`, `heat`, `ammo`, `energy`. Derived from FQN class segment. NULL for companion / racial / legacy / space-combat / spvp abilities. |
+| `resource_pool` | TEXT | — | One of `force`, `rage`, `focus`, `heat`, `ammo`, `energy`, `gsf`. Derived from FQN class segment. `gsf` tags Galactic Starfighter abilities (`abl.spvp.*`) — GSF has a distinct 3-pool stat system, the tag identifies the game mode. NULL for companion / racial / legacy abilities and on-rails Space Combat (`abl.space_combat.*`). |
 | `cooldown` | REAL | 0x0401 | Cooldown in seconds. |
 | `cast_time` | REAL | 0x041b | Activation time (cast or channel) in seconds. |
 | `channel_duration` | REAL | 0x0406 | Channel duration in seconds. Matches `cast_time` for channels. |
@@ -362,7 +362,8 @@ A row is populated for every `abl.*` object whose FQN class resolves a `resource
 | `trooper` | ammo |
 | `agent` | energy |
 | `smuggler` | energy |
-| anything else (companion/racial/legacy/space) | NULL |
+| `spvp` (Galactic Starfighter) | gsf |
+| anything else (companion / racial / legacy / on-rails Space Combat) | NULL |
 
 **Coverage caveats:**
 - ~14% of `abl.*` (459 rows on template `4000000002754EE0`, including `shock`, `endure_pain`, `takedown`, all companions/racials) have no prop block. They get a row only if `resource_pool` resolves; cooldown/cast/cost columns are NULL.
