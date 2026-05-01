@@ -659,6 +659,25 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_gsf_talent_stats_stat_id
                 ON gsf_talent_stats(stat_id);
 
+            -- Per-record numeric stats decoded from abl.spvp.* payloads (#78).
+            -- Uses the same `[u16 LE prop_id][f32 LE value]` layout as ground
+            -- abilities, but records are scattered across the payload rather
+            -- than clustered behind the -1.0 cooldown sentinel that anchors
+            -- scan_ability_props. prop_id high byte is always 0x04. Wide-format
+            -- (one row per record); consumers pivot by prop_id. Stat-ID
+            -- semantics differ from ground abilities -- e.g., 0x0402 is the
+            -- cooldown for GSF, an animation marker for ground.
+            CREATE TABLE IF NOT EXISTS gsf_ability_stats (
+                ability_game_id TEXT NOT NULL,
+                ordinal         INTEGER NOT NULL,
+                prop_id         INTEGER NOT NULL,
+                value           REAL NOT NULL,
+                PRIMARY KEY (ability_game_id, ordinal)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_gsf_ability_stats_prop_id
+                ON gsf_ability_stats(prop_id);
+
             -- Extraction metadata
             CREATE TABLE IF NOT EXISTS meta (
                 key TEXT PRIMARY KEY,
@@ -1474,6 +1493,68 @@ impl Database {
                     game_id,
                     rec.ordinal as i64,
                     rec.stat_id as i64,
+                    rec.value as f64,
+                ])?;
+                count += 1;
+            }
+        }
+
+        drop(stmt);
+        tx.commit()?;
+        Ok(count)
+    }
+
+    /// Populate `gsf_ability_stats` from `abl.spvp.*` payloads (#78).
+    ///
+    /// GSF base abilities reuse the ground `[u16 LE prop_id][f32 LE value]`
+    /// layout but skip the `01 04 00 00 80 BF` cooldown sentinel that anchors
+    /// `scan_ability_props`, and they scatter records across the payload
+    /// rather than packing them contiguously. The decoder walks every 6-byte
+    /// window and emits any record whose value is finite, non-zero, and in a
+    /// reasonable magnitude range (subnormal-ish and huge values are
+    /// byte-alignment noise from GUID/hash bytes).
+    ///
+    /// Empirical coverage: 112/131 abl.spvp.* abilities (85%) emit at least
+    /// one record. Uncovered abilities are passive auras whose effects live
+    /// on a parent activator or in script hooks.
+    pub fn populate_gsf_ability_stats(&self) -> Result<u64> {
+        use crate::schema::gsf_ability::decode_gsf_ability_stats;
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
+        let conn = self.conn.lock().unwrap();
+
+        let payloads: Vec<(String, Option<String>)> = {
+            let mut stmt = conn.prepare(
+                "SELECT game_id, json_extract(json, '$.payload_b64') \
+                 FROM objects WHERE fqn LIKE 'abl.spvp.%'",
+            )?;
+            let rows: Vec<(String, Option<String>)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        };
+
+        let tx = conn.unchecked_transaction()?;
+        let mut stmt = tx.prepare_cached(
+            "INSERT OR REPLACE INTO gsf_ability_stats \
+             (ability_game_id, ordinal, prop_id, value) \
+             VALUES (?1, ?2, ?3, ?4)",
+        )?;
+
+        let mut count: u64 = 0;
+        for (game_id, payload_b64) in &payloads {
+            let Some(b64) = payload_b64 else { continue };
+            let Ok(payload) = BASE64.decode(b64) else {
+                continue;
+            };
+            for rec in decode_gsf_ability_stats(&payload) {
+                stmt.execute(params![
+                    game_id,
+                    rec.ordinal as i64,
+                    rec.prop_id as i64,
                     rec.value as f64,
                 ])?;
                 count += 1;

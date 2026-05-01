@@ -490,6 +490,14 @@ fn main() -> Result<()> {
     let gsf_stats_count = db.populate_gsf_talent_stats()?;
     println!("  GSF talent stats: {}", gsf_stats_count);
 
+    // GSF base ability stats (#78). Walks abl.spvp.* payloads for scattered
+    // [u16 LE prop_id][f32 LE value] records where prop_id high byte is 0x04.
+    // Wide format: one row per record, consumers pivot by prop_id. ~85% of
+    // abl.spvp.* abilities carry at least one record; uncovered abilities
+    // are passive auras with effects on a parent activator or in a hook.
+    let gsf_ability_stats_count = db.populate_gsf_ability_stats()?;
+    println!("  GSF ability stats: {}", gsf_ability_stats_count);
+
     // Conversation refs from NODE files (cnv.* prototypes). One pass through
     // the .tor archives extracts CF GUID refs to quest, npc, achievement,
     // codex, item, follow-up conversation, and encounter targets. The
