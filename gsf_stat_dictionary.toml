@@ -1,0 +1,205 @@
+# GSF stat-ID dictionary
+#
+# Maps the raw stat_id (u8) and prop_id (u16) bytes decoded from GSF
+# `tal.spvp.*` and `abl.spvp.*` GOM payloads to plain-English labels and
+# units. Loaded at compile time and applied during extraction so the
+# `gsf_talent_stats` and `gsf_ability_stats` tables ship with decoded
+# rows -- consumers query `WHERE label = 'cooldown_delta_seconds'`,
+# never a raw hex byte.
+#
+# confidence values:
+#   verified -- anchored against an in-game description string by Sean
+#   guess    -- cross-referenced against huttspawn corrections, not yet
+#               verified end-to-end
+#   unknown  -- not in this file; populate emits label `unknown_0x<id>`
+#               and confidence `unknown` so the row is still queryable
+#
+# Adding a new entry: verify the value against an in-game tooltip
+# (huttspawn data/seed/gsf_*.sql is the validation oracle). Update the
+# table here, run `cargo test --release --lib` (the populate functions
+# load this at startup), re-extract spice.
+
+# tal.spvp.* stat_id (u8) -- the byte before `01 04 <f32 LE>` in records
+# anchored on the `cb 19 d7 4b ?? 03` signature.
+[talent_stats]
+
+[talent_stats.0x40]
+label      = "cooldown_delta_seconds"
+unit       = "s"
+confidence = "verified"
+notes      = "tal.spvp.shield.shield_projector.tier1 -> -10.0 = -10s"
+
+[talent_stats.0x41]
+label      = "duration_extension_seconds"
+unit       = "s"
+confidence = "verified"
+notes      = "tal.spvp.engine.tensor_field.tier3 -> +4.0 = +4s"
+
+[talent_stats.0x47]
+label      = "engine_power_pool_pct"
+unit       = "pct"
+confidence = "verified"
+
+[talent_stats.0x48]
+label      = "turning_rate_pct"
+unit       = "pct"
+confidence = "verified"
+
+[talent_stats.0x49]
+label      = "blaster_damage_pct"
+unit       = "pct"
+confidence = "verified"
+
+[talent_stats.0x4b]
+label      = "damage_to_shields_pct"
+unit       = "pct"
+confidence = "verified"
+
+[talent_stats.0x4f]
+label      = "tracking_penalty_reduction_pct"
+unit       = "pct"
+confidence = "verified"
+
+[talent_stats.0x5c]
+label      = "lock_on_time_reduction_pct"
+unit       = "pct"
+confidence = "verified"
+
+[talent_stats.0x5f]
+label      = "firing_arc_deg"
+unit       = "deg"
+confidence = "verified"
+notes      = "tal.spvp.crew.offensive.firing_arc -> +2.0 = +2 deg"
+
+[talent_stats.0x62]
+label      = "magazine_capacity_pct"
+unit       = "pct"
+confidence = "verified"
+
+[talent_stats.0x68]
+label      = "sensor_radius_units"
+unit       = "units"
+confidence = "verified"
+notes      = "~250m per unit"
+
+[talent_stats.0x69]
+label      = "crit_chance_pct"
+unit       = "pct"
+confidence = "verified"
+
+[talent_stats.0x22]
+label      = "engine_power_regen_pct"
+unit       = "pct"
+confidence = "guess"
+notes      = "Paired with 0x24 in tal.spvp.minor_thrusters.engine_power_regen.upgrade for +4/+8/+12 ranks"
+
+[talent_stats.0x24]
+label      = "engine_power_regen_pct_alt"
+unit       = "pct"
+confidence = "guess"
+notes      = "Paired with 0x22; semantics unverified"
+
+
+# abl.spvp.* prop_id (u16) -- u16 LE prop_id with high byte 0x04, followed
+# by f32 LE value. Stat-ID semantics differ from `tal.spvp.*` -- 0x0402
+# is cooldown for GSF base abilities, an animation marker for ground.
+[ability_stats]
+
+[ability_stats.0x0402]
+label      = "cooldown_seconds"
+unit       = "s"
+confidence = "verified"
+notes      = "barrel_roll = 30, power_dive = 15"
+
+[ability_stats.0x0403]
+label      = "scaling_factor"
+unit       = "ratio"
+confidence = "guess"
+notes      = "Always 1.0 in samples; meaning unverified"
+
+[ability_stats.0x0401]
+label      = "cast_time_seconds"
+unit       = "s"
+confidence = "guess"
+notes      = "Range observed -1.0..75.0; -1.0 likely passive marker"
+
+[ability_stats.0x0421]
+label      = "range_meters"
+unit       = "m"
+confidence = "guess"
+notes      = "Range observed 15..150"
+
+[ability_stats.0x0423]
+label      = "duration_seconds"
+unit       = "s"
+confidence = "guess"
+notes      = "Range observed 100..500"
+
+
+# abl.* (ground ability) `0x04xx` prop_id (u16) labels for ability_stats.raw_props.
+# These IDs land in dedicated columns when verified (cooldown / cast_time /
+# channel_duration / hard_cast_time / force_cost / resource_cost). Other
+# 0x04xx records hit raw_props -- this section gives them human labels so
+# raw_props is keyed by `melee_range`/`is_knockback` instead of `0x041f`/`0x0421`.
+[ground_ability_props]
+
+[ground_ability_props.0x0401]
+label      = "cooldown_seconds"
+unit       = "s"
+confidence = "verified"
+
+[ground_ability_props.0x0403]
+label      = "force_cost"
+unit       = "force"
+confidence = "verified"
+
+[ground_ability_props.0x0406]
+label      = "channel_duration_seconds"
+unit       = "s"
+confidence = "verified"
+
+[ground_ability_props.0x041a]
+label      = "hard_cast_time_seconds"
+unit       = "s"
+confidence = "verified"
+
+[ground_ability_props.0x041b]
+label      = "cast_time_seconds"
+unit       = "s"
+confidence = "verified"
+
+[ground_ability_props.0x041d]
+label      = "aoe_radius_meters"
+unit       = "m"
+confidence = "verified"
+
+[ground_ability_props.0x041e]
+label      = "resource_cost"
+unit       = "resource"
+confidence = "verified"
+
+[ground_ability_props.0x041f]
+label      = "melee_range_meters"
+unit       = "m"
+confidence = "verified"
+
+[ground_ability_props.0x0420]
+label      = "is_gap_closer"
+unit       = "bool"
+confidence = "verified"
+
+[ground_ability_props.0x0421]
+label      = "is_knockback"
+unit       = "bool"
+confidence = "verified"
+
+[ground_ability_props.0x0402]
+label      = "animation_marker"
+unit       = "ratio"
+confidence = "guess"
+notes      = "Class-context-dependent; animation/effect timing"
+
+[ground_ability_props.0x0404]
+label      = "scaling_coefficient"
+unit       = "ratio"
+confidence = "guess"

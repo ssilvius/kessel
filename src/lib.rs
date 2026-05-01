@@ -6,6 +6,7 @@ pub mod db;
 pub mod dds;
 pub mod gifts;
 pub mod grammar;
+pub mod gsf_stat_dictionary;
 pub mod hash;
 pub mod icon_overrides;
 pub mod myp;
