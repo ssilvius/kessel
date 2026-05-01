@@ -182,6 +182,29 @@ pub fn parse(data: &[u8]) -> Result<Vec<GomObject>> {
     parse_object_dblb(objects_dblb)
 }
 
+/// True for bytes that can appear inside a GOM FQN string. FQNs are
+/// dot-separated lowercase identifiers like `tal.spvp.engine.barrel_roll.tier1`.
+fn is_fqn_byte(b: u8) -> bool {
+    b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'_'
+}
+
+/// Number of bytes the nominal FQN offset (`object_start + 42`) overshot the
+/// real FQN start. The GOM "header" is mostly non-ASCII; if the byte right
+/// before `object_start + 42` is a valid FQN byte, the preamble is shorter
+/// than 42 bytes and the parser must shift the object slice backward by this
+/// amount so the GUID/header bytes also come out right.
+fn walkback_amount(data: &[u8], object_start: usize) -> usize {
+    let nominal = object_start + 42;
+    if nominal >= data.len() {
+        return 0;
+    }
+    let mut steps = 0;
+    while steps < 8 && nominal > steps && is_fqn_byte(data[nominal - 1 - steps]) {
+        steps += 1;
+    }
+    steps
+}
+
 /// Try to extract next object size from the 8-byte footer.
 /// SWTOR stores the size at varying positions in the footer.
 fn extract_next_size_from_footer(footer: &[u8]) -> Option<usize> {
@@ -242,8 +265,21 @@ fn parse_object_dblb(data: &[u8]) -> Result<Vec<GomObject>> {
                 let footer = &obj_data[obj_data.len() - 8..];
                 let next_size = extract_next_size_from_footer(footer);
 
-                // Try to parse - may fail for non-ZSTD objects (which is ok)
-                if let Ok(obj) = parse_object(obj_data) {
+                // A subset of objects (~50 GSF talents + others) has a
+                // variable-length preamble that shifts the real object start
+                // earlier than the footer-chain offset suggests. Detect by
+                // walking back through the contiguous ASCII-FQN run from
+                // offset+42 within the FULL data buffer; if the FQN actually
+                // starts earlier, shift the slice so the GUID is read from
+                // the right bytes too.
+                let walkback = walkback_amount(data, offset);
+                let parse_result = if walkback > 0 && offset >= walkback {
+                    let shifted = &data[offset - walkback..offset + obj_size - walkback];
+                    parse_object(shifted)
+                } else {
+                    parse_object(obj_data)
+                };
+                if let Ok(obj) = parse_result {
                     objects.push(obj);
                 }
                 // Note: We continue the chain even if parse_object fails
@@ -273,18 +309,26 @@ fn parse_object_dblb(data: &[u8]) -> Result<Vec<GomObject>> {
         }
 
         // Slow path: scan for objects by FQN pattern
-        let fqn_pos = offset + 42;
-        if fqn_pos + 4 >= data.len() {
+        let nominal_fqn = offset + 42;
+        if nominal_fqn + 4 >= data.len() {
             break;
         }
 
-        let potential_fqn = &data[fqn_pos..data.len().min(fqn_pos + 4)];
+        let potential_fqn = &data[nominal_fqn..data.len().min(nominal_fqn + 4)];
         let has_fqn = potential_fqn.iter().all(|&b| (32..127).contains(&b));
 
         if !has_fqn {
             offset += 8;
             continue;
         }
+
+        // Walk backward through the contiguous ASCII-FQN run to find the true
+        // FQN start (preamble can be shorter than 42 bytes for some objects),
+        // and shift the apparent object start by the same amount so the
+        // header/GUID bytes come from the right position too.
+        let walkback = walkback_amount(data, offset);
+        let real_offset = offset.saturating_sub(walkback);
+        let fqn_pos = real_offset + 42;
 
         // Find end of FQN
         let mut fqn_end = fqn_pos;
@@ -309,8 +353,9 @@ fn parse_object_dblb(data: &[u8]) -> Result<Vec<GomObject>> {
                     if let Ok(decoded) = zstd::decode_all(&zstd_data[..frame_size]) {
                         let obj_end = zstd_start + frame_size + 8;
                         let fqn = String::from_utf8_lossy(&data[fqn_pos..fqn_end]).to_string();
-                        let header =
-                            data[offset..offset.saturating_add(42).min(data.len())].to_vec();
+                        let header = data
+                            [real_offset..real_offset.saturating_add(42).min(data.len())]
+                            .to_vec();
 
                         objects.push(GomObject {
                             fqn,
