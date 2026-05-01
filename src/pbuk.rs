@@ -381,6 +381,62 @@ fn parse_object_dblb(data: &[u8]) -> Result<Vec<GomObject>> {
         }
     }
 
+    // Recovery pass: the footer chain occasionally jumps over a real object
+    // (the chained next-size lands the cursor past an object boundary
+    // entirely, rather than the off-by-N alignment that walkback handles).
+    // Scan for `01 02 <FQN>` markers in the buffer and attempt to parse any
+    // FQN we haven't already produced. Bounded by the nominal preamble lookup
+    // so we don't pick up spurious `01 02` byte coincidences elsewhere in
+    // payloads.
+    let parsed_fqns: std::collections::HashSet<String> =
+        objects.iter().map(|o| o.fqn.clone()).collect();
+    let mut i = 42;
+    while i + 6 < data.len() {
+        if data[i - 1] == 0x01 && data[i] == 0x02 && is_fqn_byte(data[i + 1]) {
+            // Found an `01 02 <fqn-byte>` triple. Walk forward for the FQN.
+            let fqn_start = i + 1;
+            let mut fqn_end = fqn_start;
+            while fqn_end < data.len() && fqn_end < fqn_start + 200 && data[fqn_end] != 0 {
+                fqn_end += 1;
+            }
+            if fqn_end > fqn_start && fqn_end < data.len() {
+                let candidate_fqn = String::from_utf8_lossy(&data[fqn_start..fqn_end]).to_string();
+                if !parsed_fqns.contains(&candidate_fqn)
+                    && candidate_fqn.contains('.')
+                    && fqn_start >= 42
+                {
+                    // Attempt parse: object starts 42 bytes before FQN.
+                    let obj_start = fqn_start - 42;
+                    // Need a payload bound. Find next ZSTD magic and frame size.
+                    let mut zstd_pos = None;
+                    for j in fqn_end..data.len().min(fqn_end + 10) {
+                        if data.len() > j + 4 && data[j..j + 4] == ZSTD_MAGIC {
+                            zstd_pos = Some(j);
+                            break;
+                        }
+                    }
+                    if let Some(zs) = zstd_pos {
+                        if let Ok(frame_size) = zstd_safe::find_frame_compressed_size(&data[zs..]) {
+                            if frame_size > 0 && zs + frame_size <= data.len() {
+                                if let Ok(decoded) = zstd::decode_all(&data[zs..zs + frame_size]) {
+                                    let header = data[obj_start..obj_start + 42].to_vec();
+                                    objects.push(GomObject {
+                                        fqn: candidate_fqn,
+                                        header,
+                                        payload: decoded,
+                                    });
+                                    i = zs + frame_size;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+
     tracing::debug!("Parsed {} GOM objects", objects.len());
     Ok(objects)
 }
