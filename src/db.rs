@@ -640,6 +640,25 @@ impl Database {
                 raw_props           TEXT     -- JSON {hex_id: f32} for all in-block 0x04xx records
             );
 
+            -- GSF talent stats decoded from tal.spvp.* GOM payloads (#80).
+            -- Stat records have shape `[c9 01]? <stat_id:u8> 01 04 <f32 LE>`
+            -- and end at the signature `cb 19 d7 4b ?? 03`. One row per
+            -- record; ordinal preserves payload order so rank progressions
+            -- (e.g., +4%/+8%/+12%) and per-effect duplicates remain ordered.
+            -- Stat-ID semantics live in the dictionary documented at
+            -- src/schema/gsf_talent.rs (e.g., 0x40 = cooldown delta seconds,
+            -- 0x5f = firing arc degrees, 0x69 = critical hit chance %).
+            CREATE TABLE IF NOT EXISTS gsf_talent_stats (
+                talent_game_id  TEXT NOT NULL,
+                ordinal         INTEGER NOT NULL,
+                stat_id         INTEGER NOT NULL,
+                value           REAL NOT NULL,
+                PRIMARY KEY (talent_game_id, ordinal)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_gsf_talent_stats_stat_id
+                ON gsf_talent_stats(stat_id);
+
             -- Extraction metadata
             CREATE TABLE IF NOT EXISTS meta (
                 key TEXT PRIMARY KEY,
@@ -1398,6 +1417,67 @@ impl Database {
                 .and_then(|payload| extract_talent_script_hook(&payload));
             stmt.execute(params![game_id, pool, tier, hook])?;
             count += 1;
+        }
+
+        drop(stmt);
+        tx.commit()?;
+        Ok(count)
+    }
+
+    /// Populate `gsf_talent_stats` from `tal.spvp.*` payloads (#80).
+    ///
+    /// GSF talent stat values are encoded distinctly from ground-ability
+    /// `0x04xx` records -- they live as `[c9 01]? <stat_id> 01 04 <f32 LE>`
+    /// records terminated by the signature `cb 19 d7 4b ?? 03`. The existing
+    /// ability-stat extractor anchors on a sentinel that GSF talents do not
+    /// carry, which is why GSF stat values were absent from spice.sqlite
+    /// despite the talents themselves being present.
+    ///
+    /// Empirically, 250/350 GSF talents (71%) carry at least one record;
+    /// 100 talents are flag-only (effects implemented on the parent ability
+    /// or via script hook).
+    pub fn populate_gsf_talent_stats(&self) -> Result<u64> {
+        use crate::schema::gsf_talent::decode_gsf_stats;
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
+        let conn = self.conn.lock().unwrap();
+
+        let payloads: Vec<(String, Option<String>)> = {
+            let mut stmt = conn.prepare(
+                "SELECT game_id, json_extract(json, '$.payload_b64') \
+                 FROM objects WHERE fqn LIKE 'tal.spvp.%'",
+            )?;
+            let rows: Vec<(String, Option<String>)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        };
+
+        let tx = conn.unchecked_transaction()?;
+        let mut stmt = tx.prepare_cached(
+            "INSERT OR REPLACE INTO gsf_talent_stats \
+             (talent_game_id, ordinal, stat_id, value) \
+             VALUES (?1, ?2, ?3, ?4)",
+        )?;
+
+        let mut count: u64 = 0;
+        for (game_id, payload_b64) in &payloads {
+            let Some(b64) = payload_b64 else { continue };
+            let Ok(payload) = BASE64.decode(b64) else {
+                continue;
+            };
+            for rec in decode_gsf_stats(&payload) {
+                stmt.execute(params![
+                    game_id,
+                    rec.ordinal as i64,
+                    rec.stat_id as i64,
+                    rec.value as f64,
+                ])?;
+                count += 1;
+            }
         }
 
         drop(stmt);
