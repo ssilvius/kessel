@@ -7,6 +7,10 @@ Versions follow [Cargo semver](https://doc.rust-lang.org/cargo/reference/semver.
 
 ## [Unreleased]
 
+### Known limitations
+
+- 11 GSF talent tier FQNs are present in the live SWTOR client but absent from the static `.tor` archive distribution this release reads (`tal.spvp.missile.sabotage_probe.tier1-5b`, `tal.spvp.laser.ion_cannon.tier_4a/5a/5b`, `tal.spvp.missile.rocket_pod.tier_5b`). Verified zero raw-byte hits across all 806K archive entries. Out of kessel scope; would need a route to client-binary / script / server-feed data. Tracked in #86. The next golden spice release should call this out in its release notes so consumers (huttspawn) know to keep their hand-curated correction SQL for those 11 until a client-side route exists.
+
 ### Added
 
 - Player-class `epp.*` ability prototypes now extract (#57). The `should_extract_object` prefix whitelist accepts `epp` scoped to two namespaces: `epp.<class>.*` for the eight player classes (sith_warrior/inquisitor, jedi_knight/consular, bounty_hunter, imperial_agent, smuggler, trooper) plus `epp.flurry.{melee,ranged}.*` for shared melee/ranged mechanics. ~2,100 new objects total. Surfaces fundamental player abilities -- most visibly Saber Strike -- that have no `abl.*` counterpart in the binary because the canonical Saber Strike object lives at `epp.sith_inquisitor.prototype2.saber_strike` (and `epp.flurry.melee.<class>.saber_strike_real` for the melee mechanic). The remaining ~15K `epp.*` objects (NPC ability internals, world VFX, boss encounter scripts) stay filtered out -- huttspawn doesn't need them and they'd dominate the table. Limitation: `epp.*` payloads don't carry the `CE` string-table type marker that anchors `extract_string_id_via_type_marker`, so these rows have NULL `string_id`. Display names live at `str.abl.0.<id>` (e.g. `str.abl.0.220604` = "Saber Strike") and consumers must join on FQN convention until an `abl_string_id_overrides.toml` ships separately.
