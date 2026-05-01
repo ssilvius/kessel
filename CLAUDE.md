@@ -52,9 +52,3 @@ Data flow:
 - All hashing uses SHA-256 truncated to 16 hex chars
 - Icon IDs must match the frontend `computeIconId()` function
 - JSON for all data interchange (no TOML/YAML for data)
-
-## Known gaps
-
-- NODE files (`.node` prototypes in `/resources/systemgenerated/prototypes/`) are not yet parsed. Player abilities live here, not in bucket files.
-- GSF talent stat extraction covers 250/350 talents (#80, gsf_talent_stats table). The remaining ~100 are flag-only talents whose effects live on the parent ability or in script hooks; surfacing those would require parent-ability stat-block parsing as a separate pass.
-- No automated test for full extraction pipeline (needs SWTOR assets)
