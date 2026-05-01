@@ -484,6 +484,12 @@ fn main() -> Result<()> {
     let tal_details_count = db.populate_talent_details()?;
     println!("  Talent details: {}", tal_details_count);
 
+    // GSF talent stats (#80). Decodes c9 01 XX 01 04 <f32 LE> records
+    // anchored on the cb 19 d7 4b ?? 03 signature. ~71% of tal.spvp.*
+    // talents carry at least one record; the rest are flag-only effects.
+    let gsf_stats_count = db.populate_gsf_talent_stats()?;
+    println!("  GSF talent stats: {}", gsf_stats_count);
+
     // Conversation refs from NODE files (cnv.* prototypes). One pass through
     // the .tor archives extracts CF GUID refs to quest, npc, achievement,
     // codex, item, follow-up conversation, and encounter targets. The

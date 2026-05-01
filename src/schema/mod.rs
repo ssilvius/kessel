@@ -1,5 +1,6 @@
 //! Schema definitions for SWTOR game objects
 
+pub mod gsf_talent;
 pub mod item;
 
 use crate::icon_overrides::IconOverrides;
