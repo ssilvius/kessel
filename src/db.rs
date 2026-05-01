@@ -1262,7 +1262,8 @@ impl Database {
     ///
     /// Abilities on the secondary template (4000000002754EE0, ~459 rows
     /// including shock, endure_pain, takedown, companion abilities, racials,
-    /// space_combat) have no sentinel-anchored block; they get a row only if
+    /// abl.space_combat.* on-rails missions, and abl.spvp.* Galactic
+    /// Starfighter) have no sentinel-anchored block; they get a row only if
     /// their FQN resolves a `resource_pool` and no stats fields populate.
     pub fn populate_ability_stats(&self) -> Result<u64> {
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -3166,9 +3167,14 @@ impl AbilityStats {
 
 const ABILITY_PROP_SENTINEL: [u8; 6] = [0x01, 0x04, 0x00, 0x00, 0x80, 0xBF];
 
-/// Map an `abl.*` FQN to a normalized resource pool name. Companion, racial,
-/// legacy, space-combat and PVP abilities resolve to None — the cost columns
-/// are not meaningful for those.
+/// Map an `abl.*` FQN to a normalized resource pool / category tag.
+///
+/// Player class abilities resolve to their resource pool (rage/focus/force/
+/// heat/ammo/energy). Galactic Starfighter abilities (`abl.spvp.*`) resolve
+/// to `gsf` — GSF uses a 3-pool blaster/engine/shield system that doesn't
+/// fit a single pool name, so the tag identifies the game mode instead.
+/// On-rails Space Combat (`abl.space_combat.*`) and companion / racial /
+/// legacy abilities resolve to None.
 fn resource_pool_from_fqn(fqn: &str) -> Option<&'static str> {
     let segments: Vec<&str> = fqn.split('.').collect();
     if segments.len() < 2 || segments[0] != "abl" {
@@ -3181,6 +3187,7 @@ fn resource_pool_from_fqn(fqn: &str) -> Option<&'static str> {
         "bounty_hunter" => Some("heat"),
         "trooper" => Some("ammo"),
         "agent" | "smuggler" => Some("energy"),
+        "spvp" => Some("gsf"),
         _ => None,
     }
 }
@@ -3465,6 +3472,14 @@ mod tests {
         assert_eq!(
             resource_pool_from_fqn("abl.companion.weapon_set.blaster.tank.taunt"),
             None
+        );
+    }
+
+    #[test]
+    fn resource_pool_spvp_is_gsf() {
+        assert_eq!(
+            resource_pool_from_fqn("abl.spvp.missile.rocket_pod.damage"),
+            Some("gsf")
         );
     }
 }
