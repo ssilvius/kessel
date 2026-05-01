@@ -679,12 +679,15 @@ fn should_extract_object(fqn: &str, unfiltered: bool) -> bool {
 
     let parts: Vec<&str> = fqn.split('.').collect();
 
-    // Scope `epp.*` extraction to the player-class ability prototypes plus the
-    // shared flurry/melee mechanics namespace (#57). The full epp namespace
-    // is ~17K objects -- the bulk are NPC ability internals, world VFX, and
-    // boss encounter scripts -- but ~2.4K objects across player classes carry
-    // the ability prototypes huttspawn needs to surface base-class melee/ranged
-    // moves like Saber Strike that have no `abl.*` counterpart in the binary.
+    // Scope `epp.*` extraction to player abilities, companion abilities, and
+    // boss/encounter content the ground EPIC (#177) and ops-guide
+    // choreography goal need. Excluded: epp.npc.* (NPC ability internals),
+    // epp.world_design.*, epp.placeables.*, epp.test.*, epp.creature.*, etc.
+    //
+    // Class prefix in source is the SHORT form (e.g. `epp.agent.*`, not
+    // `epp.imperial_agent.*`). Mirrors the convention already used by
+    // populate_disciplines, which derives class_code from `abl.<class>.skill.*`
+    // FQNs and ends up with class_code = "agent", "sith_inquisitor", etc.
     if prefix == "epp" && parts.len() >= 3 {
         let second = parts[1];
         let third = parts[2];
@@ -693,14 +696,21 @@ fn should_extract_object(fqn: &str, unfiltered: bool) -> bool {
             "sith_warrior"
                 | "sith_inquisitor"
                 | "bounty_hunter"
-                | "imperial_agent"
+                | "agent"
                 | "jedi_knight"
                 | "jedi_consular"
                 | "smuggler"
                 | "trooper"
         );
         let is_shared_flurry = second == "flurry" && matches!(third, "melee" | "ranged");
-        if !(is_player_class || is_shared_flurry) {
+        // Companion abilities, boss encounters, expansion-specific
+        // encounter abilities (Iokath/Dxun/Oricon/etc.) and daily-area
+        // mechanics. Story-arc content lives under epp.exp.*.
+        let is_encounter_or_companion = matches!(
+            second,
+            "companion" | "flashpoint" | "operation" | "qtr" | "daily_area" | "exp"
+        );
+        if !(is_player_class || is_shared_flurry || is_encounter_or_companion) {
             return false;
         }
     }
