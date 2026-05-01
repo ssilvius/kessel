@@ -597,6 +597,27 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_talent_abilities_talent  ON talent_abilities(talent_game_id);
             CREATE INDEX IF NOT EXISTS idx_talent_abilities_ability ON talent_abilities(ability_game_id);
 
+            -- Talent classification + script-hook decode from tal.* GOM
+            -- payload (#70). resource_pool mirrors ability_stats (rage,
+            -- focus, force, heat, ammo, energy, gsf). tier is the FQN's
+            -- last segment (tier1, tier_3a, base, passive, etc) — useful
+            -- for grouping discipline-tree tiers and GSF upgrade tiers
+            -- without a second lookup. script_hook is the length-prefixed
+            -- ASCII tail string at the end of the talent payload (vault
+            -- MAPPINGS.md lines 339-365); it identifies the underlying
+            -- ability mod the talent triggers (e.g. abl_bh_me_kolto_shot,
+            -- spvp_reducedcooldown, iamilitaryofficer). 94% of talents
+            -- have one.
+            CREATE TABLE IF NOT EXISTS talent_details (
+                talent_game_id  TEXT PRIMARY KEY,
+                resource_pool   TEXT,    -- force | rage | focus | heat | ammo | energy | gsf | NULL
+                tier            TEXT,    -- FQN last segment
+                script_hook     TEXT     -- payload tail string, NULL if none
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_talent_details_pool ON talent_details(resource_pool);
+            CREATE INDEX IF NOT EXISTS idx_talent_details_hook ON talent_details(script_hook);
+
             -- Ability stats decoded from abl.* GOM payload (#69, refined #74).
             -- Properties live as a contiguous run of [u16 LE propId][f32 LE
             -- value] records starting at the sentinel 01 04 00 00 80 BF
@@ -1318,6 +1339,65 @@ impl Database {
                 ])?;
                 count += 1;
             }
+        }
+
+        drop(stmt);
+        tx.commit()?;
+        Ok(count)
+    }
+
+    /// Populate `talent_details` from `tal.*` payloads (#70).
+    ///
+    /// Three pieces of metadata per talent:
+    ///   - `resource_pool` derived from FQN class (rage/focus/force/heat/
+    ///     ammo/energy/gsf) — same vocabulary as `ability_stats`
+    ///   - `tier` is the FQN's last segment (tier1, tier_3a, base, passive)
+    ///   - `script_hook` is the length-prefixed ASCII tail string at the
+    ///     end of the payload, identifying the ability mod the talent
+    ///     triggers. ~94% of talents have one per vault MAPPINGS.md.
+    ///
+    /// A row is written for every `tal.*` object — the columns are NULL
+    /// when not derivable.
+    pub fn populate_talent_details(&self) -> Result<u64> {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
+        let conn = self.conn.lock().unwrap();
+
+        let payloads: Vec<(String, String, Option<String>)> = {
+            let mut stmt = conn.prepare(
+                "SELECT game_id, fqn, json_extract(json, '$.payload_b64') \
+                 FROM objects WHERE fqn LIKE 'tal.%'",
+            )?;
+            let rows: Vec<(String, String, Option<String>)> = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        };
+
+        let tx = conn.unchecked_transaction()?;
+        let mut stmt = tx.prepare_cached(
+            "INSERT OR REPLACE INTO talent_details \
+             (talent_game_id, resource_pool, tier, script_hook) \
+             VALUES (?1, ?2, ?3, ?4)",
+        )?;
+
+        let mut count: u64 = 0;
+        for (game_id, fqn, payload_b64) in &payloads {
+            let pool = resource_pool_from_fqn(fqn);
+            let tier = fqn.rsplit('.').next();
+            let hook = payload_b64
+                .as_deref()
+                .and_then(|b64| BASE64.decode(b64).ok())
+                .and_then(|payload| extract_talent_script_hook(&payload));
+            stmt.execute(params![game_id, pool, tier, hook])?;
+            count += 1;
         }
 
         drop(stmt);
@@ -3167,17 +3247,19 @@ impl AbilityStats {
 
 const ABILITY_PROP_SENTINEL: [u8; 6] = [0x01, 0x04, 0x00, 0x00, 0x80, 0xBF];
 
-/// Map an `abl.*` FQN to a normalized resource pool / category tag.
+/// Map an `abl.*` or `tal.*` FQN to a normalized resource pool / category tag.
 ///
-/// Player class abilities resolve to their resource pool (rage/focus/force/
-/// heat/ammo/energy). Galactic Starfighter abilities (`abl.spvp.*`) resolve
-/// to `gsf` — GSF uses a 3-pool blaster/engine/shield system that doesn't
-/// fit a single pool name, so the tag identifies the game mode instead.
-/// On-rails Space Combat (`abl.space_combat.*`) and companion / racial /
-/// legacy abilities resolve to None.
+/// Player class FQNs resolve to their resource pool (rage/focus/force/heat/
+/// ammo/energy). Galactic Starfighter (`*.spvp.*`) resolves to `gsf` — GSF
+/// uses a 3-pool blaster/engine/shield system, the tag identifies the game
+/// mode. On-rails Space Combat (`*.space_combat.*`) and companion / racial /
+/// legacy / spvp-buff entries resolve to None.
 fn resource_pool_from_fqn(fqn: &str) -> Option<&'static str> {
     let segments: Vec<&str> = fqn.split('.').collect();
-    if segments.len() < 2 || segments[0] != "abl" {
+    if segments.len() < 2 {
+        return None;
+    }
+    if segments[0] != "abl" && segments[0] != "tal" {
         return None;
     }
     match segments[1] {
@@ -3190,6 +3272,49 @@ fn resource_pool_from_fqn(fqn: &str) -> Option<&'static str> {
         "spvp" => Some("gsf"),
         _ => None,
     }
+}
+
+/// Length-prefixed ASCII tail string at the end of a talent payload (vault
+/// MAPPINGS.md lines 339-365). The byte at `payload[i]` is the length, the
+/// `payload[i+1..i+1+len]` bytes are the ASCII script-hook identifier. Walks
+/// backward from end of payload to find the most recent valid pattern, since
+/// hooks live at the tail. Returns the decoded string, or None if no
+/// plausible candidate is found.
+fn extract_talent_script_hook(payload: &[u8]) -> Option<String> {
+    let n = payload.len();
+    // Walk back through the last 96 bytes looking for a length prefix that
+    // points to a printable ASCII identifier extending to the end.
+    let max_lookback = n.min(96);
+    for offset in 1..max_lookback {
+        let i = n.saturating_sub(offset + 1);
+        let len_byte = payload[i] as usize;
+        if !(4..=80).contains(&len_byte) {
+            continue;
+        }
+        let start = i + 1;
+        let end = start + len_byte;
+        if end > n {
+            continue;
+        }
+        let chunk = &payload[start..end];
+        if !chunk.iter().all(|b| (32..127).contains(b)) {
+            continue;
+        }
+        let s = std::str::from_utf8(chunk).ok()?;
+        // Hook identifiers are alphanumeric + underscore, must start alpha.
+        let bytes = s.as_bytes();
+        if !bytes[0].is_ascii_alphabetic() {
+            continue;
+        }
+        if !bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b'_')
+        {
+            continue;
+        }
+        return Some(s.to_string());
+    }
+    None
 }
 
 /// Walk the sentinel-anchored ability property block. Finds the first
@@ -3481,5 +3606,64 @@ mod tests {
             resource_pool_from_fqn("abl.spvp.missile.rocket_pod.damage"),
             Some("gsf")
         );
+    }
+
+    #[test]
+    fn resource_pool_works_for_tal_prefix() {
+        assert_eq!(
+            resource_pool_from_fqn("tal.bounty_hunter.skill.bodyguard.empowered_scans"),
+            Some("heat")
+        );
+        assert_eq!(
+            resource_pool_from_fqn("tal.spvp.engine.barrel_roll.tier2"),
+            Some("gsf")
+        );
+    }
+
+    #[test]
+    fn resource_pool_unknown_prefix_is_none() {
+        assert_eq!(resource_pool_from_fqn("itm.something"), None);
+        assert_eq!(resource_pool_from_fqn("qst.foo"), None);
+    }
+
+    fn synth_talent_with_tail(tail: &str) -> Vec<u8> {
+        // Real tail format: filler bytes, then [len_u8][ascii bytes].
+        let mut v = vec![0xCCu8; 64];
+        v.push(tail.len() as u8);
+        v.extend_from_slice(tail.as_bytes());
+        v
+    }
+
+    #[test]
+    fn talent_script_hook_extracts_tail_identifier() {
+        let payload = synth_talent_with_tail("abl_bh_me_kolto_shot");
+        assert_eq!(
+            extract_talent_script_hook(&payload),
+            Some("abl_bh_me_kolto_shot".to_string())
+        );
+    }
+
+    #[test]
+    fn talent_script_hook_extracts_long_gsf_hook() {
+        let payload = synth_talent_with_tail("spvp_increasedsystemsdamagechance");
+        assert_eq!(
+            extract_talent_script_hook(&payload),
+            Some("spvp_increasedsystemsdamagechance".to_string())
+        );
+    }
+
+    #[test]
+    fn talent_script_hook_returns_none_when_no_tail() {
+        let payload = vec![0xFFu8; 32];
+        assert_eq!(extract_talent_script_hook(&payload), None);
+    }
+
+    #[test]
+    fn talent_script_hook_rejects_non_identifier_tail() {
+        // Length-prefixed but contains a space — not a valid identifier.
+        let mut payload = vec![0u8; 16];
+        payload.push(11);
+        payload.extend_from_slice(b"hello world");
+        assert_eq!(extract_talent_script_hook(&payload), None);
     }
 }

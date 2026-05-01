@@ -97,6 +97,12 @@ erDiagram
         INTEGER resource_cost
         TEXT raw_props
     }
+    talent_details {
+        TEXT talent_game_id PK
+        TEXT resource_pool
+        TEXT tier
+        TEXT script_hook
+    }
     spawn_runtime_ids {
         TEXT spn_fqn PK
         TEXT target_fqn PK
@@ -131,6 +137,7 @@ erDiagram
     objects ||--o{ discipline_abilities : "game_id"
     objects ||--o{ talent_abilities : "game_id"
     objects ||--o| ability_stats : "game_id"
+    objects ||--o| talent_details : "game_id"
     disciplines ||--o{ discipline_abilities : "fqn_prefix"
 ```
 
@@ -331,6 +338,17 @@ Abilities granted or modified by talents (passive skill nodes).
 | `talent_fqn` | TEXT | Talent FQN. |
 | `ability_game_id` | TEXT | 16-char hex GUID from talent payload — may not be in the objects table. |
 | `ability_fqn` | TEXT | Resolved FQN if the GUID matches an extracted object. NULL otherwise. |
+
+### talent_details
+
+Per-talent classification + payload tail-string decode. One row per `tal.*` object.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `talent_game_id` | TEXT PK | Links to `objects.game_id`. |
+| `resource_pool` | TEXT | Same vocabulary as `ability_stats.resource_pool` (`force` / `rage` / `focus` / `heat` / `ammo` / `energy` / `gsf` / NULL). Derived from the FQN class segment — `tal.sith_warrior.*` resolves to `rage`, `tal.spvp.*` resolves to `gsf`, etc. |
+| `tier` | TEXT | The FQN's last segment. Discipline talents use `tier1` / `tier2` / `tier3a` / `tier3b` / `base` / `passive` / etc; GSF talents use `tier1` / `tier_2` / `tier_3a` / `tier_3b` / `tier_4a` / `tier_5b`. Both forms appear in source data; the column preserves whatever the FQN carries. |
+| `script_hook` | TEXT | Length-prefixed ASCII identifier at the payload tail (vault MAPPINGS.md lines 339-365). Identifies the underlying ability mod the talent triggers. Examples: `abl_bh_me_kolto_shot`, `spvp_reducedcooldown`, `spvp_increasedsystemsdamagechance`, `iamilitaryofficer`. ~94% of talents have one; NULL for the rest. Useful as a join key when the same hook is referenced by multiple talents (cross-class proc identifiers). |
 
 ### ability_stats
 

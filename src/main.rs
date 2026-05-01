@@ -479,6 +479,11 @@ fn main() -> Result<()> {
     let abl_stats_count = db.populate_ability_stats()?;
     println!("  Ability stats: {}", abl_stats_count);
 
+    // Talent details (#70). FQN-derived resource_pool + tier + payload tail
+    // string (script_hook). Mirrors ability_stats classification for tal.*.
+    let tal_details_count = db.populate_talent_details()?;
+    println!("  Talent details: {}", tal_details_count);
+
     // Conversation refs from NODE files (cnv.* prototypes). One pass through
     // the .tor archives extracts CF GUID refs to quest, npc, achievement,
     // codex, item, follow-up conversation, and encounter targets. The
