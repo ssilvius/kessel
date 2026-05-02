@@ -103,6 +103,24 @@ erDiagram
         TEXT tier
         TEXT script_hook
     }
+    gsf_talent_stats {
+        TEXT talent_game_id PK
+        TEXT label PK
+        INTEGER rank PK
+        TEXT unit
+        REAL value
+        TEXT confidence
+        INTEGER stat_id
+    }
+    gsf_ability_stats {
+        TEXT ability_game_id PK
+        TEXT label PK
+        INTEGER rank PK
+        TEXT unit
+        REAL value
+        TEXT confidence
+        INTEGER prop_id
+    }
     spawn_runtime_ids {
         TEXT spn_fqn PK
         TEXT target_fqn PK
@@ -138,6 +156,8 @@ erDiagram
     objects ||--o{ talent_abilities : "game_id"
     objects ||--o| ability_stats : "game_id"
     objects ||--o| talent_details : "game_id"
+    objects ||--o{ gsf_talent_stats : "game_id"
+    objects ||--o{ gsf_ability_stats : "game_id"
     disciplines ||--o{ discipline_abilities : "fqn_prefix"
 ```
 
@@ -386,6 +406,46 @@ A row is populated for every `abl.*` object whose FQN class resolves a `resource
 **Coverage caveats:**
 - ~14% of `abl.*` (459 rows on template `4000000002754EE0`, including `shock`, `endure_pain`, `takedown`, all companions/racials) have no prop block. They get a row only if `resource_pool` resolves; cooldown/cast/cost columns are NULL.
 - Rage and focus costs are not in this prop block — warrior/knight ability cost lives elsewhere in the payload (effect graph) and is not yet decoded. `force_cost` and `resource_cost` will be NULL for warrior/knight abilities even when they have one.
+
+### gsf_talent_stats
+
+Numeric stat values decoded from `tal.spvp.*` (Galactic Starfighter talent) GOM payloads. The values huttspawn's GSF mechanic diagrams need: firing-arc degrees, tracking-penalty %, cooldown deltas, lock-on time reductions, range and radius modifiers, etc. Records have shape `[c9 01]? <stat_id:u8> 01 04 <f32 LE>` and end at the signature `cb 19 d7 4b ?? 03`. The `ability_stats` extractor anchors on a sentinel (`01 04 00 00 80 BF`) that GSF talents do not carry, so it cannot reach this data — `gsf_talent_stats` is a separate decoder.
+
+One row per record. `(talent_game_id, label, rank)` is the primary key; `rank` preserves payload order so rank-progression talents (e.g. `engine_power_regen.upgrade` emitting +4% / +8% / +12% as three records of the same stat) and per-effect duplicates remain distinguishable.
+
+Coverage: 250/350 talents (71%). The remaining ~100 are flag-only effects whose values live on the parent ability or in script hooks.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `talent_game_id` | TEXT PK | Links to `objects.game_id`. |
+| `label` | TEXT PK | Plain-English stat name from `gsf_stat_dictionary.toml` (e.g. `cooldown_delta_seconds`, `firing_arc_degrees`, `tracking_penalty_reduction_percent`). For unknown stat IDs the label is synthesised as `unknown_0x<id>` so the row is still queryable. |
+| `rank` | INTEGER PK | 0-based payload-order index for this `(talent_game_id, label)` pair. Most rows are `rank = 0`; rank progressions emit 0, 1, 2 in payload order. |
+| `unit` | TEXT | Plain unit token: `seconds`, `percent`, `degrees`, `meters`, etc. Empty string for dimensionless / unknown. |
+| `value` | REAL | Decoded f32 LE value. |
+| `confidence` | TEXT | `verified` (anchor verified against in-game behavior), `guess` (cross-referenced but unconfirmed), or `unknown` (synthesised label). Filter to `confidence = 'verified'` for trusted-only data. |
+| `stat_id` | INTEGER | Raw u8 stat ID (kept for forensics). High-confidence mappings: `0x40` cooldown delta seconds, `0x41` duration extension seconds, `0x47` engine power pool %, `0x48` turning rate %, `0x49` blaster damage %, `0x4b` damage to shields %, `0x4f` tracking penalty reduction %, `0x5c` lock-on time reduction %, `0x5f` firing arc degrees, `0x62` ammo / magazine capacity %, `0x68` sensor radius (~250m units), `0x69` critical hit chance %. |
+
+**Index:** `idx_gsf_talent_stats_label` on `(label)` for stat-keyed pivots.
+
+### gsf_ability_stats
+
+Numeric stat values decoded from `abl.spvp.*` (GSF base ability) GOM payloads. Reuses the `[u16 LE prop_id][f32 LE value]` layout that ground abilities use, but without the `01 04 00 00 80 BF` cooldown sentinel that anchors `ability_stats` and with records scattered across the payload rather than packed contiguously. The decoder walks every 6-byte window and emits any record whose `prop_id` high byte is `0x04` and whose value is finite, non-zero, and in `|v| in [0.01, 100_000]` (subnormal-ish and huge magnitudes are byte-alignment noise from GUID / hash bytes).
+
+`prop_id` semantics differ from ground abilities: for GSF, `0x0402 = cooldown seconds`; for ground, `0x0402` is a universal animation marker. The dictionary has a separate `ability_stats` section to keep them disjoint.
+
+Coverage: 112/131 GSF abilities (85%). Uncovered abilities are passive auras whose effects live on a parent activator or in script hooks.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `ability_game_id` | TEXT PK | Links to `objects.game_id`. |
+| `label` | TEXT PK | Plain-English prop name from `gsf_stat_dictionary.toml`. Verified anchors: `abl.spvp.engine.barrel_roll` → `cooldown_seconds = 30.0`, `abl.spvp.engine.power_dive` → `cooldown_seconds = 15.0`. Unknown prop IDs synthesise as `unknown_0x<id>`. |
+| `rank` | INTEGER PK | 0-based payload-order index for this `(ability_game_id, label)` pair. |
+| `unit` | TEXT | Plain unit token. |
+| `value` | REAL | Decoded f32 LE value. |
+| `confidence` | TEXT | `verified` / `guess` / `unknown`. |
+| `prop_id` | INTEGER | Raw u16 prop ID (kept for forensics). |
+
+**Index:** `idx_gsf_ability_stats_label` on `(label)` for stat-keyed pivots.
 
 ---
 
