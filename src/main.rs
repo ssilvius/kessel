@@ -709,7 +709,7 @@ fn should_extract_object(fqn: &str, unfiltered: bool) -> bool {
         // mechanics. Story-arc content lives under epp.exp.*.
         let is_encounter_or_companion = matches!(
             second,
-            "companion" | "flashpoint" | "operation" | "qtr" | "daily_area" | "exp"
+            "companion" | "flashpoint" | "operation" | "qtr" | "daily_area" | "exp" | "spvp"
         );
         if !(is_player_class || is_shared_flurry || is_encounter_or_companion) {
             return false;
