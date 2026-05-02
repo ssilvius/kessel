@@ -35,9 +35,21 @@ pub struct GameObject {
     /// Fully qualified name (e.g., "qst.class.warrior.act1.the_hunt")
     pub fqn: String,
 
-    /// Compound ID: sha256(fqn:guid)[0:16] - deterministic, collision-resistant
-    /// Used for consistent naming of all related assets (icons, etc.)
+    /// Compound ID: sha256(fqn:guid)[0:16].
+    /// Unique per object-instance per extraction. PK in the objects table; the
+    /// join key for current-extraction queries. Shifts on patch (because GUID
+    /// shifts). For cross-patch identity, use `stable_id` instead.
     pub game_id: String,
+
+    /// FQN-derived ID: sha256(fqn)[0:16].
+    /// Stable across patches; unique only post-dedup. Used for cross-version
+    /// delta joins.
+    pub stable_id: String,
+
+    /// Payload byte hash: sha256(payload_bytes)[0:16].
+    /// Not an identity. Change-detector for delta queries:
+    /// `WHERE old.payload_hash != new.payload_hash`.
+    pub payload_hash: String,
 
     /// Object kind/type (e.g., "Quest", "Ability", "Item", "Npc")
     pub kind: String,
@@ -66,7 +78,9 @@ impl GameObject {
     /// - FQN directly from the object
     /// - Kind extracted from FQN prefix
     /// - GUID extracted from header bytes (first 8 bytes as hex)
-    /// - game_id = sha256(fqn:guid)[0:16] for consistent asset naming
+    /// - game_id = sha256(fqn:guid)[0:16] -- unique per extraction; PK
+    /// - stable_id = sha256(fqn)[0:16] -- cross-patch identity
+    /// - payload_hash = sha256(payload)[0:16] -- delta detector
     /// - Payload stored as base64 in JSON for later parsing
     pub fn from_gom_with_overrides(gom: &GomObject, overrides: Option<&IconOverrides>) -> Self {
         // Extract kind from FQN prefix (e.g., "itm" from "itm.gen.lots...")
@@ -97,8 +111,13 @@ impl GameObject {
         let guid = read_header_guid(&gom.header, 0);
         let template_guid = read_header_guid(&gom.header, 16);
 
-        // Compute game_id: sha256(fqn)[0:16] - stable across patch versions
-        let game_id = crate::hash::compute_game_id(&gom.fqn);
+        // Compute identity columns:
+        //   game_id     = sha256(fqn:guid)[0:16] -- unique per extraction (PK)
+        //   stable_id   = sha256(fqn)[0:16]      -- cross-patch identity
+        //   payload_hash = sha256(payload)[0:16] -- change detector for deltas
+        let game_id = crate::hash::compute_game_id(&gom.fqn, &guid);
+        let stable_id = crate::hash::compute_stable_id(&gom.fqn);
+        let payload_hash = crate::hash::compute_payload_hash(&gom.payload);
 
         // Extract strings from payload for searchability
         let strings = gom.extract_strings();
@@ -137,6 +156,8 @@ impl GameObject {
             template_guid,
             fqn: gom.fqn.clone(),
             game_id,
+            stable_id,
+            payload_hash,
             kind,
             icon_name,
             string_id,

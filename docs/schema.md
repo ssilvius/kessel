@@ -5,14 +5,17 @@
 ```mermaid
 erDiagram
     objects {
-        TEXT guid PK
+        TEXT game_id PK
+        TEXT stable_id
+        TEXT payload_hash
+        TEXT guid
         TEXT template_guid
         TEXT fqn
-        TEXT game_id
         TEXT kind
         TEXT icon_name
         INTEGER string_id
         INTEGER for_export
+        INTEGER is_canonical
         INTEGER version
         INTEGER revision
         TEXT json
@@ -167,20 +170,34 @@ erDiagram
 
 Every game object extracted from GOM payloads. The single source of truth for all abilities, items, NPCs, quests, talents, and other types.
 
+**Three-id model** (each column has a distinct purpose; do not conflate them):
+
+| Column | Type | Formula | Property | Use |
+|---|---|---|---|---|
+| `game_id` | TEXT PK | `sha256(fqn:guid)[0:16]` | Unique per object-instance per extraction. Shifts on patch (because GUID does). | All FKs, joins, and consumer keys for the current extraction. |
+| `stable_id` | TEXT | `sha256(fqn)[0:16]` | Stable across patches; unique only post-`mark_canonical_by_fqn`. | Cross-version delta joins (`USING (stable_id)`) to find "the same object across two extractions" even when GUID has shifted. |
+| `payload_hash` | TEXT | `sha256(payload_bytes)[0:16]` | Not an identity. Tracks "did this object's data change." | Delta filter: `WHERE old.payload_hash != new.payload_hash` after joining on `stable_id`. |
+
+**Other columns:**
+
 | Column | Type | Description |
 |--------|------|-------------|
-| `guid` | TEXT PK | 16-char uppercase hex from GOM header bytes 0–7 (LE u64). Unique per object. |
+| `guid` | TEXT | 16-char uppercase hex from GOM header bytes 0–7 (LE u64). The raw content GUID from the binary. Shifts on patch — kept as a forensic / change-signal column, no longer the PK. |
 | `template_guid` | TEXT | 16-char hex from header bytes 16–23. Constant per kind (~99% of the time). |
 | `fqn` | TEXT | Fully qualified name, e.g. `abl.sith_warrior.force_charge`. Dot-separated, prefix determines kind. |
-| `game_id` | TEXT | `sha256(fqn:guid)[0:16]`. Deterministic compound ID used for icon filenames and frontend lookups. |
 | `kind` | TEXT | Object type: `Ability`, `Item`, `Npc`, `Quest`, `Talent`, `Phase`, `Codex`, `Achievement`, `Conversation`, `Encounter`, `Spawn`, `Placeable` |
 | `icon_name` | TEXT | SWTOR DDS basename (without `.dds`). Matched to icon files during extraction. NULL if no icon found. |
 | `string_id` | INTEGER | Links to `strings.id2` for localized name/description lookup. |
 | `for_export` | INTEGER | 1 = include in consumer exports, 0 = internal only. |
+| `is_canonical` | INTEGER | 1 = the chosen "best" row for this FQN; 0 = inferior variant kept for delta tooling and forensics. The same FQN can appear under multiple GUIDs in raw GOM extraction (canonical objects + stub references). `mark_canonical_by_fqn` picks one row per FQN by quality heuristic (non-NULL string_id, then non-NULL icon_name, then larger json, then guid ASC) and demotes the rest. **Default consumer queries should filter `WHERE is_canonical = 1`.** Inferior variants are intentionally retained — earlier kessel versions DELETE'd them, which lost data delta tooling now needs. |
 | `json` | TEXT | Full extracted metadata as JSON. Includes `fqn`, `header_hex`, `payload_b64`, `strings`, `string_id`. |
 | `created_at` | INTEGER | Unix epoch at insert time. |
 
-**Views:** `abilities`, `items`, `npcs`, `quests`, `phases` — each filters `objects` by kind.
+**Why game_id is compound:** Neither field is unique-and-stable on its own. FQN is not unique in raw extraction (canonical + stubs share an FQN; uniqueness only emerges post-`mark_canonical_by_fqn`). GUID shifts on patch. The compound `sha256(fqn:guid)` is unique per extraction by construction (every GOM object has a unique GUID in the binary, and pairing with FQN is just additional disambiguation). For cross-patch identity, use `stable_id` — that's the column whose entire purpose is to survive a patch.
+
+**Views:** `abilities`, `items`, `npcs`, `quests`, `phases` — each filters `objects` by kind **and** `is_canonical = 1`. Consumer queries hitting raw `objects` should add the canonical filter explicitly; queries against the views already have it.
+
+**Foreign keys.** Every junction table's `*_game_id` column declares `FOREIGN KEY ... REFERENCES objects(game_id)`. SQLite enforcement is per-connection (`PRAGMA foreign_keys = ON`). kessel ships the declarations as schema documentation — turn the pragma on in your consumer connection if you want runtime enforcement.
 
 ### strings
 
@@ -619,4 +636,4 @@ Icons are stored as `{game_id}.webp` under a per-kind subdirectory. Given an obj
 
 Where `kind_slug` is the lowercase kind: `abilities`, `items`, `talents`, `npcs`, etc.
 
-`game_id` is stable across extractions as long as the object's FQN and GUID don't change. It will change if the object is replaced by a new GUID (e.g. after a major patch rewrite).
+**Icon filenames shift on patch.** `game_id` is unique per object-instance per extraction; it changes whenever the underlying GUID changes (which patches do routinely). Icon CDN syncs after every extraction must be treated as a republish, not an additive layer. If you need a stable cross-extraction identity for an object — e.g. for a frontend cache key that survives patches — use `stable_id` (`sha256(fqn)[0:16]`) instead. `game_id` is the right key for icon filenames within a single shipped spice; `stable_id` is the right key for "the same logical object across extractions."

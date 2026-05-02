@@ -411,13 +411,17 @@ fn main() -> Result<()> {
         }
     }
 
-    // First post-extraction pass: collapse any multi-GUID FQN rows down to
-    // the single best variant per FQN. accept_variant blocked most inferior
-    // variants in-stream, but stubs inserted before a later canonical row
-    // still need cleanup here.
-    let removed_dupes = db.dedup_objects_by_fqn()?;
-    if removed_dupes > 0 {
-        println!("  Deduplicated {} inferior FQN variants", removed_dupes);
+    // First post-extraction pass: pick the canonical row per FQN. Same quality
+    // heuristic as the old DELETE-based dedup, but lossless -- inferior
+    // variants stay in the table with `is_canonical = 0` so delta tooling can
+    // read them. Consumers filter `WHERE is_canonical = 1` for the canonical
+    // set.
+    let demoted = db.mark_canonical_by_fqn()?;
+    if demoted > 0 {
+        println!(
+            "  Demoted {} inferior FQN variants (is_canonical=0)",
+            demoted
+        );
     }
 
     // Second pass: populate quest tables from extracted objects
