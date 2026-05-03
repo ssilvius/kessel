@@ -548,6 +548,12 @@ fn main() -> Result<()> {
     // Thirteenth pass: decode talent→ability GUID refs from tal.* payloads
     let talent_abl_count = db.populate_talent_abilities()?;
 
+    // Fourteenth pass: class taxonomy (#94). Origins are hardcoded (no GOM
+    // object); combat styles come from class.pc.advanced.* with display
+    // names resolved through cdx.advanced_classes.*.
+    let origin_count = db.populate_origins()?;
+    let combat_style_count = db.populate_combat_styles()?;
+
     // Print summary
     let stats = db.stats()?;
     println!("\nExtraction complete!");
@@ -568,7 +574,17 @@ fn main() -> Result<()> {
         "    Disciplines: {} ({} ability slots, {} talent slots, {} talent->ability links)",
         stats.disciplines, stats.discipline_abilities, disc_tal_count, stats.talent_abilities
     );
-    let _ = (disc_count, disc_abl_count, talent_abl_count);
+    println!(
+        "    Class taxonomy: {} origins, {} combat styles",
+        stats.origins, stats.combat_styles
+    );
+    let _ = (
+        disc_count,
+        disc_abl_count,
+        talent_abl_count,
+        origin_count,
+        combat_style_count,
+    );
     println!("    Items: {}", stats.items);
     println!("    NPCs: {}", stats.npcs);
     println!("    Conquest objectives: {}", stats.conquest_objectives);
