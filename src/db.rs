@@ -117,6 +117,8 @@ pub struct Stats {
     pub disciplines: u64,
     pub discipline_abilities: u64,
     pub talent_abilities: u64,
+    pub origins: u64,
+    pub combat_styles: u64,
 }
 
 impl Database {
@@ -755,6 +757,46 @@ impl Database {
 
             CREATE INDEX IF NOT EXISTS idx_gsf_ability_stats_label
                 ON gsf_ability_stats(label);
+
+            -- Class taxonomy (#94).
+            -- Post-7.0 the system is flat: 8 origins (the legacy classes,
+            -- "story" choice in character creation), 16 combat styles (the
+            -- legacy advanced classes, "playstyle" choice). Eligibility =
+            -- matching `attack_type` (force vs tech). No join table needed.
+            --
+            -- Origins have no top-level GOM object; they live as the second
+            -- FQN segment in many other prefixes (`qst.class.<origin>.*`,
+            -- `apc.legacy.class.<origin>.*`, etc.). Rows are derived from
+            -- the canonical PLAYER_CLASSES list. `string_id` is NULL for
+            -- now; canonical origin display name source still TBD (see #94
+            -- follow-up; cdx.blurb.storytracker.origin.* is one candidate).
+            --
+            -- Combat styles ARE GOM objects at `class.pc.advanced.<style>`.
+            -- Two have internal codenames -- force_wizard = sage, specialist
+            -- = vanguard. Display strings come from `cdx.advanced_classes.<style>`,
+            -- which is on a different object; we resolve the cdx string_id
+            -- and store it on the combat_styles row directly.
+            CREATE TABLE IF NOT EXISTS origins (
+                fqn_segment    TEXT PRIMARY KEY,    -- 'sith_warrior', 'agent', etc.
+                faction        TEXT NOT NULL,      -- 'empire' | 'republic'
+                attack_type    TEXT NOT NULL,      -- 'force' | 'tech'
+                string_id      INTEGER             -- -> strings.id2 (NULL until source confirmed)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_origins_attack ON origins(attack_type);
+
+            CREATE TABLE IF NOT EXISTS combat_styles (
+                combat_style_id TEXT PRIMARY KEY,   -- game_id of class.pc.advanced.<style>
+                fqn             TEXT NOT NULL UNIQUE,
+                fqn_segment     TEXT NOT NULL,     -- internal name ('force_wizard', 'specialist', ...)
+                display_segment TEXT NOT NULL,     -- canonical name ('sage', 'vanguard', ...)
+                attack_type     TEXT NOT NULL,     -- 'force' | 'tech'
+                string_id       INTEGER,           -- -> strings.id2 from cdx.advanced_classes.<display>
+                FOREIGN KEY (combat_style_id) REFERENCES objects(game_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_combat_styles_attack ON combat_styles(attack_type);
+            CREATE INDEX IF NOT EXISTS idx_combat_styles_display ON combat_styles(display_segment);
 
             -- Extraction metadata
             CREATE TABLE IF NOT EXISTS meta (
@@ -3515,6 +3557,136 @@ impl Database {
         Ok(count)
     }
 
+    /// Populate `origins` (#94). 8 rows, hardcoded from canonical PLAYER_CLASSES.
+    /// Faction + attack_type are intrinsic to each origin and don't change with
+    /// patches. `string_id` is left NULL until the canonical name source is
+    /// confirmed (see follow-up on #94).
+    pub fn populate_origins(&self) -> Result<u64> {
+        // (fqn_segment, faction, attack_type)
+        const ORIGINS: &[(&str, &str, &str)] = &[
+            ("sith_warrior", "empire", "force"),
+            ("sith_inquisitor", "empire", "force"),
+            ("bounty_hunter", "empire", "tech"),
+            ("agent", "empire", "tech"),
+            ("jedi_knight", "republic", "force"),
+            ("jedi_consular", "republic", "force"),
+            ("trooper", "republic", "tech"),
+            ("smuggler", "republic", "tech"),
+        ];
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR IGNORE INTO origins (fqn_segment, faction, attack_type) \
+                 VALUES (?1, ?2, ?3)",
+            )?;
+            for (seg, faction, atk) in ORIGINS {
+                stmt.execute(params![seg, faction, atk])?;
+            }
+        }
+        tx.commit()?;
+        Ok(ORIGINS.len() as u64)
+    }
+
+    /// Populate `combat_styles` (#94) from `class.pc.advanced.*` GOM objects.
+    /// Resolves the localized display name via `cdx.advanced_classes.<display>`,
+    /// where `<display>` is the canonical name (matches the internal segment for
+    /// most styles, but `force_wizard` -> `jedi_sage` and `specialist` ->
+    /// `vanguard`). Some other internal names map to prefixed cdx names:
+    /// `assassin` -> `sith_assassin`, `shadow` -> `jedi_shadow`, `sorcerer` ->
+    /// `sith_sorcerer`.
+    pub fn populate_combat_styles(&self) -> Result<u64> {
+        self.flush()?;
+
+        // Internal segment -> canonical display segment used by cdx.advanced_classes.*.
+        // Default mapping is identity; this table covers only the divergent ones.
+        fn display_for(seg: &str) -> &str {
+            match seg {
+                "force_wizard" => "jedi_sage",
+                "specialist" => "vanguard",
+                "assassin" => "sith_assassin",
+                "shadow" => "jedi_shadow",
+                "sorcerer" => "sith_sorcerer",
+                other => other,
+            }
+        }
+
+        // Force-vs-tech split. Cleaner here than in the cdx pass since
+        // pre-7.0 advanced-class identity is what determines pool, not
+        // the codex name.
+        fn attack_type(seg: &str) -> &'static str {
+            match seg {
+                "assassin" | "shadow" | "sorcerer" | "force_wizard" | "juggernaut" | "guardian"
+                | "marauder" | "sentinel" => "force",
+                "powertech" | "vanguard" | "specialist" | "mercenary" | "commando"
+                | "operative" | "scoundrel" | "sniper" | "gunslinger" => "tech",
+                _ => "unknown",
+            }
+        }
+
+        // Load class.pc.advanced.* canonical rows (the 16 combat-style objects).
+        let combat_objects: Vec<(String, String)> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT game_id, fqn FROM objects \
+                 WHERE fqn LIKE 'class.pc.advanced.%' AND is_canonical = 1",
+            )?;
+            let rows: Vec<(String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        };
+
+        // Load cdx.advanced_classes.<display> -> string_id map.
+        let cdx_strings: std::collections::HashMap<String, i64> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT fqn, string_id FROM objects \
+                 WHERE fqn LIKE 'cdx.advanced_classes.%' AND is_canonical = 1 \
+                   AND string_id IS NOT NULL",
+            )?;
+            let rows: Vec<(String, i64)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows.into_iter()
+                .filter_map(|(fqn, sid)| {
+                    fqn.strip_prefix("cdx.advanced_classes.")
+                        .map(|seg| (seg.to_string(), sid))
+                })
+                .collect()
+        };
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut count = 0u64;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR IGNORE INTO combat_styles \
+                   (combat_style_id, fqn, fqn_segment, display_segment, attack_type, string_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for (game_id, fqn) in &combat_objects {
+                let Some(seg) = fqn.strip_prefix("class.pc.advanced.") else {
+                    continue;
+                };
+                let display = display_for(seg);
+                let atk = attack_type(seg);
+                let sid = cdx_strings.get(display).copied();
+                stmt.execute(params![game_id, fqn, seg, display, atk, sid])?;
+                count += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(count)
+    }
+
     pub fn stats(&self) -> Result<Stats> {
         // Ensure all pending data is flushed before counting
         self.flush()?;
@@ -3556,6 +3728,9 @@ impl Database {
             conn.query_row("SELECT COUNT(*) FROM talent_abilities", [], |row| {
                 row.get(0)
             })?;
+        let origins: u64 = conn.query_row("SELECT COUNT(*) FROM origins", [], |row| row.get(0))?;
+        let combat_styles: u64 =
+            conn.query_row("SELECT COUNT(*) FROM combat_styles", [], |row| row.get(0))?;
 
         Ok(Stats {
             quests,
@@ -3574,6 +3749,8 @@ impl Database {
             disciplines,
             discipline_abilities,
             talent_abilities,
+            origins,
+            combat_styles,
         })
     }
 
@@ -4002,6 +4179,143 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp_db_path(label: &str) -> std::path::PathBuf {
+        let pid = std::process::id();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("kessel_test_{}_{}_{}.sqlite", label, pid, nanos))
+    }
+
+    #[test]
+    fn populate_origins_inserts_eight_canonical_rows() {
+        let path = temp_db_path("origins");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+
+        let count = db.populate_origins().unwrap();
+        assert_eq!(count, 8);
+
+        let conn = db.conn.lock().unwrap();
+        let total: u64 = conn
+            .query_row("SELECT COUNT(*) FROM origins", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(total, 8);
+
+        // Faction split: 4/4 between empire and republic.
+        let empire: u64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM origins WHERE faction = 'empire'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(empire, 4);
+
+        // Attack-type split: 4/4 force vs tech, exactly the eligibility pools.
+        let force: u64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM origins WHERE attack_type = 'force'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(force, 4);
+
+        // Sith warrior must be empire+force; trooper must be republic+tech.
+        let (sw_faction, sw_atk): (String, String) = conn
+            .query_row(
+                "SELECT faction, attack_type FROM origins WHERE fqn_segment = 'sith_warrior'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(sw_faction, "empire");
+        assert_eq!(sw_atk, "force");
+
+        let (tr_faction, tr_atk): (String, String) = conn
+            .query_row(
+                "SELECT faction, attack_type FROM origins WHERE fqn_segment = 'trooper'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(tr_faction, "republic");
+        assert_eq!(tr_atk, "tech");
+
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn populate_combat_styles_resolves_codename_and_string_id() {
+        let path = temp_db_path("combat_styles");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+
+        // Seed a class.pc.advanced.* internal-codename row and the matching
+        // cdx.advanced_classes.* display row with a string_id.
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, json) \
+                 VALUES ('cs_force_wizard', 'sid1', 'ph1', 'guid1', 'class.pc.advanced.force_wizard', 'class', '{}')",
+                [],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, string_id, json) \
+                 VALUES ('cdx_sage', 'sid2', 'ph2', 'guid2', 'cdx.advanced_classes.jedi_sage', 'Codex', 351322, '{}')",
+                [],
+            ).unwrap();
+            // A tech style with identity-mapped name + cdx string.
+            conn.execute(
+                "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, json) \
+                 VALUES ('cs_powertech', 'sid3', 'ph3', 'guid3', 'class.pc.advanced.powertech', 'class', '{}')",
+                [],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, string_id, json) \
+                 VALUES ('cdx_pt', 'sid4', 'ph4', 'guid4', 'cdx.advanced_classes.powertech', 'Codex', 351335, '{}')",
+                [],
+            ).unwrap();
+        }
+
+        let count = db.populate_combat_styles().unwrap();
+        assert_eq!(count, 2);
+
+        let conn = db.conn.lock().unwrap();
+
+        // force_wizard codename resolves to display 'jedi_sage' and gets sage's string_id.
+        let (display, atk, sid): (String, String, Option<i64>) = conn
+            .query_row(
+                "SELECT display_segment, attack_type, string_id FROM combat_styles \
+                 WHERE fqn_segment = 'force_wizard'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(display, "jedi_sage");
+        assert_eq!(atk, "force");
+        assert_eq!(sid, Some(351322));
+
+        // Identity-mapped style still gets its string_id.
+        let (pt_display, pt_atk, pt_sid): (String, String, Option<i64>) = conn
+            .query_row(
+                "SELECT display_segment, attack_type, string_id FROM combat_styles \
+                 WHERE fqn_segment = 'powertech'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(pt_display, "powertech");
+        assert_eq!(pt_atk, "tech");
+        assert_eq!(pt_sid, Some(351335));
+
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn parse_spn_triple_extracts_all_three_parts() {
