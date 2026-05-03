@@ -26,10 +26,12 @@ pub struct ConversationRefCounts {
 
 /// Serialized object ready for batch insert
 struct PendingObject {
+    game_id: String,
+    stable_id: String,
+    payload_hash: String,
     guid: String,
     template_guid: String,
     fqn: String,
-    game_id: String,
     kind: String,
     icon_name: Option<String>,
     string_id: Option<u32>,
@@ -140,16 +142,40 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         conn.execute_batch(
             r#"
-            -- Raw game objects table (everything we extract)
+            -- Raw game objects table.
+            --
+            -- Identity columns:
+            --   game_id     PK   = sha256(fqn:guid)[0:16]. Unique per
+            --                      object-instance per extraction. Every join
+            --                      and FK in this DB targets this column.
+            --                      Shifts on patch (because guid does); the
+            --                      PK is the change-signal column by design.
+            --   stable_id        = sha256(fqn)[0:16]. Stable across patches;
+            --                      unique only post-`mark_canonical_by_fqn`.
+            --                      Used for cross-version delta joins.
+            --   payload_hash     = sha256(payload_bytes)[0:16]. Not an
+            --                      identity. Detects "did this object's data
+            --                      change" between extractions when joined
+            --                      to stable_id.
+            --   guid             = raw 16-char content GUID from GOM header.
+            --                      Kept as a forensic / change-signal column.
+            --   is_canonical     = 1 for the row chosen by
+            --                      `mark_canonical_by_fqn`'s quality
+            --                      heuristic, 0 for inferior variants. Lossless
+            --                      replacement for the old DELETE-based dedup;
+            --                      consumers filter `WHERE is_canonical = 1`.
             CREATE TABLE IF NOT EXISTS objects (
-                guid TEXT PRIMARY KEY,
+                game_id TEXT PRIMARY KEY,
+                stable_id TEXT NOT NULL,
+                payload_hash TEXT NOT NULL,
+                guid TEXT NOT NULL,
                 template_guid TEXT NOT NULL DEFAULT '',
                 fqn TEXT NOT NULL,
-                game_id TEXT NOT NULL,
                 kind TEXT NOT NULL,
                 icon_name TEXT,
                 string_id INTEGER,
                 for_export INTEGER NOT NULL DEFAULT 1,
+                is_canonical INTEGER NOT NULL DEFAULT 1,
                 version INTEGER NOT NULL DEFAULT 0,
                 revision INTEGER NOT NULL DEFAULT 0,
                 json TEXT NOT NULL,
@@ -157,9 +183,12 @@ impl Database {
             );
 
             CREATE INDEX IF NOT EXISTS idx_objects_fqn ON objects(fqn);
-            CREATE INDEX IF NOT EXISTS idx_objects_game_id ON objects(game_id);
+            CREATE INDEX IF NOT EXISTS idx_objects_stable_id ON objects(stable_id);
+            CREATE INDEX IF NOT EXISTS idx_objects_payload_hash ON objects(payload_hash);
+            CREATE INDEX IF NOT EXISTS idx_objects_guid ON objects(guid);
             CREATE INDEX IF NOT EXISTS idx_objects_kind ON objects(kind);
             CREATE INDEX IF NOT EXISTS idx_objects_for_export ON objects(for_export);
+            CREATE INDEX IF NOT EXISTS idx_objects_is_canonical ON objects(is_canonical);
             CREATE INDEX IF NOT EXISTS idx_objects_string_id ON objects(string_id);
             CREATE INDEX IF NOT EXISTS idx_objects_icon_name ON objects(icon_name);
             CREATE INDEX IF NOT EXISTS idx_objects_template_guid ON objects(template_guid);
@@ -180,11 +209,14 @@ impl Database {
             -- Typed views for convenience.
             -- Post-#23: kind='Quest' includes only qst.* objects.
             -- Mission phases (mpn.*) are kind='Phase' -- see `phases` view.
+            -- Typed views filter to canonical rows. Inferior FQN variants
+            -- live in `objects` with is_canonical = 0 for delta tooling and
+            -- forensics; the views give consumers the deduped set.
             CREATE VIEW IF NOT EXISTS quests AS
-                SELECT * FROM objects WHERE kind = 'Quest';
+                SELECT * FROM objects WHERE kind = 'Quest' AND is_canonical = 1;
 
             CREATE VIEW IF NOT EXISTS phases AS
-                SELECT * FROM objects WHERE kind = 'Phase';
+                SELECT * FROM objects WHERE kind = 'Phase' AND is_canonical = 1;
 
             -- Conquest invasion-bonus mappings: each row is a string like
             -- "Invasion Bonus - Flashpoints, Warzones" describing the bonus
@@ -217,13 +249,19 @@ impl Database {
                   AND text != '%';
 
             CREATE VIEW IF NOT EXISTS abilities AS
-                SELECT * FROM objects WHERE kind = 'Ability' OR fqn LIKE 'abl.%';
+                SELECT * FROM objects
+                WHERE (kind = 'Ability' OR fqn LIKE 'abl.%')
+                  AND is_canonical = 1;
 
             CREATE VIEW IF NOT EXISTS items AS
-                SELECT * FROM objects WHERE kind = 'Item' OR fqn LIKE 'itm.%';
+                SELECT * FROM objects
+                WHERE (kind = 'Item' OR fqn LIKE 'itm.%')
+                  AND is_canonical = 1;
 
             CREATE VIEW IF NOT EXISTS npcs AS
-                SELECT * FROM objects WHERE kind = 'Npc' OR fqn LIKE 'npc.%';
+                SELECT * FROM objects
+                WHERE (kind = 'Npc' OR fqn LIKE 'npc.%')
+                  AND is_canonical = 1;
 
             -- Quest details (classified from FQN patterns)
             CREATE TABLE IF NOT EXISTS quest_details (
@@ -428,14 +466,15 @@ impl Database {
                 PRIMARY KEY (fqn, variable)
             );
 
-            -- Quest chain links (built from GUID refs and prereq graph)
-            -- Uses game_id (sha256(fqn:guid)[0:16]) not FQN, since FQN is
-            -- not unique in the objects table (guid is the true PK)
+            -- Quest chain links (built from GUID refs and prereq graph).
+            -- Both endpoints are objects.game_id values (sha256(fqn:guid)[0:16]).
             CREATE TABLE IF NOT EXISTS quest_chain (
                 source_game_id TEXT NOT NULL,
                 target_game_id TEXT NOT NULL,
                 link_type TEXT NOT NULL,
-                PRIMARY KEY (source_game_id, target_game_id)
+                PRIMARY KEY (source_game_id, target_game_id),
+                FOREIGN KEY (source_game_id) REFERENCES objects(game_id),
+                FOREIGN KEY (target_game_id) REFERENCES objects(game_id)
             );
 
             -- Missions: unified mission identities from two sources.
@@ -532,6 +571,7 @@ impl Database {
                 FROM objects o
                 JOIN strings s ON s.id2 = o.string_id
                 WHERE o.kind = 'Quest'
+                  AND o.is_canonical = 1
                   AND s.id1 BETWEEN 200 AND 600
                   AND s.id1 = (
                       SELECT MIN(s2.id1) FROM strings s2
@@ -554,7 +594,8 @@ impl Database {
                         instr(o.fqn, '.bonus.') - 5
                     ) AS parent_quest_fqn_guess
                 FROM objects o
-                WHERE o.fqn LIKE 'mpn.%.bonus.%';
+                WHERE o.fqn LIKE 'mpn.%.bonus.%'
+                  AND o.is_canonical = 1;
 
             -- Disciplines: one row per (class, discipline) pair derived from
             -- abl.{class}.skill.{discipline}.* FQN patterns.
@@ -578,7 +619,8 @@ impl Database {
                 ability_fqn            TEXT NOT NULL,
                 tier_level             INTEGER,
                 slot_type              TEXT NOT NULL,
-                PRIMARY KEY (discipline_fqn_prefix, ability_game_id)
+                PRIMARY KEY (discipline_fqn_prefix, ability_game_id),
+                FOREIGN KEY (ability_game_id) REFERENCES objects(game_id)
             );
 
             CREATE INDEX IF NOT EXISTS idx_discipline_abilities_disc ON discipline_abilities(discipline_fqn_prefix);
@@ -612,7 +654,8 @@ impl Database {
                 talent_game_id  TEXT PRIMARY KEY,
                 resource_pool   TEXT,    -- force | rage | focus | heat | ammo | energy | gsf | NULL
                 tier            TEXT,    -- FQN last segment
-                script_hook     TEXT     -- payload tail string, NULL if none
+                script_hook     TEXT,    -- payload tail string, NULL if none
+                FOREIGN KEY (talent_game_id) REFERENCES objects(game_id)
             );
 
             CREATE INDEX IF NOT EXISTS idx_talent_details_pool ON talent_details(resource_pool);
@@ -637,7 +680,8 @@ impl Database {
                 hard_cast_time      REAL,    -- 0x041a, alternate cast prop
                 force_cost          INTEGER, -- 0x0403, Force-pool cost (sorcerer/sage)
                 resource_cost       INTEGER, -- 0x041e, heat/energy/ammo cost (tech)
-                raw_props           TEXT     -- JSON {hex_id: f32} for all in-block 0x04xx records
+                raw_props           TEXT,    -- JSON {hex_id: f32} for all in-block 0x04xx records
+                FOREIGN KEY (ability_game_id) REFERENCES objects(game_id)
             );
 
             -- GSF talent stats decoded from tal.spvp.* GOM payloads (#80).
@@ -659,7 +703,8 @@ impl Database {
                 value           REAL NOT NULL,
                 confidence      TEXT NOT NULL,
                 stat_id         INTEGER NOT NULL,  -- raw byte for forensics
-                PRIMARY KEY (talent_game_id, label, rank)
+                PRIMARY KEY (talent_game_id, label, rank),
+                FOREIGN KEY (talent_game_id) REFERENCES objects(game_id)
             );
 
             CREATE INDEX IF NOT EXISTS idx_gsf_talent_stats_label
@@ -678,7 +723,8 @@ impl Database {
                 value           REAL NOT NULL,
                 confidence      TEXT NOT NULL,
                 prop_id         INTEGER NOT NULL,  -- raw u16 for forensics
-                PRIMARY KEY (ability_game_id, label, rank)
+                PRIMARY KEY (ability_game_id, label, rank),
+                FOREIGN KEY (ability_game_id) REFERENCES objects(game_id)
             );
 
             CREATE INDEX IF NOT EXISTS idx_gsf_ability_stats_label
@@ -703,10 +749,12 @@ impl Database {
 
         let json_str = serde_json::to_string(&obj.json)?;
         let pending = PendingObject {
+            game_id: obj.game_id.clone(),
+            stable_id: obj.stable_id.clone(),
+            payload_hash: obj.payload_hash.clone(),
             guid: obj.guid.clone(),
             template_guid: obj.template_guid.clone(),
             fqn: obj.fqn.clone(),
-            game_id: obj.game_id.clone(),
             kind: obj.kind.clone(),
             icon_name: obj.icon_name.clone(),
             string_id: obj.string_id,
@@ -771,12 +819,14 @@ impl Database {
         {
             let mut stmt = tx.prepare_cached(
                 r#"
-                INSERT INTO objects (guid, template_guid, fqn, game_id, kind, icon_name, string_id, for_export, version, revision, json)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-                ON CONFLICT(guid) DO UPDATE SET
+                INSERT INTO objects (game_id, stable_id, payload_hash, guid, template_guid, fqn, kind, icon_name, string_id, for_export, version, revision, json)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                ON CONFLICT(game_id) DO UPDATE SET
+                    stable_id = excluded.stable_id,
+                    payload_hash = excluded.payload_hash,
+                    guid = excluded.guid,
                     template_guid = excluded.template_guid,
                     fqn = excluded.fqn,
-                    game_id = excluded.game_id,
                     kind = excluded.kind,
                     icon_name = excluded.icon_name,
                     string_id = excluded.string_id,
@@ -790,10 +840,12 @@ impl Database {
 
             for obj in &batch {
                 stmt.execute(params![
+                    obj.game_id,
+                    obj.stable_id,
+                    obj.payload_hash,
                     obj.guid,
                     obj.template_guid,
                     obj.fqn,
-                    obj.game_id,
                     obj.kind,
                     obj.icon_name,
                     obj.string_id,
@@ -866,25 +918,38 @@ impl Database {
     /// Reads all quest objects, classifies them by FQN, and extracts embedded
     /// references (NPCs, phases, prerequisites) from the base64 payload.
     /// Must be called after all objects and strings are flushed.
-    /// Collapse multi-GUID FQN rows down to one "best" row per FQN.
+    /// Mark one "best" row per FQN as canonical; demote the rest.
     ///
     /// During extraction, the same FQN can appear under multiple GUIDs --
     /// canonical objects with full payload, plus stub references that share
     /// the FQN. The in-memory accept_variant filter blocks inferior variants
-    /// that follow a superior one, but cannot retroactively remove a stub
-    /// that was inserted before the canonical version arrived. This pass
-    /// keeps the row with the highest "extraction quality" per FQN: prefers
-    /// non-NULL string_id, then non-NULL icon_name, then larger json payload.
-    pub fn dedup_objects_by_fqn(&self) -> Result<u64> {
+    /// that follow a superior one, but cannot retroactively demote a stub
+    /// that was inserted before the canonical version arrived.
+    ///
+    /// This pass picks the highest "extraction quality" row per FQN (non-NULL
+    /// string_id, then non-NULL icon_name, then larger json payload, then
+    /// guid ASC for stable ordering), sets `is_canonical = 1` on it and
+    /// `is_canonical = 0` on the others. Nothing is deleted -- inferior
+    /// variants remain available to delta tooling and forensics.
+    ///
+    /// Consumers that previously relied on dedup-by-DELETE should filter
+    /// `WHERE is_canonical = 1` to get the same set of rows.
+    ///
+    /// Returns the count of rows demoted (`is_canonical` flipped from 1 to 0).
+    pub fn mark_canonical_by_fqn(&self) -> Result<u64> {
         self.flush()?;
         let conn = self.conn.lock().unwrap();
-        let before: u64 = conn.query_row("SELECT COUNT(*) FROM objects", [], |r| r.get(0))?;
 
-        conn.execute(
+        // Reset everyone to canonical, then demote losers. Idempotent: running
+        // twice produces the same result.
+        conn.execute("UPDATE objects SET is_canonical = 1", [])?;
+
+        let demoted = conn.execute(
             r#"
-            DELETE FROM objects WHERE rowid IN (
-                SELECT rowid FROM (
-                    SELECT rowid, ROW_NUMBER() OVER (
+            UPDATE objects SET is_canonical = 0
+            WHERE game_id IN (
+                SELECT game_id FROM (
+                    SELECT game_id, ROW_NUMBER() OVER (
                         PARTITION BY fqn
                         ORDER BY (string_id IS NOT NULL) DESC,
                                  (icon_name IS NOT NULL) DESC,
@@ -897,8 +962,7 @@ impl Database {
             [],
         )?;
 
-        let after: u64 = conn.query_row("SELECT COUNT(*) FROM objects", [], |r| r.get(0))?;
-        Ok(before - after)
+        Ok(demoted as u64)
     }
 
     pub fn populate_quest_tables(&self) -> Result<u64> {
@@ -922,7 +986,7 @@ impl Database {
             }
 
             let mut stmt =
-                conn.prepare("SELECT fqn, string_id, json FROM objects WHERE kind = 'Quest'")?;
+                conn.prepare("SELECT fqn, string_id, json FROM objects WHERE kind = 'Quest' AND is_canonical = 1")?;
             let rows: Vec<(String, Option<u32>, String)> = stmt
                 .query_map([], |row| {
                     Ok((
@@ -1009,7 +1073,8 @@ impl Database {
 
         let rows: Vec<String> = {
             let conn = self.conn.lock().unwrap();
-            let mut stmt = conn.prepare("SELECT fqn FROM objects WHERE kind = 'Item'")?;
+            let mut stmt =
+                conn.prepare("SELECT fqn FROM objects WHERE kind = 'Item' AND is_canonical = 1")?;
             let collected: Vec<String> = stmt
                 .query_map([], |row| row.get::<_, String>(0))?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -1062,8 +1127,9 @@ impl Database {
         let mut guid_to_game_id: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
         {
-            let mut stmt =
-                conn.prepare("SELECT guid, game_id FROM objects WHERE fqn LIKE 'qst.%'")?;
+            let mut stmt = conn.prepare(
+                "SELECT guid, game_id FROM objects WHERE fqn LIKE 'qst.%' AND is_canonical = 1",
+            )?;
             let rows = stmt.query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?;
@@ -1075,7 +1141,7 @@ impl Database {
         let payloads = {
             let mut stmt = conn.prepare(
                 "SELECT guid, game_id, json_extract(json, '$.payload_b64') \
-                 FROM objects WHERE fqn LIKE 'qst.%'",
+                 FROM objects WHERE fqn LIKE 'qst.%' AND is_canonical = 1",
             )?;
             let rows: Vec<(String, String, String)> = stmt
                 .query_map([], |row| {
@@ -1165,8 +1231,8 @@ impl Database {
                  ON qcb.quest_fqn = rb.quest_fqn \
                  AND qcb.cluster_kind = qca.cluster_kind \
                  AND qcb.cluster_id = qca.cluster_id \
-             JOIN objects oa ON oa.fqn = ra.quest_fqn AND oa.kind='Quest' \
-             JOIN objects ob ON ob.fqn = rb.quest_fqn AND ob.kind='Quest' \
+             JOIN objects oa ON oa.fqn = ra.quest_fqn AND oa.kind='Quest' AND oa.is_canonical=1 \
+             JOIN objects ob ON ob.fqn = rb.quest_fqn AND ob.kind='Quest' AND ob.is_canonical=1 \
              WHERE ra.quest_fqn < rb.quest_fqn",
             [],
         )? as u64;
@@ -1215,7 +1281,7 @@ impl Database {
         let schem_payloads: HashMap<String, String> = {
             let mut stmt = conn.prepare(
                 "SELECT fqn, json_extract(json, '$.payload_b64') \
-                 FROM objects WHERE kind = 'schem'",
+                 FROM objects WHERE kind = 'schem' AND is_canonical = 1",
             )?;
             let collected: HashMap<String, String> = stmt
                 .query_map([], |row| {
@@ -1231,7 +1297,7 @@ impl Database {
         // would otherwise run REPLACE() against every row pair.
         let itm_to_schem: Vec<(String, String)> = {
             let mut stmt = conn.prepare(
-                "SELECT fqn FROM objects WHERE fqn LIKE 'itm.schem.%' AND kind = 'Item'",
+                "SELECT fqn FROM objects WHERE fqn LIKE 'itm.schem.%' AND kind = 'Item' AND is_canonical = 1",
             )?;
             let collected: Vec<(String, String)> = stmt
                 .query_map([], |row| row.get::<_, String>(0))?
@@ -1338,7 +1404,7 @@ impl Database {
         let payloads: Vec<(String, String, String)> = {
             let mut stmt = conn.prepare(
                 "SELECT game_id, fqn, json_extract(json, '$.payload_b64') \
-                 FROM objects WHERE fqn LIKE 'abl.%'",
+                 FROM objects WHERE fqn LIKE 'abl.%' AND is_canonical = 1",
             )?;
             let rows: Vec<(String, String, String)> = stmt
                 .query_map([], |row| {
@@ -1410,7 +1476,7 @@ impl Database {
         let payloads: Vec<(String, String, Option<String>)> = {
             let mut stmt = conn.prepare(
                 "SELECT game_id, fqn, json_extract(json, '$.payload_b64') \
-                 FROM objects WHERE fqn LIKE 'tal.%'",
+                 FROM objects WHERE fqn LIKE 'tal.%' AND is_canonical = 1",
             )?;
             let rows: Vec<(String, String, Option<String>)> = stmt
                 .query_map([], |row| {
@@ -1472,7 +1538,7 @@ impl Database {
         let payloads: Vec<(String, Option<String>)> = {
             let mut stmt = conn.prepare(
                 "SELECT game_id, json_extract(json, '$.payload_b64') \
-                 FROM objects WHERE fqn LIKE 'tal.spvp.%'",
+                 FROM objects WHERE fqn LIKE 'tal.spvp.%' AND is_canonical = 1",
             )?;
             let rows: Vec<(String, Option<String>)> = stmt
                 .query_map([], |row| {
@@ -1547,7 +1613,7 @@ impl Database {
         let payloads: Vec<(String, Option<String>)> = {
             let mut stmt = conn.prepare(
                 "SELECT game_id, json_extract(json, '$.payload_b64') \
-                 FROM objects WHERE fqn LIKE 'abl.spvp.%'",
+                 FROM objects WHERE fqn LIKE 'abl.spvp.%' AND is_canonical = 1",
             )?;
             let rows: Vec<(String, Option<String>)> = stmt
                 .query_map([], |row| {
@@ -1851,7 +1917,9 @@ impl Database {
         use std::collections::HashMap;
 
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT fqn, game_id FROM objects WHERE kind = 'Quest'")?;
+        let mut stmt = conn.prepare(
+            "SELECT fqn, game_id FROM objects WHERE kind = 'Quest' AND is_canonical = 1",
+        )?;
         let rows: Vec<(String, String)> = stmt
             .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -1950,7 +2018,8 @@ impl Database {
     /// "open_world" rather than a real planet name.)
     pub fn populate_quest_clusters(&self) -> Result<u64> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT fqn FROM objects WHERE kind = 'Quest'")?;
+        let mut stmt =
+            conn.prepare("SELECT fqn FROM objects WHERE kind = 'Quest' AND is_canonical = 1")?;
         let quest_fqns: Vec<String> = stmt
             .query_map([], |row| row.get::<_, String>(0))?
             .filter_map(|r| r.ok())
@@ -1990,7 +2059,7 @@ impl Database {
             std::collections::HashMap::new();
         {
             let mut stmt = conn.prepare(
-                "SELECT fqn, game_id FROM objects WHERE fqn LIKE 'qst.location.%.class.%.intro'",
+                "SELECT fqn, game_id FROM objects WHERE fqn LIKE 'qst.location.%.class.%.intro' AND is_canonical = 1",
             )?;
             let rows = stmt.query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -2006,7 +2075,8 @@ impl Database {
                 "SELECT fqn, game_id, json_extract(json, '$.strings') \
                  FROM objects \
                  WHERE fqn LIKE 'qst.location.%.class.%.leaving_%' \
-                   AND json_extract(json, '$.strings') IS NOT NULL",
+                   AND json_extract(json, '$.strings') IS NOT NULL \
+                   AND is_canonical = 1",
             )?;
             let rows = stmt.query_map([], |row| {
                 Ok((
@@ -2224,7 +2294,7 @@ fn parse_conquest_fqn(fqn: &str) -> (String, Option<String>, Option<String>) {
 /// the populate_* passes that need to walk binary payloads.
 fn fetch_fqn_payloads(conn: &Connection, kind: &str) -> Result<Vec<(String, String)>> {
     let mut stmt = conn
-        .prepare("SELECT fqn, json_extract(json, '$.payload_b64') FROM objects WHERE kind = ?1")?;
+        .prepare("SELECT fqn, json_extract(json, '$.payload_b64') FROM objects WHERE kind = ?1 AND is_canonical = 1")?;
     let rows: Vec<(String, String)> = stmt
         .query_map([kind], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -2491,14 +2561,16 @@ impl Database {
         let (qst_fqns, phase_fqns): (Vec<String>, Vec<String>) = {
             let conn = self.conn.lock().unwrap();
 
-            let mut qst_stmt = conn.prepare("SELECT fqn FROM objects WHERE kind = 'Quest'")?;
+            let mut qst_stmt =
+                conn.prepare("SELECT fqn FROM objects WHERE kind = 'Quest' AND is_canonical = 1")?;
             let qst_fqns: Vec<String> = qst_stmt
                 .query_map([], |row| row.get::<_, String>(0))?
                 .filter_map(|r| r.ok())
                 .collect();
             drop(qst_stmt);
 
-            let mut phase_stmt = conn.prepare("SELECT fqn FROM objects WHERE kind = 'Phase'")?;
+            let mut phase_stmt =
+                conn.prepare("SELECT fqn FROM objects WHERE kind = 'Phase' AND is_canonical = 1")?;
             let phase_fqns: Vec<String> = phase_stmt
                 .query_map([], |row| row.get::<_, String>(0))?
                 .filter_map(|r| r.ok())
@@ -2559,6 +2631,7 @@ impl Database {
         let ach_fqns: Vec<String> = {
             let mut stmt2 = tx.prepare(
                 "SELECT fqn FROM objects WHERE kind = 'Achievement' \
+                 AND is_canonical = 1 \
                  AND ( \
                     fqn LIKE 'ach.galactic_seasons.season_%' \
                     OR fqn LIKE 'ach.dynamic_events.%' \
@@ -2597,7 +2670,7 @@ impl Database {
         let rows: Vec<(String, Option<u32>)> = {
             let conn = self.conn.lock().unwrap();
             let mut stmt = conn.prepare(
-                "SELECT fqn, string_id FROM objects WHERE kind = 'Achievement' AND fqn LIKE 'ach.conquests.%'",
+                "SELECT fqn, string_id FROM objects WHERE kind = 'Achievement' AND fqn LIKE 'ach.conquests.%' AND is_canonical = 1",
             )?;
             let result: Vec<(String, Option<u32>)> = stmt
                 .query_map([], |row| {
@@ -2724,7 +2797,7 @@ impl Database {
 
             // qst-source: the quest's payload (contains SPN triples + enc refs).
             let mut qst_stmt = conn.prepare(
-                "SELECT fqn, json_extract(json, '$.payload_b64') FROM objects WHERE kind = 'Quest'",
+                "SELECT fqn, json_extract(json, '$.payload_b64') FROM objects WHERE kind = 'Quest' AND is_canonical = 1",
             )?;
             for (fqn, b64) in qst_stmt
                 .query_map([], |row| {
@@ -2751,7 +2824,7 @@ impl Database {
             // Pull all objects with FQNs we care about.
             let mut stmt = conn.prepare(
                 "SELECT fqn, kind, json_extract(json, '$.payload_b64') FROM objects \
-                 WHERE kind IN ('Npc', 'Spawn', 'Encounter')",
+                 WHERE kind IN ('Npc', 'Spawn', 'Encounter') AND is_canonical = 1",
             )?;
             let rows: Vec<(String, String, String)> = stmt
                 .query_map([], |row| {
@@ -2927,7 +3000,7 @@ impl Database {
         let rows: Vec<(String, String)> = {
             let conn = self.conn.lock().unwrap();
             let mut stmt =
-                conn.prepare("SELECT fqn, game_id FROM objects WHERE fqn LIKE 'abl.%.skill.%'")?;
+                conn.prepare("SELECT fqn, game_id FROM objects WHERE fqn LIKE 'abl.%.skill.%' AND is_canonical = 1")?;
             let result: Vec<(String, String)> = stmt
                 .query_map([], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -3049,8 +3122,9 @@ impl Database {
         let talents: Vec<(String, String, Vec<u8>)> = {
             use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
             let conn = self.conn.lock().unwrap();
-            let mut stmt =
-                conn.prepare("SELECT game_id, fqn, json FROM objects WHERE kind = 'Talent'")?;
+            let mut stmt = conn.prepare(
+                "SELECT game_id, fqn, json FROM objects WHERE kind = 'Talent' AND is_canonical = 1",
+            )?;
             let raw: Vec<(String, String, String)> = stmt
                 .query_map([], |row| {
                     Ok((
@@ -3203,7 +3277,7 @@ impl Database {
 
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT icon_name, game_id, kind FROM objects WHERE icon_name IS NOT NULL")?;
+            .prepare("SELECT icon_name, game_id, kind FROM objects WHERE icon_name IS NOT NULL AND is_canonical = 1")?;
 
         let mut mapping: std::collections::HashMap<String, Vec<(String, String)>> =
             std::collections::HashMap::new();
@@ -3238,8 +3312,9 @@ impl Database {
         self.flush()?;
 
         let conn = self.conn.lock().unwrap();
-        let mut stmt =
-            conn.prepare("SELECT fqn, game_id, kind FROM objects WHERE icon_name IS NULL")?;
+        let mut stmt = conn.prepare(
+            "SELECT fqn, game_id, kind FROM objects WHERE icon_name IS NULL AND is_canonical = 1",
+        )?;
 
         let mut mapping: std::collections::HashMap<String, Vec<(String, String)>> =
             std::collections::HashMap::new();
