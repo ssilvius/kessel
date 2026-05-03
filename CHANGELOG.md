@@ -7,6 +7,14 @@ Versions follow [Cargo semver](https://doc.rust-lang.org/cargo/reference/semver.
 
 ## [Unreleased]
 
+### Added
+
+- **`discipline_talents` table** -- mechanical FQN-pattern mapping of `tal.<class>.skill.<segment>.<rest>` rows to disciplines. Closes the long-standing "discipline_abilities is way smaller than huttspawn's curated tree" gap by surfacing the talent half of the discipline tree. Per-class utility talents (`tal.<class>.skill.utility.*`) are fanned out to every combat discipline of that class -- mirrors how SWTOR exposes utility picks across all combat-tree pages. No tier_level / column coordinates: SWTOR's editorial tree layout (which talent sits at what tier on screen) is not encoded in tal.* payloads or FQNs, and was never something kessel could derive without speculating. The MAPPINGS.md "Effect Block Structure / level 68 (0x44)" example was a misread -- that byte is a stat_id followed by an f32 stat value, not a character level. Verified with direct payload inspection across brutality / decimate / dark_mending. Consumers that need editorial tier coordinates layer them on top of `discipline_talents` from a separate curated source.
+
+- **Class-shared and utility ability fan-out in `discipline_abilities`** -- closes the ~451-row gap where bare `abl.<class>.<name>` rows (Saber Reflect, Force Leap, Awe, Blade Storm, Dispatch, Force Charge, Smash, Sweeping Slash, etc.) were extracted into the `objects` table but never linked to any discipline. Now each is fanned out to every combat discipline of its class with `slot_type = 'class_shared'`. Utility abilities (`abl.<class>.skill.utility.<name>`, e.g. Thwart) get the same treatment with `slot_type = 'utility'`. discipline_abilities total grew 1,133 -> 4,829 across 8 player classes x ~6 disciplines.
+
+- **`backfill_missing_string_ids` post-extraction pass** -- recovers `string_id` linkages for canonical `abl.*` rows whose GOM payload doesn't carry a string-table type marker (so neither the FQN-based nor type-marker-based extractors at construction time could find the linkage). Strategy: derive expected display name from FQN's last segment (snake_case -> Title Case), look up STB strings whose text matches at id1=0 AND that have a description at id1=1, only commit when exactly one unused candidate remains. Fixes the canonical examples `abl.smuggler.skill.saboteur.sabotage`, `abl.trooper.skill.assault_specialist.mag_bolt`, `abl.sith_inquisitor.skill.corruption.mods.tier1.fueled_corruption`. Backfills ~14 rows in a 7.8.1.c extraction; conservative by design (id1=1-description filter rules out homonym/UI-label false positives).
+
 ### Changed
 
 - **Identity model: `objects` PK is now `game_id` (compound, restored), not raw `guid`.** Three-id model:

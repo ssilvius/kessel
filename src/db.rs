@@ -626,6 +626,32 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_discipline_abilities_disc ON discipline_abilities(discipline_fqn_prefix);
             CREATE INDEX IF NOT EXISTS idx_discipline_abilities_abl  ON discipline_abilities(ability_game_id);
 
+            -- Discipline talents: every tal.* that belongs to a discipline.
+            -- Mapping is mechanical from FQN: a talent at
+            --   tal.<class>.skill.<segment>.<name>
+            -- maps to the discipline whose fqn_prefix is
+            --   abl.<class>.skill.<segment>
+            -- This includes the per-class shared utility discipline
+            -- (tal.<class>.skill.utility.*) -- consumers fold those into
+            -- combat-discipline trees editorially if they want.
+            --
+            -- No tier_level column. SWTOR's discipline-tree tier coordinates
+            -- (which talent sits at which level/column on screen) are not
+            -- encoded in tal.* payloads or FQN segments -- that's editorial
+            -- tree layout that lives outside kessel's source data. The
+            -- junction is mechanical membership only; trees rendered from
+            -- it need a separate curated layout layer.
+            CREATE TABLE IF NOT EXISTS discipline_talents (
+                discipline_fqn_prefix  TEXT NOT NULL,
+                talent_game_id         TEXT NOT NULL,
+                talent_fqn             TEXT NOT NULL,
+                PRIMARY KEY (discipline_fqn_prefix, talent_game_id),
+                FOREIGN KEY (talent_game_id) REFERENCES objects(game_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_discipline_talents_disc ON discipline_talents(discipline_fqn_prefix);
+            CREATE INDEX IF NOT EXISTS idx_discipline_talents_tal  ON discipline_talents(talent_game_id);
+
             -- Talent → ability links: GUID refs decoded from tal.* payloads.
             -- 37% of talents reference 1-3 abilities via CC 17E2840B + CF GUID pattern.
             CREATE TABLE IF NOT EXISTS talent_abilities (
@@ -963,6 +989,104 @@ impl Database {
         )?;
 
         Ok(demoted as u64)
+    }
+
+    /// Backfill `objects.string_id` for canonical `abl.*` rows whose payload
+    /// did not carry a CE/string-table marker (so neither
+    /// `extract_string_id_via_fqn_with` nor `extract_string_id_via_type_marker`
+    /// could recover the linkage at extraction time).
+    ///
+    /// Strategy: the ability's display name is recoverable from the FQN's
+    /// last segment (snake_case -> Title Case). For each candidate row, look
+    /// up STB strings whose text matches that name at id1=0 AND that have a
+    /// description at id1=1 (real abilities have both; UI labels usually
+    /// don't). Only commit when exactly one match remains and the candidate
+    /// id2 is not already linked to another canonical object.
+    ///
+    /// Recovers a small set of discipline-pick abilities like
+    /// `abl.smuggler.skill.saboteur.sabotage` whose GOM payload encodes
+    /// effect references but omits the string-table type marker. Without
+    /// this pass these rows ship with NULL string_id and cannot be joined
+    /// to display-name strings via the standard `id1 = 0` pattern.
+    ///
+    /// Returns count of rows updated.
+    pub fn backfill_missing_string_ids(&self) -> Result<u64> {
+        self.flush()?;
+        let conn = self.conn.lock().unwrap();
+
+        // Gather candidate rows: canonical abl.* abilities with NULL
+        // string_id. Only abl.* — talents and other kinds use different
+        // string-linking patterns and should not be heuristically matched.
+        let candidates: Vec<(String, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT game_id, fqn FROM objects \
+                 WHERE kind = 'Ability' AND fqn LIKE 'abl.%' \
+                   AND is_canonical = 1 AND string_id IS NULL",
+            )?;
+            let result: Vec<(String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            result
+        };
+
+        if candidates.is_empty() {
+            return Ok(0);
+        }
+
+        // Already-linked string_ids -- never reuse one across abilities;
+        // a duplicate link would be a false positive on a homonym.
+        let used: std::collections::HashSet<u32> = {
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT string_id FROM objects \
+                 WHERE string_id IS NOT NULL AND is_canonical = 1",
+            )?;
+            let result: std::collections::HashSet<u32> = stmt
+                .query_map([], |row| row.get::<_, u32>(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+            result
+        };
+
+        // Lookup by display name -- prepared once, executed per candidate.
+        // Restrict to id2's that have BOTH a name (id1=0) AND a description
+        // (id1=1). Real ability strings always have both; UI-label-only
+        // entries don't, which filters out homonym noise.
+        let mut find_stmt = conn.prepare(
+            "SELECT s.id2 FROM strings s \
+             WHERE s.text = ?1 AND s.locale = 'en-us' AND s.id1 = 0 \
+               AND EXISTS ( \
+                 SELECT 1 FROM strings d \
+                 WHERE d.id2 = s.id2 AND d.id1 = 1 AND d.locale = 'en-us' \
+               )",
+        )?;
+
+        let mut update_stmt =
+            conn.prepare("UPDATE objects SET string_id = ?1 WHERE game_id = ?2")?;
+
+        let mut updated = 0u64;
+        for (game_id, fqn) in &candidates {
+            let last_segment = match fqn.rsplit('.').next() {
+                Some(s) if !s.is_empty() => s,
+                _ => continue,
+            };
+            let expected_name = title_case_from_snake(last_segment);
+
+            let matches: Vec<u32> = find_stmt
+                .query_map([&expected_name], |row| row.get::<_, u32>(0))?
+                .filter_map(|r| r.ok())
+                .filter(|id| !used.contains(id))
+                .collect();
+
+            if matches.len() == 1 {
+                update_stmt.execute(params![matches[0], game_id])?;
+                updated += 1;
+            }
+        }
+
+        Ok(updated)
     }
 
     pub fn populate_quest_tables(&self) -> Result<u64> {
@@ -2994,13 +3118,17 @@ impl Database {
     ///   abl.{class}.skill.{discipline}.mods.special.{name} -> special
     ///   abl.{class}.skill.utility.{name}                   -> utility (shared)
     ///   abl.{class}.skill.mods.tier1.{name}                -> shared mod
+    ///   abl.{class}.{name}                                 -> CLASS-SHARED, fanned out to every discipline of {class}
+    ///                                                        (e.g. abl.jedi_knight.saber_reflect, abl.jedi_knight.force_leap)
     pub fn populate_disciplines(&self) -> Result<(u64, u64)> {
         self.flush()?;
 
         let rows: Vec<(String, String)> = {
             let conn = self.conn.lock().unwrap();
-            let mut stmt =
-                conn.prepare("SELECT fqn, game_id FROM objects WHERE fqn LIKE 'abl.%.skill.%' AND is_canonical = 1")?;
+            let mut stmt = conn.prepare(
+                "SELECT fqn, game_id FROM objects \
+                 WHERE fqn LIKE 'abl.%' AND kind = 'Ability' AND is_canonical = 1",
+            )?;
             let result: Vec<(String, String)> = stmt
                 .query_map([], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -3010,14 +3138,52 @@ impl Database {
             result
         };
 
+        // Player classes that own a discipline tree. Other `abl.<X>.<name>`
+        // FQNs (companion, racials, legacy, location, customer_service, ...)
+        // are not class-shared player abilities; we ignore them for the
+        // discipline tree.
+        const PLAYER_CLASSES: &[&str] = &[
+            "agent",
+            "bounty_hunter",
+            "jedi_consular",
+            "jedi_knight",
+            "sith_inquisitor",
+            "sith_warrior",
+            "smuggler",
+            "trooper",
+        ];
+
         let mut disc_set: std::collections::HashSet<(String, String, String)> =
             std::collections::HashSet::new();
         let mut abl_rows: Vec<(String, String, String, Option<u8>, String)> = Vec::new();
 
+        // Class-shared abilities: abl.<class>.<name> with no skill segment.
+        // We collect them in pass 1 and fan them out to every discipline of
+        // their class in pass 2 (after disc_set is fully populated by the
+        // discipline-specific rows).
+        let mut class_shared: Vec<(String, String, String)> = Vec::new(); // (class_code, ability_fqn, ability_game_id)
+                                                                          // Utility abilities (abl.<class>.skill.utility.<name>): also fanned
+                                                                          // out to every combat discipline of their class. Mirrors v1's
+                                                                          // discipline_tree_entries shape -- e.g. Thwart at the utility row
+                                                                          // is also visible from the Defense Guardian tree.
+        let mut utility_shared: Vec<(String, String, String)> = Vec::new();
+
         for (fqn, game_id) in &rows {
-            // abl.{class}.skill.{rest}
             let parts: Vec<&str> = fqn.split('.').collect();
-            if parts.len() < 5 {
+
+            // abl.<class>.<name>: 3-segment class-shared ability.
+            // Saber Reflect, Force Leap, Awe, Blade Storm, Dispatch, etc.
+            // ~50-60 per player class. They are available to every discipline
+            // of that class -- fanned out below.
+            if parts.len() == 3 {
+                let class_code = parts[1];
+                if PLAYER_CLASSES.contains(&class_code) {
+                    class_shared.push((class_code.to_string(), fqn.clone(), game_id.clone()));
+                }
+                continue;
+            }
+
+            if parts.len() < 5 || parts[2] != "skill" {
                 continue;
             }
             let class_code = parts[1];
@@ -3026,12 +3192,15 @@ impl Database {
             let slot_type: &str;
             let tier_level: Option<u8>;
 
-            // abl.{class}.skill.utility.{name} -> utility, no discipline
+            // abl.{class}.skill.utility.{name} -> utility row + fan-out
             if parts[3] == "utility" {
                 discipline_name = "utility";
                 fqn_prefix = format!("abl.{}.skill.utility", class_code);
                 slot_type = "utility";
                 tier_level = None;
+                if PLAYER_CLASSES.contains(&class_code) {
+                    utility_shared.push((class_code.to_string(), fqn.clone(), game_id.clone()));
+                }
             } else if parts[3] == "mods" {
                 // abl.{class}.skill.mods.tierN.{name} -> shared mod
                 discipline_name = "shared";
@@ -3082,6 +3251,48 @@ impl Database {
             ));
         }
 
+        // Pass 2: fan out class-shared abilities to every combat discipline
+        // of their class. Skip the per-class "utility" and "shared" rows --
+        // those are aggregation buckets, not real combat trees, and would
+        // produce duplicate edges if we included them.
+        let mut disciplines_by_class: std::collections::HashMap<&str, Vec<String>> =
+            std::collections::HashMap::new();
+        for (class_code, discipline_name, fqn_prefix) in &disc_set {
+            if discipline_name == "utility" || discipline_name == "shared" {
+                continue;
+            }
+            disciplines_by_class
+                .entry(class_code.as_str())
+                .or_default()
+                .push(fqn_prefix.clone());
+        }
+        for (class_code, ability_fqn, game_id) in &class_shared {
+            if let Some(prefixes) = disciplines_by_class.get(class_code.as_str()) {
+                for disc_prefix in prefixes {
+                    abl_rows.push((
+                        disc_prefix.clone(),
+                        game_id.clone(),
+                        ability_fqn.clone(),
+                        None,
+                        "class_shared".to_string(),
+                    ));
+                }
+            }
+        }
+        for (class_code, ability_fqn, game_id) in &utility_shared {
+            if let Some(prefixes) = disciplines_by_class.get(class_code.as_str()) {
+                for disc_prefix in prefixes {
+                    abl_rows.push((
+                        disc_prefix.clone(),
+                        game_id.clone(),
+                        ability_fqn.clone(),
+                        None,
+                        "utility".to_string(),
+                    ));
+                }
+            }
+        }
+
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
 
@@ -3109,6 +3320,104 @@ impl Database {
 
         tx.commit()?;
         Ok((disc_count, abl_count))
+    }
+
+    /// Populate `discipline_talents` by FQN pattern.
+    ///
+    /// Mechanical mapping:
+    /// - `tal.<class>.skill.<discipline>.<rest>` belongs to that one
+    ///   combat discipline (`abl.<class>.skill.<discipline>`).
+    /// - `tal.<class>.skill.utility.<rest>` is a per-class SHARED utility
+    ///   talent. Fanned out: one row per combat discipline of that class,
+    ///   plus its own row under the utility discipline. This mirrors how
+    ///   SWTOR exposes utility talents in the discipline UI -- a
+    ///   utility-talent pick is visible on every combat-tree page for that
+    ///   class.
+    ///
+    /// No tier_level / column coordinates: SWTOR's editorial tree layout
+    /// (which talent sits at what tier on screen) is not encoded in tal.*
+    /// payloads or FQNs. This function only emits mechanical membership.
+    pub fn populate_discipline_talents(&self) -> Result<u64> {
+        self.flush()?;
+
+        let talents: Vec<(String, String)> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT fqn, game_id FROM objects \
+                 WHERE kind = 'Talent' AND fqn LIKE 'tal.%.skill.%' AND is_canonical = 1",
+            )?;
+            let result: Vec<(String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            result
+        };
+
+        // Combat disciplines per class, learned from the disciplines table
+        // populated by populate_disciplines (must run before this fn).
+        let disciplines_by_class: std::collections::HashMap<String, Vec<String>> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT class_code, fqn_prefix FROM disciplines \
+                 WHERE discipline_name NOT IN ('utility', 'shared')",
+            )?;
+            let mut map: std::collections::HashMap<String, Vec<String>> =
+                std::collections::HashMap::new();
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok());
+            for (class_code, fqn_prefix) in rows {
+                map.entry(class_code).or_default().push(fqn_prefix);
+            }
+            map
+        };
+
+        let mut rows: Vec<(String, String, String)> = Vec::new();
+        for (fqn, game_id) in &talents {
+            // tal.<class>.skill.<segment>.<rest>
+            let parts: Vec<&str> = fqn.split('.').collect();
+            if parts.len() < 5 || parts[2] != "skill" {
+                continue;
+            }
+            let class_code = parts[1];
+            let segment = parts[3];
+
+            // Always emit the literal-membership row.
+            let literal_prefix = format!("abl.{}.skill.{}", class_code, segment);
+            rows.push((literal_prefix, game_id.clone(), fqn.clone()));
+
+            // Utility talents: also emit a row for every combat discipline
+            // of this class. v1's curated tree lists utility talents under
+            // each combat discipline (e.g. Interloper appears in
+            // annihilation, carnage, fury for sith_warrior); this matches.
+            if segment == "utility" {
+                if let Some(combat_disciplines) = disciplines_by_class.get(class_code) {
+                    for combat_prefix in combat_disciplines {
+                        rows.push((combat_prefix.clone(), game_id.clone(), fqn.clone()));
+                    }
+                }
+            }
+        }
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut count = 0u64;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR IGNORE INTO discipline_talents \
+                 (discipline_fqn_prefix, talent_game_id, talent_fqn) VALUES (?1, ?2, ?3)",
+            )?;
+            for (disc, game_id, fqn) in &rows {
+                stmt.execute(params![disc, game_id, fqn])?;
+                count += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(count)
     }
 
     /// Populate `talent_abilities` by decoding GUID refs from `tal.*` payloads.
@@ -3406,6 +3715,23 @@ fn derive_icon_from_fqn(fqn: &str) -> Option<String> {
 
 /// Decode tier level from FQN segment like "tier2" → 23, "tier3" → 39, etc.
 /// Maps SWTOR's tier numbering to actual level requirements.
+/// Convert a snake_case FQN segment to a title-cased display name.
+/// e.g. `mag_bolt` -> `Mag Bolt`, `fueled_corruption` -> `Fueled Corruption`.
+/// Used by `backfill_missing_string_ids` to derive a candidate display name
+/// when the GOM payload lacks a string-table marker.
+fn title_case_from_snake(s: &str) -> String {
+    s.split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(c) => c.to_uppercase().chain(chars).collect::<String>(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn tier_from_segment(seg: Option<&str>) -> Option<u8> {
     match seg? {
         "tier1" => Some(15),

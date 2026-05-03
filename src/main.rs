@@ -424,6 +424,19 @@ fn main() -> Result<()> {
         );
     }
 
+    // Heuristic: backfill string_id for canonical abl.* rows whose payload
+    // didn't carry a string-table marker. Looks up STB strings by display
+    // name derived from the FQN's last segment, only commits when there's
+    // exactly one unused candidate that has both a name (id1=0) and a
+    // description (id1=1).
+    let backfilled = db.backfill_missing_string_ids()?;
+    if backfilled > 0 {
+        println!(
+            "  Backfilled {} string_id linkages by display-name match",
+            backfilled
+        );
+    }
+
     // Second pass: populate quest tables from extracted objects
     let quest_count = db.populate_quest_tables()?;
 
@@ -529,7 +542,10 @@ fn main() -> Result<()> {
     // Eleventh pass: derive disciplines and discipline→ability mappings
     let (disc_count, disc_abl_count) = db.populate_disciplines()?;
 
-    // Twelfth pass: decode talent→ability GUID refs from tal.* payloads
+    // Twelfth pass: derive discipline→talent mapping by FQN pattern
+    let disc_tal_count = db.populate_discipline_talents()?;
+
+    // Thirteenth pass: decode talent→ability GUID refs from tal.* payloads
     let talent_abl_count = db.populate_talent_abilities()?;
 
     // Print summary
@@ -549,8 +565,8 @@ fn main() -> Result<()> {
     );
     println!("    Abilities: {}", stats.abilities);
     println!(
-        "    Disciplines: {} ({} ability slots, {} talent links)",
-        stats.disciplines, stats.discipline_abilities, stats.talent_abilities
+        "    Disciplines: {} ({} ability slots, {} talent slots, {} talent->ability links)",
+        stats.disciplines, stats.discipline_abilities, disc_tal_count, stats.talent_abilities
     );
     let _ = (disc_count, disc_abl_count, talent_abl_count);
     println!("    Items: {}", stats.items);
