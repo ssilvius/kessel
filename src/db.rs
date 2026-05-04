@@ -861,28 +861,33 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_combat_styles_faction ON combat_styles(faction);
             CREATE INDEX IF NOT EXISTS idx_combat_styles_display ON combat_styles(display_segment);
 
-            -- Tactical-item mechanical-effect string resolver (#104).
-            -- The mechanical-effect text for itm.tactical.* lives at
-            -- str.abl.<locale>.<id> with no GOM object owning that string_id
-            -- anywhere in spice. The link from item to its effect-string is
-            -- not in any kessel-extracted payload (verified across all canonical
-            -- and non-canonical objects + raw .tor archives). This table
-            -- reconstructs the link via display-name match (str.itm.0.<item_stid>
-            -- text equals str.abl.0.<X> text -> wire X), tagged by resolution
-            -- method so consumers can filter on confidence.
+            -- Cross-namespace effect-text resolver (#104).
+            -- Many items carry their mechanical-effect / proc / activation
+            -- text in str.abl.<locale>.<id> with no GOM object owning that
+            -- string_id. The link from item to its abl-namespace effect
+            -- string is not in any kessel-extracted payload (verified
+            -- across canonical/non-canonical objects + raw .tor archives).
+            -- This table reconstructs the link via display-name match:
+            -- str.itm.0.<item_stid>.text equals str.abl.0.<X>.text -> wire X.
+            --
+            -- Yield by item_kind on v17 spice (display-name pass): mtx 70%,
+            -- reputation 72%, decoration 65%, consumable 62%, other 53%,
+            -- tactical 34%, gear 1%, mod 0%, schematic 0%. Gear/mod/schem
+            -- carry their description in str.itm.* directly so they don't
+            -- need this resolver.
             --
             -- resolution_method:
-            --   'display_name' -- pass 1: tactical name reused in str.abl namespace
+            --   'display_name' -- pass 1: item name reused in str.abl namespace
             --   'unresolved'   -- pass 3: no link found; effect_string_id is NULL
-            CREATE TABLE IF NOT EXISTS tactical_effect_strings (
+            CREATE TABLE IF NOT EXISTS item_effect_strings (
                 item_game_id        TEXT PRIMARY KEY,
                 effect_string_id    INTEGER,
                 resolution_method   TEXT NOT NULL,
                 FOREIGN KEY (item_game_id) REFERENCES objects(game_id)
             );
 
-            CREATE INDEX IF NOT EXISTS idx_tactical_effect_strings_method
-                ON tactical_effect_strings(resolution_method);
+            CREATE INDEX IF NOT EXISTS idx_item_effect_strings_method
+                ON item_effect_strings(resolution_method);
 
             -- Extraction metadata
             CREATE TABLE IF NOT EXISTS meta (
@@ -1364,32 +1369,40 @@ impl Database {
         Ok(count)
     }
 
-    /// Populate `tactical_effect_strings` with the mechanical-effect text
-    /// link for each `itm.tactical.*` item. Returns
+    /// Populate `item_effect_strings` with the cross-namespace mechanical-
+    /// effect / proc text link for every Item. Returns
     /// `(by_display_name, by_guid_resolution, unresolved)`.
     ///
-    /// The link from a tactical item to its effect string is not encoded
-    /// in any GOM payload kessel extracts. We rebuild it via:
+    /// Many items (tacticals, mounts, decorations, consumables, etc.) carry
+    /// their effect/activation text in `str.abl.*` with no GOM object owning
+    /// that string_id. We rebuild the link via:
     ///
-    /// - **Pass 1 (display_name):** the tactical's name string in
+    /// - **Pass 1 (display_name):** the item's name string in
     ///   `str.itm.0.<item_stid>` is matched against `str.abl.0.<X>` rows.
-    ///   When the text matches, the abl-namespace stid X is the effect
-    ///   string id (verified against Grit Teeth and similar tacticals).
-    /// - **Pass 2 (guid_resolution):** future-work. Investigation found
-    ///   that CF GUIDs in tactical payloads do not resolve to currently-
-    ///   extracted objects, so this pass is a no-op until either kessel
-    ///   widens its prefix whitelist or new GUID semantics are decoded.
-    /// - **Pass 3 (unresolved):** every remaining tactical gets a row with
+    ///   When the text matches, X is the abl-namespace effect string id.
+    ///   Verified yield on v17 spice: 34% of tacticals, 70% of mtx (mounts),
+    ///   65% of decorations, 62% of consumables, 53% of "other" misc items,
+    ///   72% of reputation trophies. Gear/mod/schematic items carry their
+    ///   description in str.itm.* directly and don't match here (~0%) --
+    ///   that's expected, not a gap.
+    /// - **Pass 2 (guid_resolution):** future-work. CF GUIDs in item
+    ///   payloads do not resolve to currently-extracted objects.
+    /// - **Pass 3 (unresolved):** every remaining item gets a row with
     ///   `effect_string_id=NULL`, `resolution_method='unresolved'`.
-    pub fn populate_tactical_effect_strings(&self) -> Result<(u64, u64, u64)> {
+    pub fn populate_item_effect_strings(&self) -> Result<(u64, u64, u64)> {
         self.flush()?;
 
         let conn = self.conn.lock().unwrap();
-        // (item_game_id, item_string_id) for every tactical.
-        let tacticals: Vec<(String, Option<i64>)> = {
+        // Run for ALL items, not just tacticals. Yield analysis showed the
+        // display-name pass works across mtx, decoration, consumable,
+        // reputation, tactical, and "other" item kinds. Gear/mod/schematic
+        // simply don't match (their description text is in str.itm.* not
+        // str.abl.*), and that's correct -- they get an 'unresolved' row
+        // which is accurate: there's no abl-namespace effect text to find.
+        let items: Vec<(String, Option<i64>)> = {
             let mut stmt = conn.prepare(
                 "SELECT game_id, string_id FROM objects \
-                 WHERE kind='Item' AND fqn LIKE 'itm.tactical.%' AND is_canonical=1",
+                 WHERE kind='Item' AND is_canonical=1",
             )?;
             let rows = stmt
                 .query_map([], |r| {
@@ -1411,7 +1424,7 @@ impl Database {
             rows
         };
 
-        // item_stid -> name text from str.itm.0.*. Looked up per tactical.
+        // item_stid -> name text from str.itm.0.*. Looked up per item.
         let itm_id_to_name: std::collections::HashMap<i64, String> = {
             let mut stmt =
                 conn.prepare("SELECT id2, text FROM strings WHERE fqn LIKE 'str.itm.0.%'")?;
@@ -1431,11 +1444,11 @@ impl Database {
         let mut unresolved = 0u64;
         {
             let mut stmt = tx.prepare_cached(
-                "INSERT OR REPLACE INTO tactical_effect_strings \
+                "INSERT OR REPLACE INTO item_effect_strings \
                    (item_game_id, effect_string_id, resolution_method) \
                  VALUES (?1, ?2, ?3)",
             )?;
-            for (game_id, item_stid) in &tacticals {
+            for (game_id, item_stid) in &items {
                 let resolved: Option<i64> = item_stid
                     .and_then(|sid| itm_name_for(&itm_id_to_name, sid))
                     .and_then(|name| abl_name_to_id.get(name).copied());
@@ -4723,8 +4736,8 @@ mod tests {
     }
 
     #[test]
-    fn populate_tactical_effect_strings_resolves_via_display_name_match() {
-        let path = temp_db_path("tactical_effect");
+    fn populate_item_effect_strings_resolves_via_display_name_match() {
+        let path = temp_db_path("item_effect");
         let db = Database::with_grammar(&path, None).unwrap();
         db.init_schema().unwrap();
 
@@ -4750,7 +4763,27 @@ mod tests {
                 [],
             )
             .unwrap();
-            // A second tactical with no abl-namespace match -- ends up unresolved.
+            // A non-tactical item with abl-namespace match -- e.g. an mtx mount whose
+            // activation text lives in str.abl. Verifies the resolver runs for ALL
+            // item kinds, not just tacticals.
+            conn.execute(
+                "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, string_id, json) \
+                 VALUES ('m1', 'sid_m', 'ph_m', 'g_m', 'itm.mtx.mount.test_speeder', 'Item', 700001, '{}')",
+                [],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO strings (fqn, locale, id1, id2, text) \
+                 VALUES ('str.itm.0.700001', 'en-us', 0, 700001, 'Test Speeder')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO strings (fqn, locale, id1, id2, text) \
+                 VALUES ('str.abl.0.700002', 'en-us', 0, 700002, 'Test Speeder')",
+                [],
+            )
+            .unwrap();
+            // An item with no abl-namespace match -- ends up unresolved.
             conn.execute(
                 "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, string_id, json) \
                  VALUES ('t2', 'sid2', 'ph2', 'g2', 'itm.tactical.test_unresolved', 'Item', 999999, '{}')",
@@ -4764,15 +4797,15 @@ mod tests {
             .unwrap();
         }
 
-        let (by_name, by_guid, unresolved) = db.populate_tactical_effect_strings().unwrap();
-        assert_eq!(by_name, 1);
+        let (by_name, by_guid, unresolved) = db.populate_item_effect_strings().unwrap();
+        assert_eq!(by_name, 2); // tactical + mtx mount
         assert_eq!(by_guid, 0);
         assert_eq!(unresolved, 1);
 
         let conn = db.conn.lock().unwrap();
         let (sid, method): (Option<i64>, String) = conn
             .query_row(
-                "SELECT effect_string_id, resolution_method FROM tactical_effect_strings WHERE item_game_id='t1'",
+                "SELECT effect_string_id, resolution_method FROM item_effect_strings WHERE item_game_id='t1'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
@@ -4780,9 +4813,20 @@ mod tests {
         assert_eq!(sid, Some(995163));
         assert_eq!(method, "display_name");
 
+        // mtx mount also resolves -- proves the resolver runs across all kinds.
+        let (msid, mmethod): (Option<i64>, String) = conn
+            .query_row(
+                "SELECT effect_string_id, resolution_method FROM item_effect_strings WHERE item_game_id='m1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(msid, Some(700002));
+        assert_eq!(mmethod, "display_name");
+
         let (sid2, method2): (Option<i64>, String) = conn
             .query_row(
-                "SELECT effect_string_id, resolution_method FROM tactical_effect_strings WHERE item_game_id='t2'",
+                "SELECT effect_string_id, resolution_method FROM item_effect_strings WHERE item_game_id='t2'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )

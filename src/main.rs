@@ -444,14 +444,16 @@ fn main() -> Result<()> {
     let item_count = db.populate_item_tables()?;
     println!("  Items classified: {}", item_count);
 
-    // Tactical-item mechanical-effect string resolver (#104). Reconstructs
-    // the link between itm.tactical.* and str.abl.<locale>.<id> via display-
-    // name match -- the link is not in any extracted GOM payload.
-    let (tactical_by_name, tactical_by_guid, tactical_unresolved) =
-        db.populate_tactical_effect_strings()?;
+    // Cross-namespace item-effect resolver (#104). Reconstructs the link
+    // between Items and the str.abl-namespace effect/proc text for ALL item
+    // kinds -- tacticals, mtx mounts, decorations, consumables, reputation
+    // trophies, etc. Gear/mod/schematic carry text in str.itm.* directly so
+    // they don't need this resolver and report 'unresolved' (correct).
+    let (item_effects_by_name, item_effects_by_guid, item_effects_unresolved) =
+        db.populate_item_effect_strings()?;
     println!(
-        "  Tactical effects: {} by_display_name, {} by_guid_resolution, {} unresolved",
-        tactical_by_name, tactical_by_guid, tactical_unresolved
+        "  Item effects: {} by_display_name, {} by_guid_resolution, {} unresolved",
+        item_effects_by_name, item_effects_by_guid, item_effects_unresolved
     );
 
     // (Quest chain population removed in #19: PR #11's 0xCF GUID-ref
