@@ -168,6 +168,34 @@ fn extract_item_level(fqn_lower: &str) -> Option<u32> {
         .and_then(|m| m.as_str().parse().ok())
 }
 
+/// Walk the full payload and return every distinct CE-marked string_id in
+/// payload order. Each `0xCE` byte is followed by 3 bytes BE encoding the
+/// stid (the canonical GOM string-table reference shape). Validated to the
+/// same range as the existing extractors (1_000..=10_000_000).
+///
+/// The first hit is typically what `objects.string_id` already captures via
+/// the FQN-proximity scan; subsequent hits are the FLAVOR description (gear),
+/// SET-BONUS name/desc, and other secondary refs depending on item kind.
+/// Tactical items often have the same stid repeated -- dedupe preserves order.
+pub fn extract_all_string_ids_from_payload(payload: &[u8]) -> Vec<u32> {
+    const MIN_STRING_ID: u32 = 1_000;
+    const MAX_STRING_ID: u32 = 10_000_000;
+    let mut seen: Vec<u32> = Vec::new();
+    let mut i = 0;
+    while i + 4 <= payload.len() {
+        if payload[i] == 0xCE {
+            let be24 = (payload[i + 1] as u32) << 16
+                | (payload[i + 2] as u32) << 8
+                | payload[i + 3] as u32;
+            if (MIN_STRING_ID..=MAX_STRING_ID).contains(&be24) && !seen.contains(&be24) {
+                seen.push(be24);
+            }
+        }
+        i += 1;
+    }
+    seen
+}
+
 fn detect_source(segments: &[&str], fqn_lower: &str) -> Option<String> {
     let seg2 = segments.get(2).copied().unwrap_or("");
     let s = match seg2 {
@@ -285,6 +313,42 @@ mod tests {
         let d = classify("itm.mod.color_crystal.att_pwr.green.artifact.basemod_03");
         assert_eq!(d.item_kind, "mod");
         assert_eq!(d.rarity.as_deref(), Some("artifact"));
+    }
+
+    #[test]
+    fn extracts_two_distinct_stids_in_payload_order() {
+        let mut payload = vec![0u8; 200];
+        // 995562 = 0x0F30EA
+        payload[50..54].copy_from_slice(&[0xCE, 0x0F, 0x30, 0xEA]);
+        // 995163 = 0x0F2F5B
+        payload[100..104].copy_from_slice(&[0xCE, 0x0F, 0x2F, 0x5B]);
+        assert_eq!(
+            extract_all_string_ids_from_payload(&payload),
+            vec![995562, 995163]
+        );
+    }
+
+    #[test]
+    fn dedupes_repeated_ce_markers_preserving_order() {
+        let mut payload = vec![0u8; 200];
+        payload[50..54].copy_from_slice(&[0xCE, 0x0F, 0x30, 0xEA]);
+        payload[150..154].copy_from_slice(&[0xCE, 0x0F, 0x30, 0xEA]);
+        assert_eq!(extract_all_string_ids_from_payload(&payload), vec![995562]);
+    }
+
+    #[test]
+    fn rejects_out_of_range_ce_stids() {
+        // stid 5 (below MIN_STRING_ID), stid 0xFFFFFF (above MAX_STRING_ID).
+        let payload = vec![0xCE, 0x00, 0x00, 0x05, 0xCE, 0xFF, 0xFF, 0xFF];
+        assert_eq!(
+            extract_all_string_ids_from_payload(&payload),
+            Vec::<u32>::new()
+        );
+    }
+
+    #[test]
+    fn empty_payload_returns_empty_vec() {
+        assert_eq!(extract_all_string_ids_from_payload(&[]), Vec::<u32>::new());
     }
 
     #[test]

@@ -284,6 +284,12 @@ impl Database {
             -- Item details (classified from FQN patterns; #59).
             -- Set name and set bonus require GOM payload parsing and are
             -- deferred to a follow-up issue.
+            -- flavor_string_id: the SECOND distinct CE-marked stid in the
+            -- itm.* payload (the first goes to objects.string_id as the
+            -- item name). For gear, this is the in-game flavor description.
+            -- Tactical items typically have only one distinct stid so this
+            -- column is NULL for them. Set-bonus and weapon-proc text
+            -- (third+ stids) are not yet surfaced -- see #105.
             CREATE TABLE IF NOT EXISTS item_details (
                 fqn TEXT PRIMARY KEY,
                 item_kind TEXT NOT NULL,
@@ -294,7 +300,8 @@ impl Database {
                 item_level INTEGER,
                 source TEXT,
                 is_schematic INTEGER NOT NULL DEFAULT 0,
-                crew_skill TEXT
+                crew_skill TEXT,
+                flavor_string_id INTEGER
             );
 
             CREATE INDEX IF NOT EXISTS idx_item_details_kind ON item_details(item_kind);
@@ -1300,12 +1307,24 @@ impl Database {
     pub fn populate_item_tables(&self) -> Result<u64> {
         self.flush()?;
 
-        let rows: Vec<String> = {
+        // Fetch fqn + payload + the primary string_id captured by the FQN-
+        // proximity scan. The walker may revisit the same stid; we use the
+        // stored string_id to identify "the first one already captured" and
+        // surface the NEXT distinct one as flavor_string_id.
+        let rows: Vec<(String, String, Option<i64>)> = {
             let conn = self.conn.lock().unwrap();
-            let mut stmt =
-                conn.prepare("SELECT fqn FROM objects WHERE kind = 'Item' AND is_canonical = 1")?;
-            let collected: Vec<String> = stmt
-                .query_map([], |row| row.get::<_, String>(0))?
+            let mut stmt = conn.prepare(
+                "SELECT fqn, json_extract(json, '$.payload_b64'), string_id \
+                 FROM objects WHERE kind = 'Item' AND is_canonical = 1",
+            )?;
+            let collected: Vec<(String, String, Option<i64>)> = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                    ))
+                })?
                 .collect::<Result<Vec<_>, _>>()?;
             collected
         };
@@ -1315,12 +1334,26 @@ impl Database {
         let mut count = 0u64;
 
         {
+            use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
             let mut stmt = tx.prepare_cached(
-                "INSERT OR REPLACE INTO item_details (fqn, item_kind, slot, weapon_type, armor_weight, rarity, item_level, source, is_schematic, crew_skill) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                "INSERT OR REPLACE INTO item_details (fqn, item_kind, slot, weapon_type, armor_weight, rarity, item_level, source, is_schematic, crew_skill, flavor_string_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             )?;
 
-            for fqn in &rows {
+            for (fqn, payload_b64, primary_stid) in &rows {
                 let d = item::classify(fqn);
+                let payload = BASE64.decode(payload_b64).unwrap_or_default();
+
+                let mut flavor_stid: Option<u32> = None;
+                if !payload.is_empty() {
+                    let stids = item::extract_all_string_ids_from_payload(&payload);
+                    // Pick the first stid that is NOT the primary -- that's
+                    // the flavor description. NULL when the payload only
+                    // carries one distinct stid (typical for tacticals).
+                    let primary_u32 = primary_stid.and_then(|v| u32::try_from(v).ok());
+                    flavor_stid = stids.into_iter().find(|s| Some(*s) != primary_u32);
+                }
+
                 stmt.execute(params![
                     d.fqn,
                     d.item_kind,
@@ -1332,6 +1365,7 @@ impl Database {
                     d.source,
                     if d.is_schematic { 1 } else { 0 },
                     d.crew_skill,
+                    flavor_stid,
                 ])?;
                 count += 1;
             }
