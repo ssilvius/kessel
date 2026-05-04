@@ -849,7 +849,12 @@ fn should_extract_object(fqn: &str, unfiltered: bool) -> bool {
                 | "ventures"
                 | "creature_default"
                 | "droid"
-                | "flurry"
+                // Removed `"flurry"` from this blocklist (was here pre-2026-05-04).
+                // Jedipedia shows player base-class abilities like Saber Strike
+                // (string_id 220604) live at abl.flurry.npc.<class>_stance_flurry --
+                // dropping all of abl.flurry.* hides those fundamentals (tracked
+                // historically by #57). The companion epp side already uses
+                // is_shared_flurry above to allow epp.flurry.melee/ranged.
                 | "generic"
         ) {
             return false;
