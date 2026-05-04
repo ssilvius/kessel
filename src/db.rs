@@ -861,6 +861,29 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_combat_styles_faction ON combat_styles(faction);
             CREATE INDEX IF NOT EXISTS idx_combat_styles_display ON combat_styles(display_segment);
 
+            -- Tactical-item mechanical-effect string resolver (#104).
+            -- The mechanical-effect text for itm.tactical.* lives at
+            -- str.abl.<locale>.<id> with no GOM object owning that string_id
+            -- anywhere in spice. The link from item to its effect-string is
+            -- not in any kessel-extracted payload (verified across all canonical
+            -- and non-canonical objects + raw .tor archives). This table
+            -- reconstructs the link via display-name match (str.itm.0.<item_stid>
+            -- text equals str.abl.0.<X> text -> wire X), tagged by resolution
+            -- method so consumers can filter on confidence.
+            --
+            -- resolution_method:
+            --   'display_name' -- pass 1: tactical name reused in str.abl namespace
+            --   'unresolved'   -- pass 3: no link found; effect_string_id is NULL
+            CREATE TABLE IF NOT EXISTS tactical_effect_strings (
+                item_game_id        TEXT PRIMARY KEY,
+                effect_string_id    INTEGER,
+                resolution_method   TEXT NOT NULL,
+                FOREIGN KEY (item_game_id) REFERENCES objects(game_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_tactical_effect_strings_method
+                ON tactical_effect_strings(resolution_method);
+
             -- Extraction metadata
             CREATE TABLE IF NOT EXISTS meta (
                 key TEXT PRIMARY KEY,
@@ -1339,6 +1362,96 @@ impl Database {
 
         tx.commit()?;
         Ok(count)
+    }
+
+    /// Populate `tactical_effect_strings` with the mechanical-effect text
+    /// link for each `itm.tactical.*` item. Returns
+    /// `(by_display_name, by_guid_resolution, unresolved)`.
+    ///
+    /// The link from a tactical item to its effect string is not encoded
+    /// in any GOM payload kessel extracts. We rebuild it via:
+    ///
+    /// - **Pass 1 (display_name):** the tactical's name string in
+    ///   `str.itm.0.<item_stid>` is matched against `str.abl.0.<X>` rows.
+    ///   When the text matches, the abl-namespace stid X is the effect
+    ///   string id (verified against Grit Teeth and similar tacticals).
+    /// - **Pass 2 (guid_resolution):** future-work. Investigation found
+    ///   that CF GUIDs in tactical payloads do not resolve to currently-
+    ///   extracted objects, so this pass is a no-op until either kessel
+    ///   widens its prefix whitelist or new GUID semantics are decoded.
+    /// - **Pass 3 (unresolved):** every remaining tactical gets a row with
+    ///   `effect_string_id=NULL`, `resolution_method='unresolved'`.
+    pub fn populate_tactical_effect_strings(&self) -> Result<(u64, u64, u64)> {
+        self.flush()?;
+
+        let conn = self.conn.lock().unwrap();
+        // (item_game_id, item_string_id) for every tactical.
+        let tacticals: Vec<(String, Option<i64>)> = {
+            let mut stmt = conn.prepare(
+                "SELECT game_id, string_id FROM objects \
+                 WHERE kind='Item' AND fqn LIKE 'itm.tactical.%' AND is_canonical=1",
+            )?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+
+        // text -> id2 map for the str.abl.0.* namespace (the abl-side names).
+        // Built once, reused per tactical lookup.
+        let abl_name_to_id: std::collections::HashMap<String, i64> = {
+            let mut stmt =
+                conn.prepare("SELECT text, id2 FROM strings WHERE fqn LIKE 'str.abl.0.%'")?;
+            let rows: std::collections::HashMap<String, i64> = stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        };
+
+        // item_stid -> name text from str.itm.0.*. Looked up per tactical.
+        let itm_id_to_name: std::collections::HashMap<i64, String> = {
+            let mut stmt =
+                conn.prepare("SELECT id2, text FROM strings WHERE fqn LIKE 'str.itm.0.%'")?;
+            let rows: std::collections::HashMap<i64, String> = stmt
+                .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        };
+
+        drop(conn);
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        let mut by_name = 0u64;
+        let by_guid = 0u64;
+        let mut unresolved = 0u64;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR REPLACE INTO tactical_effect_strings \
+                   (item_game_id, effect_string_id, resolution_method) \
+                 VALUES (?1, ?2, ?3)",
+            )?;
+            for (game_id, item_stid) in &tacticals {
+                let resolved: Option<i64> = item_stid
+                    .and_then(|sid| itm_name_for(&itm_id_to_name, sid))
+                    .and_then(|name| abl_name_to_id.get(name).copied());
+
+                let method = if resolved.is_some() {
+                    by_name += 1;
+                    "display_name"
+                } else {
+                    unresolved += 1;
+                    "unresolved"
+                };
+                stmt.execute(params![game_id, resolved, method])?;
+            }
+        }
+        tx.commit()?;
+        Ok((by_name, by_guid, unresolved))
     }
 
     /// Populate `quest_chain` by scanning every quest payload for `0xCF` type
@@ -4113,6 +4226,11 @@ fn combat_style_for(origin: &str, discipline: &str) -> Option<&'static str> {
         .map(|(_, _, cs)| *cs)
 }
 
+/// Look up an item name string by its stid in the str.itm.0.* map.
+fn itm_name_for(map: &std::collections::HashMap<i64, String>, stid: i64) -> Option<&String> {
+    map.get(&stid)
+}
+
 fn tier_from_segment(seg: Option<&str>) -> Option<u8> {
     match seg? {
         "tier1" => Some(15),
@@ -4602,6 +4720,78 @@ mod tests {
             )
             .unwrap();
         }
+    }
+
+    #[test]
+    fn populate_tactical_effect_strings_resolves_via_display_name_match() {
+        let path = temp_db_path("tactical_effect");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+
+        {
+            let conn = db.conn.lock().unwrap();
+            // Tactical item: itm.tactical.test_grit_teeth, string_id 995562.
+            conn.execute(
+                "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, string_id, json) \
+                 VALUES ('t1', 'sid1', 'ph1', 'g1', 'itm.tactical.test_grit_teeth', 'Item', 995562, '{}')",
+                [],
+            ).unwrap();
+            // str.itm.0.995562 = "Grit Teeth" -- the item's display name.
+            conn.execute(
+                "INSERT INTO strings (fqn, locale, id1, id2, text) \
+                 VALUES ('str.itm.0.995562', 'en-us', 0, 995562, 'Grit Teeth')",
+                [],
+            )
+            .unwrap();
+            // str.abl.0.995163 = "Grit Teeth" -- abl-namespace name match -> resolves to 995163.
+            conn.execute(
+                "INSERT INTO strings (fqn, locale, id1, id2, text) \
+                 VALUES ('str.abl.0.995163', 'en-us', 0, 995163, 'Grit Teeth')",
+                [],
+            )
+            .unwrap();
+            // A second tactical with no abl-namespace match -- ends up unresolved.
+            conn.execute(
+                "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, string_id, json) \
+                 VALUES ('t2', 'sid2', 'ph2', 'g2', 'itm.tactical.test_unresolved', 'Item', 999999, '{}')",
+                [],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO strings (fqn, locale, id1, id2, text) \
+                 VALUES ('str.itm.0.999999', 'en-us', 0, 999999, 'No Abl Match')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let (by_name, by_guid, unresolved) = db.populate_tactical_effect_strings().unwrap();
+        assert_eq!(by_name, 1);
+        assert_eq!(by_guid, 0);
+        assert_eq!(unresolved, 1);
+
+        let conn = db.conn.lock().unwrap();
+        let (sid, method): (Option<i64>, String) = conn
+            .query_row(
+                "SELECT effect_string_id, resolution_method FROM tactical_effect_strings WHERE item_game_id='t1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(sid, Some(995163));
+        assert_eq!(method, "display_name");
+
+        let (sid2, method2): (Option<i64>, String) = conn
+            .query_row(
+                "SELECT effect_string_id, resolution_method FROM tactical_effect_strings WHERE item_game_id='t2'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(sid2, None);
+        assert_eq!(method2, "unresolved");
+
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
