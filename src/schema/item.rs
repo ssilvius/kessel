@@ -98,7 +98,9 @@ fn detect_item_kind(segments: &[&str], is_schematic: bool) -> String {
     }
     match segments.get(1).copied().unwrap_or("") {
         "gen" | "endgame" | "eq" => "gear".to_string(),
-        "mod" => "mod".to_string(),
+        "mod" => detect_mod_subkind(segments),
+        "tactical" => "tactical".to_string(),
+        "setbonus" => "setbonus".to_string(),
         "stronghold" => "decoration".to_string(),
         "potion" => "consumable".to_string(),
         "mat" => "material".to_string(),
@@ -111,6 +113,20 @@ fn detect_item_kind(segments: &[&str], is_schematic: bool) -> String {
         "has_item" => "quest_token".to_string(),
         "test" => "test".to_string(),
         _ => "other".to_string(),
+    }
+}
+
+/// Split `itm.mod.*` into the modification subtypes a player-facing search
+/// would care about: enhancement, augment, augment_kit. Everything else under
+/// itm.mod.* (armoring, mod, hilt, barrel, modulator, support, harness,
+/// overlay, ...) keeps the umbrella "mod" kind -- they're all gear modifications
+/// installed in different slots, but the UI groups them as a single facet.
+fn detect_mod_subkind(segments: &[&str]) -> String {
+    match segments.get(2).copied().unwrap_or("") {
+        "enhancement" => "enhancement".to_string(),
+        "augment" => "augment".to_string(),
+        "augment_kit" => "augment_kit".to_string(),
+        _ => "mod".to_string(),
     }
 }
 
@@ -349,6 +365,50 @@ mod tests {
         payload[10..15].copy_from_slice(&[0x06, 0x43, 0x02, 0x02, 100]);
         payload[30..35].copy_from_slice(&[0x06, 0x43, 0x02, 0x02, 200]);
         assert_eq!(extract_item_level_from_payload(&payload), Some(100));
+    }
+
+    #[test]
+    fn classifies_tactical() {
+        let d = classify("itm.tactical.sow.juggernaut.grit_teeth");
+        assert_eq!(d.item_kind, "tactical");
+    }
+
+    #[test]
+    fn classifies_setbonus() {
+        let d = classify("itm.setbonus.sample_set.ear");
+        assert_eq!(d.item_kind, "setbonus");
+    }
+
+    #[test]
+    fn classifies_mod_enhancement_subkind() {
+        let d = classify("itm.mod.enhancement.sample_tier1.sample_name");
+        assert_eq!(d.item_kind, "enhancement");
+    }
+
+    #[test]
+    fn classifies_mod_augment_subkind() {
+        let d = classify("itm.mod.augment.sample_grade.sample_name");
+        assert_eq!(d.item_kind, "augment");
+    }
+
+    #[test]
+    fn classifies_mod_augment_kit_subkind() {
+        let d = classify("itm.mod.augment_kit.sample_grade");
+        assert_eq!(d.item_kind, "augment_kit");
+    }
+
+    #[test]
+    fn mod_other_subkinds_stay_umbrella_mod() {
+        // armoring/hilt/barrel/modulator/support/harness/overlay etc.
+        // all roll up as "mod" -- player-facing search treats them as one facet.
+        for fqn in [
+            "itm.mod.armoring.sample.tier1",
+            "itm.mod.hilt.sample.tier1",
+            "itm.mod.barrel.sample.tier1",
+            "itm.mod.modulator.sample.tier1",
+        ] {
+            assert_eq!(classify(fqn).item_kind, "mod", "fqn={fqn}");
+        }
     }
 
     #[test]
