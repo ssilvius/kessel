@@ -796,6 +796,27 @@ fn should_extract_object(fqn: &str, unfiltered: bool) -> bool {
     // Skip internal abilities
     if prefix == "abl" && parts.len() >= 2 {
         let second = parts[1];
+
+        // Allowlist `abl.itm.tactical.*`, `abl.itm.setbonus.*`, and
+        // `abl.itm.legendary.*` BEFORE the generic `abl.itm.*` blocklist.
+        // These three carry the mechanical-effect strings Jedipedia exposes
+        // on tactical / set-bonus / legendary-implant pages. The item's
+        // payload references this abl.* by GUID; the abl.* row's string_id
+        // holds the effect description text in str.abl.1.<id>. Without this
+        // allowlist the abl.itm generic blocklist below drops them and the
+        // wiring is invisible (see #111).
+        //
+        // Source-canon segment names verified against Jedipedia ability URLs:
+        //   abl.itm.tactical.<source>.<class_group>.<style_group>.<modifier_id>
+        //   abl.itm.setbonus.<source>.<class_group>.<bonus_id>_NN  (NN = tier rank)
+        //   abl.itm.legendary.<source>.<class_group>.<modifier_id>
+        if second == "itm" && parts.len() >= 3 {
+            let third = parts[2];
+            if matches!(third, "tactical" | "setbonus" | "legendary") {
+                return true;
+            }
+        }
+
         if matches!(
             second,
             "npc"
