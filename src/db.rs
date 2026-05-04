@@ -767,9 +767,10 @@ impl Database {
             -- Origins have no top-level GOM object; they live as the second
             -- FQN segment in many other prefixes (`qst.class.<origin>.*`,
             -- `apc.legacy.class.<origin>.*`, etc.). Rows are derived from
-            -- the canonical PLAYER_CLASSES list. `string_id` is NULL for
-            -- now; canonical origin display name source still TBD (see #94
-            -- follow-up; cdx.blurb.storytracker.origin.* is one candidate).
+            -- the canonical PLAYER_CLASSES list. `string_id` resolves via
+            -- `cdx.game_rules.classes.<fqn_segment>` -- a clean 8-row codex
+            -- block whose trailing FQN segment matches our origin codenames
+            -- exactly (agent, sith_inquisitor, etc.).
             --
             -- Combat styles ARE GOM objects at `class.pc.advanced.<style>`.
             -- Two have internal codenames -- force_wizard = sage, specialist
@@ -3562,6 +3563,8 @@ impl Database {
     /// patches. `string_id` is left NULL until the canonical name source is
     /// confirmed (see follow-up on #94).
     pub fn populate_origins(&self) -> Result<u64> {
+        self.flush()?;
+
         // (fqn_segment, faction, attack_type)
         const ORIGINS: &[(&str, &str, &str)] = &[
             ("sith_warrior", "empire", "force"),
@@ -3574,15 +3577,42 @@ impl Database {
             ("smuggler", "republic", "tech"),
         ];
 
+        // Resolve canonical display name via `cdx.game_rules.classes.<seg>`
+        // -- a clean sequential block of 8 codex strings whose FQN trailing
+        // segment matches our origin codenames exactly (agent, not
+        // imperial_agent; sith_inquisitor, not inquisitor). Sample row:
+        //   cdx.game_rules.classes.sith_warrior -> string_id 571462 -> "Sith Warrior".
+        let cdx_strings: std::collections::HashMap<String, i64> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT fqn, string_id FROM objects \
+                 WHERE fqn LIKE 'cdx.game_rules.classes.%' AND is_canonical = 1 \
+                   AND string_id IS NOT NULL",
+            )?;
+            let rows: Vec<(String, i64)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows.into_iter()
+                .filter_map(|(fqn, sid)| {
+                    fqn.strip_prefix("cdx.game_rules.classes.")
+                        .map(|seg| (seg.to_string(), sid))
+                })
+                .collect()
+        };
+
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         {
             let mut stmt = tx.prepare_cached(
-                "INSERT OR IGNORE INTO origins (fqn_segment, faction, attack_type) \
-                 VALUES (?1, ?2, ?3)",
+                "INSERT OR IGNORE INTO origins (fqn_segment, faction, attack_type, string_id) \
+                 VALUES (?1, ?2, ?3, ?4)",
             )?;
             for (seg, faction, atk) in ORIGINS {
-                stmt.execute(params![seg, faction, atk])?;
+                let sid = cdx_strings.get(*seg).copied();
+                stmt.execute(params![seg, faction, atk, sid])?;
             }
         }
         tx.commit()?;
@@ -4195,6 +4225,24 @@ mod tests {
         let db = Database::with_grammar(&path, None).unwrap();
         db.init_schema().unwrap();
 
+        // Seed canonical-name codex rows for two origins -- the populator
+        // should pick these up via cdx.game_rules.classes.<seg>. Other six
+        // origins have no codex row in this fixture; their string_id should
+        // remain NULL (graceful missing-source behaviour).
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, string_id, json) \
+                 VALUES ('og_sw', 'sid1', 'ph1', 'guid1', 'cdx.game_rules.classes.sith_warrior', 'Codex', 571462, '{}')",
+                [],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, string_id, json) \
+                 VALUES ('og_ag', 'sid2', 'ph2', 'guid2', 'cdx.game_rules.classes.agent', 'Codex', 571473, '{}')",
+                [],
+            ).unwrap();
+        }
+
         let count = db.populate_origins().unwrap();
         assert_eq!(count, 8);
 
@@ -4244,6 +4292,34 @@ mod tests {
             .unwrap();
         assert_eq!(tr_faction, "republic");
         assert_eq!(tr_atk, "tech");
+
+        // Seeded origins resolve string_id; unseeded origins stay NULL.
+        let sw_sid: Option<i64> = conn
+            .query_row(
+                "SELECT string_id FROM origins WHERE fqn_segment = 'sith_warrior'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(sw_sid, Some(571462));
+
+        let ag_sid: Option<i64> = conn
+            .query_row(
+                "SELECT string_id FROM origins WHERE fqn_segment = 'agent'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(ag_sid, Some(571473));
+
+        let tr_sid: Option<i64> = conn
+            .query_row(
+                "SELECT string_id FROM origins WHERE fqn_segment = 'trooper'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tr_sid, None);
 
         drop(conn);
         let _ = std::fs::remove_file(&path);
