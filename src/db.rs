@@ -1300,12 +1300,19 @@ impl Database {
     pub fn populate_item_tables(&self) -> Result<u64> {
         self.flush()?;
 
-        let rows: Vec<String> = {
+        // Fetch fqn + payload b64 for all Items. Payload is consulted only as
+        // a fallback when classify() returns None for item_level (FQN had no
+        // ilvl_NNNN segment). See item::extract_item_level_from_payload.
+        let rows: Vec<(String, String)> = {
             let conn = self.conn.lock().unwrap();
-            let mut stmt =
-                conn.prepare("SELECT fqn FROM objects WHERE kind = 'Item' AND is_canonical = 1")?;
-            let collected: Vec<String> = stmt
-                .query_map([], |row| row.get::<_, String>(0))?
+            let mut stmt = conn.prepare(
+                "SELECT fqn, json_extract(json, '$.payload_b64') \
+                 FROM objects WHERE kind = 'Item' AND is_canonical = 1",
+            )?;
+            let collected: Vec<(String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
                 .collect::<Result<Vec<_>, _>>()?;
             collected
         };
@@ -1315,12 +1322,18 @@ impl Database {
         let mut count = 0u64;
 
         {
+            use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
             let mut stmt = tx.prepare_cached(
                 "INSERT OR REPLACE INTO item_details (fqn, item_kind, slot, weapon_type, armor_weight, rarity, item_level, source, is_schematic, crew_skill) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             )?;
 
-            for fqn in &rows {
-                let d = item::classify(fqn);
+            for (fqn, payload_b64) in &rows {
+                let mut d = item::classify(fqn);
+                if d.item_level.is_none() {
+                    if let Ok(payload) = BASE64.decode(payload_b64) {
+                        d.item_level = item::extract_item_level_from_payload(&payload);
+                    }
+                }
                 stmt.execute(params![
                     d.fqn,
                     d.item_kind,

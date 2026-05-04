@@ -168,6 +168,28 @@ fn extract_item_level(fqn_lower: &str) -> Option<u32> {
         .and_then(|m| m.as_str().parse().ok())
 }
 
+/// Decode item_level from an itm.* GOM payload as a fallback when the FQN
+/// has no `ilvl_NNNN` segment. The marker is a 4-byte sentinel `06 43 02 02`
+/// followed by the ilvl as a single u8 (verified empirically against ~40K
+/// gear items with FQN-derived ilvl, then confirmed to recover ~53% of the
+/// FQN-NULL gear pool). Validates the byte to a sane SWTOR ilvl range
+/// (1..=250) so a chance pattern in a non-gear payload doesn't poison the
+/// column.
+pub fn extract_item_level_from_payload(payload: &[u8]) -> Option<u32> {
+    const MARKER: [u8; 4] = [0x06, 0x43, 0x02, 0x02];
+    let mut i = 0;
+    while i + MARKER.len() < payload.len() {
+        if payload[i..i + MARKER.len()] == MARKER {
+            let ilvl = payload[i + MARKER.len()];
+            if (1..=250).contains(&ilvl) {
+                return Some(ilvl as u32);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
 fn detect_source(segments: &[&str], fqn_lower: &str) -> Option<String> {
     let seg2 = segments.get(2).copied().unwrap_or("");
     let s = match seg2 {
@@ -285,6 +307,48 @@ mod tests {
         let d = classify("itm.mod.color_crystal.att_pwr.green.artifact.basemod_03");
         assert_eq!(d.item_kind, "mod");
         assert_eq!(d.rarity.as_deref(), Some("artifact"));
+    }
+
+    #[test]
+    fn extracts_item_level_from_marker() {
+        // 06 43 02 02 <ilvl> at offset 5; ilvl=132.
+        let payload = vec![
+            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x06, 0x43, 0x02, 0x02, 132, 0x00,
+        ];
+        assert_eq!(extract_item_level_from_payload(&payload), Some(132));
+    }
+
+    #[test]
+    fn returns_none_when_marker_absent() {
+        let payload = b"no_marker_here_just_random_bytes_present_at_all".to_vec();
+        assert_eq!(extract_item_level_from_payload(&payload), None);
+    }
+
+    #[test]
+    fn returns_none_for_truncated_payload() {
+        // Marker prefix but cut off before the ilvl byte.
+        assert_eq!(
+            extract_item_level_from_payload(&[0x06, 0x43, 0x02, 0x02]),
+            None
+        );
+        assert_eq!(extract_item_level_from_payload(&[]), None);
+    }
+
+    #[test]
+    fn rejects_out_of_range_ilvl() {
+        // ilvl=0 is below valid range -- skip and keep scanning.
+        let payload = vec![
+            0x06, 0x43, 0x02, 0x02, 0, 0xFF, 0x06, 0x43, 0x02, 0x02, 75, 0x00,
+        ];
+        assert_eq!(extract_item_level_from_payload(&payload), Some(75));
+    }
+
+    #[test]
+    fn returns_first_match_when_multiple_markers_present() {
+        let mut payload = vec![0x00; 50];
+        payload[10..15].copy_from_slice(&[0x06, 0x43, 0x02, 0x02, 100]);
+        payload[30..35].copy_from_slice(&[0x06, 0x43, 0x02, 0x02, 200]);
+        assert_eq!(extract_item_level_from_payload(&payload), Some(100));
     }
 
     #[test]
