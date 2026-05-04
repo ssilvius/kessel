@@ -790,12 +790,14 @@ impl Database {
                 fqn             TEXT NOT NULL UNIQUE,
                 fqn_segment     TEXT NOT NULL,     -- internal name ('force_wizard', 'specialist', ...)
                 display_segment TEXT NOT NULL,     -- canonical name ('sage', 'vanguard', ...)
+                faction         TEXT NOT NULL,     -- 'empire' | 'republic' (legacy adv-class faction)
                 attack_type     TEXT NOT NULL,     -- 'force' | 'tech'
                 string_id       INTEGER,           -- -> strings.id2 from cdx.advanced_classes.<display>
                 FOREIGN KEY (combat_style_id) REFERENCES objects(game_id)
             );
 
             CREATE INDEX IF NOT EXISTS idx_combat_styles_attack ON combat_styles(attack_type);
+            CREATE INDEX IF NOT EXISTS idx_combat_styles_faction ON combat_styles(faction);
             CREATE INDEX IF NOT EXISTS idx_combat_styles_display ON combat_styles(display_segment);
 
             -- Extraction metadata
@@ -3625,6 +3627,20 @@ impl Database {
             }
         }
 
+        // Legacy adv-class faction. Post-7.0 origin/style decoupling does not
+        // change which faction's silhouette/animations a style ships with --
+        // juggernauts are still empire-coded, guardians republic-coded.
+        // huttspawn nav and color tokens are strictly bipartite on this.
+        fn faction(seg: &str) -> &'static str {
+            match seg {
+                "juggernaut" | "marauder" | "assassin" | "sorcerer" | "powertech" | "mercenary"
+                | "operative" | "sniper" => "empire",
+                "guardian" | "sentinel" | "shadow" | "force_wizard" | "specialist" | "commando"
+                | "scoundrel" | "gunslinger" => "republic",
+                _ => "unknown",
+            }
+        }
+
         // Load class.pc.advanced.* canonical rows (the 16 combat-style objects).
         let combat_objects: Vec<(String, String)> = {
             let conn = self.conn.lock().unwrap();
@@ -3669,8 +3685,8 @@ impl Database {
         {
             let mut stmt = tx.prepare_cached(
                 "INSERT OR IGNORE INTO combat_styles \
-                   (combat_style_id, fqn, fqn_segment, display_segment, attack_type, string_id) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                   (combat_style_id, fqn, fqn_segment, display_segment, faction, attack_type, string_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?;
             for (game_id, fqn) in &combat_objects {
                 let Some(seg) = fqn.strip_prefix("class.pc.advanced.") else {
@@ -3678,8 +3694,9 @@ impl Database {
                 };
                 let display = display_for(seg);
                 let atk = attack_type(seg);
+                let fac = faction(seg);
                 let sid = cdx_strings.get(display).copied();
-                stmt.execute(params![game_id, fqn, seg, display, atk, sid])?;
+                stmt.execute(params![game_id, fqn, seg, display, fac, atk, sid])?;
                 count += 1;
             }
         }
@@ -4288,28 +4305,30 @@ mod tests {
         let conn = db.conn.lock().unwrap();
 
         // force_wizard codename resolves to display 'jedi_sage' and gets sage's string_id.
-        let (display, atk, sid): (String, String, Option<i64>) = conn
+        let (display, fac, atk, sid): (String, String, String, Option<i64>) = conn
             .query_row(
-                "SELECT display_segment, attack_type, string_id FROM combat_styles \
+                "SELECT display_segment, faction, attack_type, string_id FROM combat_styles \
                  WHERE fqn_segment = 'force_wizard'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .unwrap();
         assert_eq!(display, "jedi_sage");
+        assert_eq!(fac, "republic");
         assert_eq!(atk, "force");
         assert_eq!(sid, Some(351322));
 
         // Identity-mapped style still gets its string_id.
-        let (pt_display, pt_atk, pt_sid): (String, String, Option<i64>) = conn
+        let (pt_display, pt_fac, pt_atk, pt_sid): (String, String, String, Option<i64>) = conn
             .query_row(
-                "SELECT display_segment, attack_type, string_id FROM combat_styles \
+                "SELECT display_segment, faction, attack_type, string_id FROM combat_styles \
                  WHERE fqn_segment = 'powertech'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .unwrap();
         assert_eq!(pt_display, "powertech");
+        assert_eq!(pt_fac, "empire");
         assert_eq!(pt_atk, "tech");
         assert_eq!(pt_sid, Some(351335));
 
