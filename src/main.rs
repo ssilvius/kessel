@@ -444,6 +444,13 @@ fn main() -> Result<()> {
     let item_count = db.populate_item_tables()?;
     println!("  Items classified: {}", item_count);
 
+    // Item sets (#105): membership and set display name from itm.setbonus.* FQNs.
+    let (sets_count, set_members_count) = db.populate_item_sets()?;
+    println!(
+        "  Item sets: {} sets, {} members",
+        sets_count, set_members_count
+    );
+
     // (Quest chain population removed in #19: PR #11's 0xCF GUID-ref
     // hypothesis produced zero rows on real data.)
 

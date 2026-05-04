@@ -861,6 +861,41 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_combat_styles_faction ON combat_styles(faction);
             CREATE INDEX IF NOT EXISTS idx_combat_styles_display ON combat_styles(display_segment);
 
+            -- Item set membership (#105 part 1).
+            --
+            -- Set membership is encoded in the FQN itself, not in any pkg.*
+            -- mediator (the issue's original pkg.* hypothesis was disproved
+            -- by Phase 1 investigation: pkg.* contains 6 profession-trainer
+            -- packages, unrelated to gear sets). Pattern:
+            --   itm.setbonus.<source>.<class_group>.<subclass>.<set_id>.<slot>
+            -- Members sharing the leading segments through <set_id> form a set.
+            --
+            -- Set display name comes from the .armor_box (or similar lockbox)
+            -- member, whose str.itm.0.<id> string is the set's in-game name
+            -- ("Berserker's Armor Lockbox" -> the set is "Berserker's Armor").
+            -- Tier-bonus text (the 2/4/6-piece descriptions) lives in
+            -- str.abl.* namespace and requires a separate resolver pass; it's
+            -- not in this table yet -- documented follow-up.
+            CREATE TABLE IF NOT EXISTS item_sets (
+                set_fqn         TEXT PRIMARY KEY,
+                source          TEXT,
+                class_group     TEXT,
+                name_string_id  INTEGER
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_item_sets_source ON item_sets(source);
+
+            CREATE TABLE IF NOT EXISTS item_set_members (
+                item_game_id    TEXT NOT NULL,
+                set_fqn         TEXT NOT NULL,
+                slot            TEXT NOT NULL,
+                PRIMARY KEY (item_game_id, set_fqn),
+                FOREIGN KEY (item_game_id) REFERENCES objects(game_id),
+                FOREIGN KEY (set_fqn) REFERENCES item_sets(set_fqn)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_item_set_members_set ON item_set_members(set_fqn);
+
             -- Extraction metadata
             CREATE TABLE IF NOT EXISTS meta (
                 key TEXT PRIMARY KEY,
@@ -1352,6 +1387,103 @@ impl Database {
 
         tx.commit()?;
         Ok(count)
+    }
+
+    /// Populate `item_sets` and `item_set_members` from `itm.setbonus.*` FQNs.
+    /// Returns `(sets_count, members_count)`.
+    ///
+    /// Set membership is FQN-derived: the segment immediately before the
+    /// trailing slot segment identifies the set. The lockbox member of each
+    /// set (`<set_fqn>.armor_box`) carries the set's display name string_id,
+    /// which we propagate to `item_sets.name_string_id`.
+    ///
+    /// Tier-bonus text (the 2/4/6-piece descriptions) is NOT included --
+    /// those strings live in str.abl.* namespace and need a separate
+    /// resolver pass.
+    pub fn populate_item_sets(&self) -> Result<(u64, u64)> {
+        self.flush()?;
+
+        // Collect every itm.setbonus.* canonical row with its game_id +
+        // string_id. Split FQN into (set_fqn, slot, source, class_group).
+        let conn = self.conn.lock().unwrap();
+        let rows: Vec<(String, String, Option<i64>)> = {
+            let mut stmt = conn.prepare(
+                "SELECT game_id, fqn, string_id FROM objects \
+                 WHERE kind='Item' AND fqn LIKE 'itm.setbonus.%' AND is_canonical=1",
+            )?;
+            let collected: Vec<(String, String, Option<i64>)> = stmt
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, Option<i64>>(2)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            collected
+        };
+        drop(conn);
+
+        // Build (set_fqn -> name_string_id) by finding the .armor_box (or
+        // similar lockbox/box) member of each set. Falls back to None if no
+        // lockbox exists -- a few sets use a different name carrier.
+        let mut set_to_name_stid: std::collections::HashMap<String, i64> =
+            std::collections::HashMap::new();
+        for (_game_id, fqn, sid) in &rows {
+            if !fqn.ends_with(".armor_box") && !fqn.ends_with(".weapon_box") {
+                continue;
+            }
+            let set_fqn = match fqn.rsplit_once('.') {
+                Some((set, _slot)) => set.to_string(),
+                None => continue,
+            };
+            if let Some(s) = sid {
+                set_to_name_stid.insert(set_fqn, *s);
+            }
+        }
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut sets_count = 0u64;
+        let mut members_count = 0u64;
+        let mut seen_sets: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        {
+            let mut stmt_set = tx.prepare_cached(
+                "INSERT OR IGNORE INTO item_sets (set_fqn, source, class_group, name_string_id) \
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            let mut stmt_member = tx.prepare_cached(
+                "INSERT OR IGNORE INTO item_set_members (item_game_id, set_fqn, slot) \
+                 VALUES (?1, ?2, ?3)",
+            )?;
+
+            for (game_id, fqn, _sid) in &rows {
+                let parts: Vec<&str> = fqn.split('.').collect();
+                // Need: itm . setbonus . source . class_group . [optional segs] . set_id . slot
+                if parts.len() < 6 {
+                    continue;
+                }
+                let slot = *parts.last().unwrap_or(&"");
+                let set_fqn = match fqn.rsplit_once('.') {
+                    Some((set, _)) => set.to_string(),
+                    None => continue,
+                };
+                let source = parts.get(2).copied().unwrap_or("").to_string();
+                let class_group = parts.get(3).copied().unwrap_or("").to_string();
+
+                if seen_sets.insert(set_fqn.clone()) {
+                    let name_stid = set_to_name_stid.get(&set_fqn).copied();
+                    stmt_set.execute(params![set_fqn, source, class_group, name_stid])?;
+                    sets_count += 1;
+                }
+                stmt_member.execute(params![game_id, set_fqn, slot])?;
+                members_count += 1;
+            }
+        }
+
+        tx.commit()?;
+        Ok((sets_count, members_count))
     }
 
     /// Populate `quest_chain` by scanning every quest payload for `0xCF` type
@@ -4615,6 +4747,80 @@ mod tests {
             )
             .unwrap();
         }
+    }
+
+    #[test]
+    fn populate_item_sets_groups_setbonus_items_by_fqn_prefix() {
+        let path = temp_db_path("item_sets");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+
+        let set_prefix = "itm.setbonus.sow.general.offensive.berserker_rage";
+        {
+            let conn = db.conn.lock().unwrap();
+            // Three real-shape members of the same set + a lockbox carrier.
+            for (gid, slot, sid) in [
+                ("g_chest", "armor_chest", 1003315),
+                ("g_head", "armor_head", 1003318),
+                ("g_box", "armor_box", 1096865),
+            ] {
+                let fqn = format!("{}.{}", set_prefix, slot);
+                conn.execute(
+                    "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, string_id, json) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'Item', ?6, '{}')",
+                    params![gid, format!("sid_{}", gid), format!("ph_{}", gid), format!("guid_{}", gid), fqn, sid],
+                ).unwrap();
+            }
+            // A member of a DIFFERENT set -- must be assigned its own set row.
+            conn.execute(
+                "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, string_id, json) \
+                 VALUES ('g_other', 'sid_other', 'ph_other', 'guid_other', \
+                         'itm.setbonus.sow.inq_con.sorc_sage.class.dmg_aoe_01.armor_head', \
+                         'Item', 995377, '{}')",
+                [],
+            ).unwrap();
+        }
+
+        let (sets, members) = db.populate_item_sets().unwrap();
+        assert_eq!(sets, 2);
+        assert_eq!(members, 4);
+
+        let conn = db.conn.lock().unwrap();
+
+        // Berserker set carries the lockbox's string_id (1096865).
+        let name_sid: Option<i64> = conn
+            .query_row(
+                "SELECT name_string_id FROM item_sets WHERE set_fqn=?1",
+                params![set_prefix],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(name_sid, Some(1096865));
+
+        // Source + class_group derived from FQN segments.
+        let (source, cgroup): (String, String) = conn
+            .query_row(
+                "SELECT source, class_group FROM item_sets WHERE set_fqn=?1",
+                params![set_prefix],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(source, "sow");
+        assert_eq!(cgroup, "general");
+
+        // Member rows reference both the item and the set, with the slot.
+        let mut slots: Vec<String> = conn
+            .prepare("SELECT slot FROM item_set_members WHERE set_fqn=?1 ORDER BY slot")
+            .unwrap()
+            .query_map(params![set_prefix], |r| r.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        slots.sort();
+        assert_eq!(slots, vec!["armor_box", "armor_chest", "armor_head"]);
+
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
