@@ -4051,26 +4051,66 @@ fn origin_combat_styles(origin: &str) -> &'static [&'static str] {
 ///
 /// Names use SOURCE-data canon (firebug not pyrotech, combat not kinetic_combat).
 /// huttspawn ETL renames at the editorial layer per #51.
+/// 48-row table: every (origin, discipline) pair maps to exactly one combat
+/// style. Stored as a flat constant so unit tests can iterate it and assert
+/// invariants (combat-style values join `combat_styles.fqn_segment`, every
+/// combat style appears in `origin_combat_styles`, etc).
+const DISCIPLINE_COMBAT_STYLE_MAP: &[(&str, &str, &str)] = &[
+    ("sith_warrior", "annihilation", "marauder"),
+    ("sith_warrior", "carnage", "marauder"),
+    ("sith_warrior", "fury", "marauder"),
+    ("sith_warrior", "immortal", "juggernaut"),
+    ("sith_warrior", "rage", "juggernaut"),
+    ("sith_warrior", "vengeance", "juggernaut"),
+    ("sith_inquisitor", "darkness", "assassin"),
+    ("sith_inquisitor", "deception", "assassin"),
+    ("sith_inquisitor", "hatred", "assassin"),
+    ("sith_inquisitor", "corruption", "sorcerer"),
+    ("sith_inquisitor", "lightning", "sorcerer"),
+    ("sith_inquisitor", "madness", "sorcerer"),
+    ("bounty_hunter", "advanced_prototype", "powertech"),
+    ("bounty_hunter", "firebug", "powertech"),
+    ("bounty_hunter", "shield_tech", "powertech"),
+    ("bounty_hunter", "arsenal", "mercenary"),
+    ("bounty_hunter", "bodyguard", "mercenary"),
+    ("bounty_hunter", "innovative_ordnance", "mercenary"),
+    ("agent", "concealment", "operative"),
+    ("agent", "lethality", "operative"),
+    ("agent", "medic", "operative"),
+    ("agent", "engineering", "sniper"),
+    ("agent", "marksmanship", "sniper"),
+    ("agent", "virulence", "sniper"),
+    ("jedi_knight", "defense", "guardian"),
+    ("jedi_knight", "focus", "guardian"),
+    ("jedi_knight", "vigilance", "guardian"),
+    ("jedi_knight", "combat", "sentinel"),
+    ("jedi_knight", "concentration", "sentinel"),
+    ("jedi_knight", "watchman", "sentinel"),
+    ("jedi_consular", "balance", "force_wizard"),
+    ("jedi_consular", "seer", "force_wizard"),
+    ("jedi_consular", "telekinetics", "force_wizard"),
+    ("jedi_consular", "combat", "shadow"),
+    ("jedi_consular", "infiltration", "shadow"),
+    ("jedi_consular", "serenity", "shadow"),
+    ("trooper", "assault_specialist", "commando"),
+    ("trooper", "combat_medic", "commando"),
+    ("trooper", "gunnery", "commando"),
+    ("trooper", "plasmatech", "specialist"),
+    ("trooper", "shield_specialist", "specialist"),
+    ("trooper", "tactics", "specialist"),
+    ("smuggler", "ruffian", "scoundrel"),
+    ("smuggler", "sawbones", "scoundrel"),
+    ("smuggler", "scrapper", "scoundrel"),
+    ("smuggler", "dirty_fighting", "gunslinger"),
+    ("smuggler", "saboteur", "gunslinger"),
+    ("smuggler", "sharpshooter", "gunslinger"),
+];
+
 fn combat_style_for(origin: &str, discipline: &str) -> Option<&'static str> {
-    Some(match (origin, discipline) {
-        ("sith_warrior", "annihilation" | "carnage" | "fury") => "marauder",
-        ("sith_warrior", "immortal" | "rage" | "vengeance") => "juggernaut",
-        ("sith_inquisitor", "darkness" | "deception" | "hatred") => "assassin",
-        ("sith_inquisitor", "corruption" | "lightning" | "madness") => "sorcerer",
-        ("bounty_hunter", "advanced_prototype" | "firebug" | "shield_tech") => "powertech",
-        ("bounty_hunter", "arsenal" | "bodyguard" | "innovative_ordnance") => "mercenary",
-        ("agent", "concealment" | "lethality" | "medic") => "operative",
-        ("agent", "engineering" | "marksmanship" | "virulence") => "sniper",
-        ("jedi_knight", "defense" | "focus" | "vigilance") => "guardian",
-        ("jedi_knight", "combat" | "concentration" | "watchman") => "sentinel",
-        ("jedi_consular", "balance" | "seer" | "telekinetics") => "force_wizard",
-        ("jedi_consular", "combat" | "infiltration" | "serenity") => "shadow",
-        ("trooper", "assault_specialist" | "combat_medic" | "gunnery") => "commando",
-        ("trooper", "plasmatech" | "shield_specialist" | "tactics") => "specialist",
-        ("smuggler", "ruffian" | "sawbones" | "scrapper") => "scoundrel",
-        ("smuggler", "dirty_fighting" | "saboteur" | "sharpshooter") => "gunslinger",
-        _ => return None,
-    })
+    DISCIPLINE_COMBAT_STYLE_MAP
+        .iter()
+        .find(|(o, d, _)| *o == origin && *d == discipline)
+        .map(|(_, _, cs)| *cs)
 }
 
 fn tier_from_segment(seg: Option<&str>) -> Option<u8> {
@@ -4718,6 +4758,95 @@ mod tests {
 
         drop(conn);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Every combat-style value emitted by `combat_style_for` must also appear
+    /// in `origin_combat_styles(origin)`. The original FK gap shipped because
+    /// the two maps drifted: `combat_style_for` returned 'sage'/'vanguard' while
+    /// `origin_combat_styles` returned 'shadow'/'sage' and 'vanguard'/'commando'.
+    /// This test catches that class of regression at `cargo test` time.
+    #[test]
+    fn discipline_map_combat_styles_match_origin_fan_out() {
+        for (origin, discipline, combat_style) in DISCIPLINE_COMBAT_STYLE_MAP {
+            let fan_out = origin_combat_styles(origin);
+            assert!(
+                fan_out.contains(combat_style),
+                "({}, {}) -> {} not in origin_combat_styles({}) = {:?}",
+                origin,
+                discipline,
+                combat_style,
+                origin,
+                fan_out,
+            );
+        }
+    }
+
+    /// Every origin in `PLAYER_ORIGINS` must yield exactly 2 combat styles --
+    /// the two advanced classes that descend from that base class.
+    #[test]
+    fn every_player_origin_fans_to_two_combat_styles() {
+        for origin in PLAYER_ORIGINS {
+            let styles = origin_combat_styles(origin);
+            assert_eq!(
+                styles.len(),
+                2,
+                "origin {} should fan to 2 combat styles, got {:?}",
+                origin,
+                styles,
+            );
+        }
+    }
+
+    /// Each combat style emitted by either map must join cleanly to
+    /// `combat_styles.fqn_segment` populated from `class.pc.advanced.<seg>`.
+    /// The integration check uses a fixture that mirrors the live game's
+    /// 16 advanced-class FQN segments.
+    #[test]
+    fn combat_style_values_join_combat_styles_fqn_segment() {
+        // The 16 advanced-class internal codenames as they appear in
+        // `class.pc.advanced.*` -- verified against live spice.sqlite.
+        const ADVANCED_CLASS_FQN_SEGMENTS: &[&str] = &[
+            "juggernaut",
+            "marauder",
+            "assassin",
+            "sorcerer",
+            "powertech",
+            "mercenary",
+            "operative",
+            "sniper",
+            "guardian",
+            "sentinel",
+            "shadow",
+            "force_wizard",
+            "specialist",
+            "commando",
+            "scoundrel",
+            "gunslinger",
+        ];
+
+        for (origin, discipline, combat_style) in DISCIPLINE_COMBAT_STYLE_MAP {
+            assert!(
+                ADVANCED_CLASS_FQN_SEGMENTS.contains(combat_style),
+                "DISCIPLINE_COMBAT_STYLE_MAP entry ({}, {}) -> '{}' is not a valid \
+                 class.pc.advanced.<seg> codename. If SWTOR added/renamed an \
+                 advanced class, update both this fixture AND the map.",
+                origin,
+                discipline,
+                combat_style,
+            );
+        }
+
+        for origin in PLAYER_ORIGINS {
+            for combat_style in origin_combat_styles(origin) {
+                assert!(
+                    ADVANCED_CLASS_FQN_SEGMENTS.contains(combat_style),
+                    "origin_combat_styles({}) yields '{}' which is not a valid \
+                     class.pc.advanced.<seg> codename.",
+                    origin,
+                    combat_style,
+                );
+            }
+        }
     }
 
     #[test]
