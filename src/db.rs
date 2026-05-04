@@ -119,6 +119,8 @@ pub struct Stats {
     pub talent_abilities: u64,
     pub origins: u64,
     pub combat_styles: u64,
+    pub combat_style_shared_abilities: u64,
+    pub class_utility_talents: u64,
 }
 
 impl Database {
@@ -599,16 +601,27 @@ impl Database {
                 WHERE o.fqn LIKE 'mpn.%.bonus.%'
                   AND o.is_canonical = 1;
 
-            -- Disciplines: one row per (class, discipline) pair derived from
-            -- abl.{class}.skill.{discipline}.* FQN patterns.
+            -- Disciplines: one row per combat discipline. After the PR3
+            -- rework (#94 follow-up), per-origin shared and utility pools
+            -- no longer live here -- they go to combat_style_shared_abilities
+            -- and class_utility_talents respectively.
+            --
+            -- Two keys: origin_codename (mechanical from FQN -- abl.<origin>.skill.*)
+            -- and combat_style_codename (from a hardcoded 48-row map: stable
+            -- since 4.0, e.g. vengeance->juggernaut, watchman->sentinel).
+            -- huttspawn ETL uses origin for faction routing + nav grouping
+            -- and combat_style for editorial joins to combat_style_shared_abilities
+            -- / class_utility_talents.
             CREATE TABLE IF NOT EXISTS disciplines (
-                class_code       TEXT NOT NULL,
-                discipline_name  TEXT NOT NULL,
-                fqn_prefix       TEXT NOT NULL,  -- e.g. "abl.jedi_knight.skill.defense"
-                PRIMARY KEY (class_code, discipline_name)
+                origin_codename        TEXT NOT NULL,
+                discipline_name        TEXT NOT NULL,
+                fqn_prefix             TEXT NOT NULL UNIQUE,  -- e.g. "abl.jedi_knight.skill.defense"
+                combat_style_codename  TEXT NOT NULL,
+                PRIMARY KEY (origin_codename, discipline_name)
             );
 
-            CREATE INDEX IF NOT EXISTS idx_disciplines_class ON disciplines(class_code);
+            CREATE INDEX IF NOT EXISTS idx_disciplines_origin ON disciplines(origin_codename);
+            CREATE INDEX IF NOT EXISTS idx_disciplines_combat_style ON disciplines(combat_style_codename);
 
             -- Discipline abilities: every abl.* that belongs to a discipline,
             -- with tier level and slot type derived from FQN segments.
@@ -653,6 +666,50 @@ impl Database {
 
             CREATE INDEX IF NOT EXISTS idx_discipline_talents_disc ON discipline_talents(discipline_fqn_prefix);
             CREATE INDEX IF NOT EXISTS idx_discipline_talents_tal  ON discipline_talents(talent_game_id);
+
+            -- Combat-style-level shared ability pool (#94 PR3 rework).
+            -- Replaces the per-discipline fan-out previously emitted into
+            -- discipline_abilities for class-shared (`abl.<origin>.<name>`),
+            -- skill-utility (`abl.<origin>.skill.utility.*`), and shared-mod
+            -- (`abl.<origin>.skill.mods.tierN.*`) abilities. Each origin's
+            -- shared abilities fan to BOTH combat styles of that origin --
+            -- e.g. Force Leap (sith_warrior class-shared) emits one row for
+            -- juggernaut and one for marauder.
+            --
+            -- slot_type vocabulary: 'class_shared' | 'utility' | 'shared_mod'.
+            -- Open TEXT (no CHECK) per D3 sign-off; expected subset documented
+            -- here.
+            CREATE TABLE IF NOT EXISTS combat_style_shared_abilities (
+                combat_style_codename  TEXT NOT NULL,
+                ability_game_id        TEXT NOT NULL,
+                ability_fqn            TEXT NOT NULL,
+                slot_type              TEXT NOT NULL,
+                PRIMARY KEY (combat_style_codename, ability_game_id, slot_type),
+                FOREIGN KEY (ability_game_id) REFERENCES objects(game_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_combat_style_shared_abilities_style
+                ON combat_style_shared_abilities(combat_style_codename);
+            CREATE INDEX IF NOT EXISTS idx_combat_style_shared_abilities_abl
+                ON combat_style_shared_abilities(ability_game_id);
+
+            -- Combat-style-level utility talent pool (#94 PR3 rework).
+            -- Replaces the per-discipline fan-out previously emitted into
+            -- discipline_talents for `tal.<origin>.skill.utility.*`. Each
+            -- origin's utility talents fan to BOTH combat styles of that
+            -- origin -- huttspawn ETL just reads, no FQN re-derivation.
+            CREATE TABLE IF NOT EXISTS class_utility_talents (
+                combat_style_codename  TEXT NOT NULL,
+                talent_game_id         TEXT NOT NULL,
+                talent_fqn             TEXT NOT NULL,
+                PRIMARY KEY (combat_style_codename, talent_game_id),
+                FOREIGN KEY (talent_game_id) REFERENCES objects(game_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_class_utility_talents_style
+                ON class_utility_talents(combat_style_codename);
+            CREATE INDEX IF NOT EXISTS idx_class_utility_talents_talent
+                ON class_utility_talents(talent_game_id);
 
             -- Talent → ability links: GUID refs decoded from tal.* payloads.
             -- 37% of talents reference 1-3 abilities via CC 17E2840B + CF GUID pattern.
@@ -3162,7 +3219,7 @@ impl Database {
     ///   abl.{class}.skill.mods.tier1.{name}                -> shared mod
     ///   abl.{class}.{name}                                 -> CLASS-SHARED, fanned out to every discipline of {class}
     ///                                                        (e.g. abl.jedi_knight.saber_reflect, abl.jedi_knight.force_leap)
-    pub fn populate_disciplines(&self) -> Result<(u64, u64)> {
+    pub fn populate_disciplines(&self) -> Result<(u64, u64, u64)> {
         self.flush()?;
 
         let rows: Vec<(String, String)> = {
@@ -3180,47 +3237,23 @@ impl Database {
             result
         };
 
-        // Player classes that own a discipline tree. Other `abl.<X>.<name>`
-        // FQNs (companion, racials, legacy, location, customer_service, ...)
-        // are not class-shared player abilities; we ignore them for the
-        // discipline tree.
-        const PLAYER_CLASSES: &[&str] = &[
-            "agent",
-            "bounty_hunter",
-            "jedi_consular",
-            "jedi_knight",
-            "sith_inquisitor",
-            "sith_warrior",
-            "smuggler",
-            "trooper",
-        ];
-
-        let mut disc_set: std::collections::HashSet<(String, String, String)> =
-            std::collections::HashSet::new();
+        let mut disc_set: std::collections::HashSet<(String, String, String, String)> =
+            std::collections::HashSet::new(); // (origin, discipline, fqn_prefix, combat_style)
         let mut abl_rows: Vec<(String, String, String, Option<u8>, String)> = Vec::new();
-
-        // Class-shared abilities: abl.<class>.<name> with no skill segment.
-        // We collect them in pass 1 and fan them out to every discipline of
-        // their class in pass 2 (after disc_set is fully populated by the
-        // discipline-specific rows).
-        let mut class_shared: Vec<(String, String, String)> = Vec::new(); // (class_code, ability_fqn, ability_game_id)
-                                                                          // Utility abilities (abl.<class>.skill.utility.<name>): also fanned
-                                                                          // out to every combat discipline of their class. Mirrors v1's
-                                                                          // discipline_tree_entries shape -- e.g. Thwart at the utility row
-                                                                          // is also visible from the Defense Guardian tree.
+        let mut class_shared: Vec<(String, String, String)> = Vec::new();
         let mut utility_shared: Vec<(String, String, String)> = Vec::new();
+        let mut shared_mod: Vec<(String, String, String)> = Vec::new();
 
         for (fqn, game_id) in &rows {
             let parts: Vec<&str> = fqn.split('.').collect();
 
-            // abl.<class>.<name>: 3-segment class-shared ability.
-            // Saber Reflect, Force Leap, Awe, Blade Storm, Dispatch, etc.
-            // ~50-60 per player class. They are available to every discipline
-            // of that class -- fanned out below.
+            // abl.<origin>.<name>: 3-segment class-shared ability (Force
+            // Leap, Saber Reflect, etc). Per-origin pool, fanned to BOTH
+            // combat styles in combat_style_shared_abilities below.
             if parts.len() == 3 {
-                let class_code = parts[1];
-                if PLAYER_CLASSES.contains(&class_code) {
-                    class_shared.push((class_code.to_string(), fqn.clone(), game_id.clone()));
+                let origin = parts[1];
+                if PLAYER_ORIGINS.contains(&origin) {
+                    class_shared.push((origin.to_string(), fqn.clone(), game_id.clone()));
                 }
                 continue;
             }
@@ -3228,61 +3261,66 @@ impl Database {
             if parts.len() < 5 || parts[2] != "skill" {
                 continue;
             }
-            let class_code = parts[1];
-            let discipline_name;
-            let fqn_prefix;
+            let origin = parts[1];
+            if !PLAYER_ORIGINS.contains(&origin) {
+                continue;
+            }
+
+            // Per-origin shared pools: route to combat_style_shared_abilities,
+            // not into disciplines. The disciplines table now holds only
+            // real combat disciplines (24 rows: 16 styles x 1.5 avg, post
+            // 7.0 reductions).
+            if parts[3] == "utility" {
+                utility_shared.push((origin.to_string(), fqn.clone(), game_id.clone()));
+                continue;
+            }
+            if parts[3] == "mods" {
+                shared_mod.push((origin.to_string(), fqn.clone(), game_id.clone()));
+                continue;
+            }
+
+            // abl.<origin>.skill.<discipline>.*
+            let discipline_name = parts[3];
+            let fqn_prefix = format!("abl.{}.skill.{}", origin, discipline_name);
+            let Some(combat_style) = combat_style_for(origin, discipline_name) else {
+                // Unknown discipline -- skip rather than emit a NULL
+                // combat_style_codename. If a new SWTOR patch adds one,
+                // it'll show up here as a missing extraction and force
+                // an explicit map update.
+                continue;
+            };
+
             let slot_type: &str;
             let tier_level: Option<u8>;
-
-            // abl.{class}.skill.utility.{name} -> utility row + fan-out
-            if parts[3] == "utility" {
-                discipline_name = "utility";
-                fqn_prefix = format!("abl.{}.skill.utility", class_code);
-                slot_type = "utility";
-                tier_level = None;
-                if PLAYER_CLASSES.contains(&class_code) {
-                    utility_shared.push((class_code.to_string(), fqn.clone(), game_id.clone()));
-                }
-            } else if parts[3] == "mods" {
-                // abl.{class}.skill.mods.tierN.{name} -> shared mod
-                discipline_name = "shared";
-                fqn_prefix = format!("abl.{}.skill.mods", class_code);
-                slot_type = "shared_mod";
-                tier_level = tier_from_segment(parts.get(4).copied());
-            } else {
-                // abl.{class}.skill.{discipline}.*
-                discipline_name = parts[3];
-                fqn_prefix = format!("abl.{}.skill.{}", class_code, discipline_name);
-
-                if parts.len() >= 7 && parts[4] == "mods" {
-                    match parts[5] {
-                        "passive" => {
-                            slot_type = "passive";
-                            tier_level = None;
-                        }
-                        "special" => {
-                            slot_type = "special";
-                            tier_level = None;
-                        }
-                        s if s.starts_with("tier") => {
-                            slot_type = "choice";
-                            tier_level = tier_from_segment(Some(s));
-                        }
-                        _ => {
-                            slot_type = "mod";
-                            tier_level = None;
-                        }
+            if parts.len() >= 7 && parts[4] == "mods" {
+                match parts[5] {
+                    "passive" => {
+                        slot_type = "passive";
+                        tier_level = None;
                     }
-                } else {
-                    slot_type = "core";
-                    tier_level = None;
+                    "special" => {
+                        slot_type = "special";
+                        tier_level = None;
+                    }
+                    s if s.starts_with("tier") => {
+                        slot_type = "choice";
+                        tier_level = tier_from_segment(Some(s));
+                    }
+                    _ => {
+                        slot_type = "mod";
+                        tier_level = None;
+                    }
                 }
+            } else {
+                slot_type = "core";
+                tier_level = None;
             }
 
             disc_set.insert((
-                class_code.to_string(),
+                origin.to_string(),
                 discipline_name.to_string(),
                 fqn_prefix.clone(),
+                combat_style.to_string(),
             ));
             abl_rows.push((
                 fqn_prefix,
@@ -3293,45 +3331,38 @@ impl Database {
             ));
         }
 
-        // Pass 2: fan out class-shared abilities to every combat discipline
-        // of their class. Skip the per-class "utility" and "shared" rows --
-        // those are aggregation buckets, not real combat trees, and would
-        // produce duplicate edges if we included them.
-        let mut disciplines_by_class: std::collections::HashMap<&str, Vec<String>> =
-            std::collections::HashMap::new();
-        for (class_code, discipline_name, fqn_prefix) in &disc_set {
-            if discipline_name == "utility" || discipline_name == "shared" {
-                continue;
-            }
-            disciplines_by_class
-                .entry(class_code.as_str())
-                .or_default()
-                .push(fqn_prefix.clone());
-        }
-        for (class_code, ability_fqn, game_id) in &class_shared {
-            if let Some(prefixes) = disciplines_by_class.get(class_code.as_str()) {
-                for disc_prefix in prefixes {
-                    abl_rows.push((
-                        disc_prefix.clone(),
-                        game_id.clone(),
-                        ability_fqn.clone(),
-                        None,
-                        "class_shared".to_string(),
-                    ));
-                }
+        // Fan per-origin shared/utility/shared_mod abilities to BOTH combat
+        // styles of that origin -- e.g. Force Leap (sith_warrior class-shared)
+        // emits one row for juggernaut and one for marauder.
+        let mut shared_rows: Vec<(String, String, String, String)> = Vec::new();
+        for (origin, ability_fqn, game_id) in &class_shared {
+            for combat_style in origin_combat_styles(origin) {
+                shared_rows.push((
+                    combat_style.to_string(),
+                    game_id.clone(),
+                    ability_fqn.clone(),
+                    "class_shared".to_string(),
+                ));
             }
         }
-        for (class_code, ability_fqn, game_id) in &utility_shared {
-            if let Some(prefixes) = disciplines_by_class.get(class_code.as_str()) {
-                for disc_prefix in prefixes {
-                    abl_rows.push((
-                        disc_prefix.clone(),
-                        game_id.clone(),
-                        ability_fqn.clone(),
-                        None,
-                        "utility".to_string(),
-                    ));
-                }
+        for (origin, ability_fqn, game_id) in &utility_shared {
+            for combat_style in origin_combat_styles(origin) {
+                shared_rows.push((
+                    combat_style.to_string(),
+                    game_id.clone(),
+                    ability_fqn.clone(),
+                    "utility".to_string(),
+                ));
+            }
+        }
+        for (origin, ability_fqn, game_id) in &shared_mod {
+            for combat_style in origin_combat_styles(origin) {
+                shared_rows.push((
+                    combat_style.to_string(),
+                    game_id.clone(),
+                    ability_fqn.clone(),
+                    "shared_mod".to_string(),
+                ));
             }
         }
 
@@ -3341,10 +3372,11 @@ impl Database {
         let mut disc_count = 0u64;
         {
             let mut stmt = tx.prepare_cached(
-                "INSERT OR IGNORE INTO disciplines (class_code, discipline_name, fqn_prefix) VALUES (?1, ?2, ?3)",
+                "INSERT OR IGNORE INTO disciplines (origin_codename, discipline_name, fqn_prefix, combat_style_codename) \
+                 VALUES (?1, ?2, ?3, ?4)",
             )?;
-            for (class_code, discipline_name, fqn_prefix) in &disc_set {
-                stmt.execute(params![class_code, discipline_name, fqn_prefix])?;
+            for (origin, discipline_name, fqn_prefix, combat_style) in &disc_set {
+                stmt.execute(params![origin, discipline_name, fqn_prefix, combat_style])?;
                 disc_count += 1;
             }
         }
@@ -3360,8 +3392,21 @@ impl Database {
             }
         }
 
+        let mut shared_count = 0u64;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR IGNORE INTO combat_style_shared_abilities \
+                   (combat_style_codename, ability_game_id, ability_fqn, slot_type) \
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for (combat_style, game_id, fqn, slot) in &shared_rows {
+                stmt.execute(params![combat_style, game_id, fqn, slot])?;
+                shared_count += 1;
+            }
+        }
+
         tx.commit()?;
-        Ok((disc_count, abl_count))
+        Ok((disc_count, abl_count, shared_count))
     }
 
     /// Populate `discipline_talents` by FQN pattern.
@@ -3379,7 +3424,7 @@ impl Database {
     /// No tier_level / column coordinates: SWTOR's editorial tree layout
     /// (which talent sits at what tier on screen) is not encoded in tal.*
     /// payloads or FQNs. This function only emits mechanical membership.
-    pub fn populate_discipline_talents(&self) -> Result<u64> {
+    pub fn populate_discipline_talents(&self) -> Result<(u64, u64)> {
         self.flush()?;
 
         let talents: Vec<(String, String)> = {
@@ -3397,69 +3442,65 @@ impl Database {
             result
         };
 
-        // Combat disciplines per class, learned from the disciplines table
-        // populated by populate_disciplines (must run before this fn).
-        let disciplines_by_class: std::collections::HashMap<String, Vec<String>> = {
-            let conn = self.conn.lock().unwrap();
-            let mut stmt = conn.prepare(
-                "SELECT class_code, fqn_prefix FROM disciplines \
-                 WHERE discipline_name NOT IN ('utility', 'shared')",
-            )?;
-            let mut map: std::collections::HashMap<String, Vec<String>> =
-                std::collections::HashMap::new();
-            let rows = stmt
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })?
-                .filter_map(|r| r.ok());
-            for (class_code, fqn_prefix) in rows {
-                map.entry(class_code).or_default().push(fqn_prefix);
-            }
-            map
-        };
+        let mut discipline_rows: Vec<(String, String, String)> = Vec::new();
+        let mut utility_rows: Vec<(String, String, String)> = Vec::new(); // (combat_style, talent_game_id, talent_fqn)
 
-        let mut rows: Vec<(String, String, String)> = Vec::new();
         for (fqn, game_id) in &talents {
-            // tal.<class>.skill.<segment>.<rest>
+            // tal.<origin>.skill.<segment>.<rest>
             let parts: Vec<&str> = fqn.split('.').collect();
             if parts.len() < 5 || parts[2] != "skill" {
                 continue;
             }
-            let class_code = parts[1];
+            let origin = parts[1];
             let segment = parts[3];
-
-            // Always emit the literal-membership row.
-            let literal_prefix = format!("abl.{}.skill.{}", class_code, segment);
-            rows.push((literal_prefix, game_id.clone(), fqn.clone()));
-
-            // Utility talents: also emit a row for every combat discipline
-            // of this class. v1's curated tree lists utility talents under
-            // each combat discipline (e.g. Interloper appears in
-            // annihilation, carnage, fury for sith_warrior); this matches.
-            if segment == "utility" {
-                if let Some(combat_disciplines) = disciplines_by_class.get(class_code) {
-                    for combat_prefix in combat_disciplines {
-                        rows.push((combat_prefix.clone(), game_id.clone(), fqn.clone()));
-                    }
-                }
+            if !PLAYER_ORIGINS.contains(&origin) {
+                continue;
             }
+
+            if segment == "utility" {
+                // Per-origin utility talent: fan to BOTH combat styles. No
+                // discipline_talents row -- utility is not a real discipline.
+                for combat_style in origin_combat_styles(origin) {
+                    utility_rows.push((combat_style.to_string(), game_id.clone(), fqn.clone()));
+                }
+                continue;
+            }
+
+            // Discipline-specific talent: literal-membership row only, no
+            // fan-out (the previous fan-out was the bug we're fixing).
+            let literal_prefix = format!("abl.{}.skill.{}", origin, segment);
+            discipline_rows.push((literal_prefix, game_id.clone(), fqn.clone()));
         }
 
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        let mut count = 0u64;
+
+        let mut disc_count = 0u64;
         {
             let mut stmt = tx.prepare_cached(
                 "INSERT OR IGNORE INTO discipline_talents \
                  (discipline_fqn_prefix, talent_game_id, talent_fqn) VALUES (?1, ?2, ?3)",
             )?;
-            for (disc, game_id, fqn) in &rows {
+            for (disc, game_id, fqn) in &discipline_rows {
                 stmt.execute(params![disc, game_id, fqn])?;
-                count += 1;
+                disc_count += 1;
             }
         }
+
+        let mut util_count = 0u64;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR IGNORE INTO class_utility_talents \
+                 (combat_style_codename, talent_game_id, talent_fqn) VALUES (?1, ?2, ?3)",
+            )?;
+            for (combat_style, game_id, fqn) in &utility_rows {
+                stmt.execute(params![combat_style, game_id, fqn])?;
+                util_count += 1;
+            }
+        }
+
         tx.commit()?;
-        Ok(count)
+        Ok((disc_count, util_count))
     }
 
     /// Populate `talent_abilities` by decoding GUID refs from `tal.*` payloads.
@@ -3731,6 +3772,15 @@ impl Database {
         let origins: u64 = conn.query_row("SELECT COUNT(*) FROM origins", [], |row| row.get(0))?;
         let combat_styles: u64 =
             conn.query_row("SELECT COUNT(*) FROM combat_styles", [], |row| row.get(0))?;
+        let combat_style_shared_abilities: u64 = conn.query_row(
+            "SELECT COUNT(*) FROM combat_style_shared_abilities",
+            [],
+            |row| row.get(0),
+        )?;
+        let class_utility_talents: u64 =
+            conn.query_row("SELECT COUNT(*) FROM class_utility_talents", [], |row| {
+                row.get(0)
+            })?;
 
         Ok(Stats {
             quests,
@@ -3751,6 +3801,8 @@ impl Database {
             talent_abilities,
             origins,
             combat_styles,
+            combat_style_shared_abilities,
+            class_utility_talents,
         })
     }
 
@@ -3907,6 +3959,68 @@ fn title_case_from_snake(s: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Origin codenames -- the second FQN segment in `abl.<origin>.skill.*`.
+/// 8 player origins (sith_warrior, agent, etc.). Other `abl.<X>.<name>` FQNs
+/// (companion, racials, legacy, location, customer_service, ...) aren't
+/// player-discipline content; we ignore them.
+const PLAYER_ORIGINS: &[&str] = &[
+    "agent",
+    "bounty_hunter",
+    "jedi_consular",
+    "jedi_knight",
+    "sith_inquisitor",
+    "sith_warrior",
+    "smuggler",
+    "trooper",
+];
+
+/// Origin -> 2 combat styles. Used to fan per-origin shared/utility pools
+/// (abl.<origin>.<name>, abl.<origin>.skill.utility.*, abl.<origin>.skill.mods.*,
+/// tal.<origin>.skill.utility.*) into combat_style_shared_abilities and
+/// class_utility_talents.
+fn origin_combat_styles(origin: &str) -> &'static [&'static str] {
+    match origin {
+        "sith_warrior" => &["juggernaut", "marauder"],
+        "sith_inquisitor" => &["assassin", "sorcerer"],
+        "bounty_hunter" => &["powertech", "mercenary"],
+        "agent" => &["operative", "sniper"],
+        "jedi_knight" => &["guardian", "sentinel"],
+        "jedi_consular" => &["shadow", "sage"],
+        "trooper" => &["vanguard", "commando"],
+        "smuggler" => &["scoundrel", "gunslinger"],
+        _ => &[],
+    }
+}
+
+/// (origin, discipline_name) -> combat_style_codename.
+/// 48-row map (8 origins * 6 disciplines). Stable since SWTOR 4.0; new
+/// disciplines force an explicit update via populate_disciplines's
+/// "unknown discipline -> skip" branch.
+///
+/// Names use SOURCE-data canon (firebug not pyrotech, combat not kinetic_combat).
+/// huttspawn ETL renames at the editorial layer per #51.
+fn combat_style_for(origin: &str, discipline: &str) -> Option<&'static str> {
+    Some(match (origin, discipline) {
+        ("sith_warrior", "annihilation" | "carnage" | "fury") => "marauder",
+        ("sith_warrior", "immortal" | "rage" | "vengeance") => "juggernaut",
+        ("sith_inquisitor", "darkness" | "deception" | "hatred") => "assassin",
+        ("sith_inquisitor", "corruption" | "lightning" | "madness") => "sorcerer",
+        ("bounty_hunter", "advanced_prototype" | "firebug" | "shield_tech") => "powertech",
+        ("bounty_hunter", "arsenal" | "bodyguard" | "innovative_ordnance") => "mercenary",
+        ("agent", "concealment" | "lethality" | "medic") => "operative",
+        ("agent", "engineering" | "marksmanship" | "virulence") => "sniper",
+        ("jedi_knight", "defense" | "focus" | "vigilance") => "guardian",
+        ("jedi_knight", "combat" | "concentration" | "watchman") => "sentinel",
+        ("jedi_consular", "balance" | "seer" | "telekinetics") => "sage",
+        ("jedi_consular", "combat" | "infiltration" | "serenity") => "shadow",
+        ("trooper", "assault_specialist" | "combat_medic" | "gunnery") => "commando",
+        ("trooper", "plasmatech" | "shield_specialist" | "tactics") => "vanguard",
+        ("smuggler", "ruffian" | "sawbones" | "scrapper") => "scoundrel",
+        ("smuggler", "dirty_fighting" | "saboteur" | "sharpshooter") => "gunslinger",
+        _ => return None,
+    })
 }
 
 fn tier_from_segment(seg: Option<&str>) -> Option<u8> {
@@ -4312,6 +4426,172 @@ mod tests {
         assert_eq!(pt_display, "powertech");
         assert_eq!(pt_atk, "tech");
         assert_eq!(pt_sid, Some(351335));
+
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Helper: insert an Ability or Talent object so populate_disciplines and
+    /// populate_discipline_talents have something to find.
+    fn insert_obj(db: &Database, game_id: &str, fqn: &str, kind: &str) {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, json) \
+             VALUES (?1, 'sid', 'ph', 'guid', ?2, ?3, '{}')",
+            params![game_id, fqn, kind],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn populate_disciplines_emits_combat_style_codename_and_routes_shared_pool() {
+        let path = temp_db_path("disc_rework");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+
+        // Combat-discipline ability for sith_warrior (vengeance is a juggernaut spec).
+        insert_obj(
+            &db,
+            "v1",
+            "abl.sith_warrior.skill.vengeance.ravage",
+            "Ability",
+        );
+        // Class-shared ability (3-segment FQN) -- should fan to BOTH combat styles.
+        insert_obj(&db, "fl", "abl.sith_warrior.force_leap", "Ability");
+        // Skill-utility ability -- per-origin pool, fans to both styles.
+        insert_obj(
+            &db,
+            "th",
+            "abl.sith_warrior.skill.utility.thwart",
+            "Ability",
+        );
+        // Shared-mod ability -- per-origin pool, fans to both styles.
+        insert_obj(
+            &db,
+            "sm",
+            "abl.sith_warrior.skill.mods.tier1.savagery",
+            "Ability",
+        );
+        // Non-player-origin abl.* should be ignored entirely.
+        insert_obj(&db, "co", "abl.companion.attack", "Ability");
+
+        let (disc_count, disc_abl_count, css_abl_count) = db.populate_disciplines().unwrap();
+
+        // One discipline (vengeance), one discipline_abilities row (ravage).
+        assert_eq!(disc_count, 1);
+        assert_eq!(disc_abl_count, 1);
+        // Three shared abilities (force_leap, thwart, savagery) x 2 combat styles = 6 rows.
+        assert_eq!(css_abl_count, 6);
+
+        let conn = db.conn.lock().unwrap();
+
+        // disciplines: combat_style_codename resolved correctly.
+        let (origin, combat_style): (String, String) = conn
+            .query_row(
+                "SELECT origin_codename, combat_style_codename FROM disciplines \
+                 WHERE discipline_name = 'vengeance'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(origin, "sith_warrior");
+        assert_eq!(combat_style, "juggernaut");
+
+        // No utility / shared rows in disciplines.
+        let leftovers: u64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM disciplines WHERE discipline_name IN ('utility', 'shared')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(leftovers, 0);
+
+        // combat_style_shared_abilities: each ability fanned to BOTH styles.
+        let leap_styles: Vec<String> = conn
+            .prepare(
+                "SELECT combat_style_codename FROM combat_style_shared_abilities \
+                 WHERE ability_game_id = 'fl' ORDER BY combat_style_codename",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(leap_styles, vec!["juggernaut", "marauder"]);
+
+        // discipline_abilities does NOT contain class_shared / utility / shared_mod rows.
+        let post_rework_slots: Vec<String> = conn
+            .prepare("SELECT DISTINCT slot_type FROM discipline_abilities")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(!post_rework_slots.iter().any(|s| s == "class_shared"));
+        assert!(!post_rework_slots.iter().any(|s| s == "utility"));
+        assert!(!post_rework_slots.iter().any(|s| s == "shared_mod"));
+
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn populate_discipline_talents_routes_utility_to_class_utility_talents() {
+        let path = temp_db_path("disc_tal_rework");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+
+        // Combat-discipline talent (no fan-out).
+        insert_obj(
+            &db,
+            "t1",
+            "tal.sith_warrior.skill.vengeance.unyielding",
+            "Talent",
+        );
+        // Per-origin utility talent: must fan to BOTH styles, NOT enter discipline_talents.
+        insert_obj(
+            &db,
+            "t2",
+            "tal.sith_warrior.skill.utility.interloper",
+            "Talent",
+        );
+
+        // Disciplines must exist before discipline_talents -- run prerequisite.
+        insert_obj(
+            &db,
+            "v1",
+            "abl.sith_warrior.skill.vengeance.ravage",
+            "Ability",
+        );
+        db.populate_disciplines().unwrap();
+
+        let (disc_tal_count, util_count) = db.populate_discipline_talents().unwrap();
+        assert_eq!(disc_tal_count, 1);
+        assert_eq!(util_count, 2); // fanned to juggernaut + marauder
+
+        let conn = db.conn.lock().unwrap();
+
+        // discipline_talents: only the discipline-specific talent. No utility fan-out.
+        let dt_rows: u64 = conn
+            .query_row("SELECT COUNT(*) FROM discipline_talents", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(dt_rows, 1);
+
+        // class_utility_talents: utility talent fanned to both styles.
+        let util_styles: Vec<String> = conn
+            .prepare(
+                "SELECT combat_style_codename FROM class_utility_talents \
+                 WHERE talent_game_id = 't2' ORDER BY combat_style_codename",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(util_styles, vec!["juggernaut", "marauder"]);
 
         drop(conn);
         let _ = std::fs::remove_file(&path);

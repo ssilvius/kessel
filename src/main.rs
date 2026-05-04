@@ -539,11 +539,15 @@ fn main() -> Result<()> {
     let npc_chain_count = db.populate_quest_chain_npc_giver()?;
     println!("  Quest chain NPC-giver edges: {}", npc_chain_count);
 
-    // Eleventh pass: derive disciplines and discipline→ability mappings
-    let (disc_count, disc_abl_count) = db.populate_disciplines()?;
+    // Eleventh pass: derive disciplines, discipline_abilities, and the new
+    // combat_style_shared_abilities table (per-origin shared/utility/mod
+    // pools, fanned to both combat styles).
+    let (disc_count, disc_abl_count, css_abl_count) = db.populate_disciplines()?;
 
-    // Twelfth pass: derive discipline→talent mapping by FQN pattern
-    let disc_tal_count = db.populate_discipline_talents()?;
+    // Twelfth pass: derive discipline→talent + class_utility_talents.
+    // Per-origin utility talents fan to both combat styles; combat-discipline
+    // talents stay scoped to their own discipline (no fan-out).
+    let (disc_tal_count, cut_count) = db.populate_discipline_talents()?;
 
     // Thirteenth pass: decode talent→ability GUID refs from tal.* payloads
     let talent_abl_count = db.populate_talent_abilities()?;
@@ -575,12 +579,18 @@ fn main() -> Result<()> {
         stats.disciplines, stats.discipline_abilities, disc_tal_count, stats.talent_abilities
     );
     println!(
+        "    Combat-style shared: {} abilities, {} utility talents",
+        stats.combat_style_shared_abilities, stats.class_utility_talents
+    );
+    println!(
         "    Class taxonomy: {} origins, {} combat styles",
         stats.origins, stats.combat_styles
     );
     let _ = (
         disc_count,
         disc_abl_count,
+        css_abl_count,
+        cut_count,
         talent_abl_count,
         origin_count,
         combat_style_count,
