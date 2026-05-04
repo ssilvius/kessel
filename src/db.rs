@@ -617,7 +617,8 @@ impl Database {
                 discipline_name        TEXT NOT NULL,
                 fqn_prefix             TEXT NOT NULL UNIQUE,  -- e.g. "abl.jedi_knight.skill.defense"
                 combat_style_codename  TEXT NOT NULL,
-                PRIMARY KEY (origin_codename, discipline_name)
+                PRIMARY KEY (origin_codename, discipline_name),
+                FOREIGN KEY (combat_style_codename) REFERENCES combat_styles(fqn_segment)
             );
 
             CREATE INDEX IF NOT EXISTS idx_disciplines_origin ON disciplines(origin_codename);
@@ -685,7 +686,8 @@ impl Database {
                 ability_fqn            TEXT NOT NULL,
                 slot_type              TEXT NOT NULL,
                 PRIMARY KEY (combat_style_codename, ability_game_id, slot_type),
-                FOREIGN KEY (ability_game_id) REFERENCES objects(game_id)
+                FOREIGN KEY (ability_game_id) REFERENCES objects(game_id),
+                FOREIGN KEY (combat_style_codename) REFERENCES combat_styles(fqn_segment)
             );
 
             CREATE INDEX IF NOT EXISTS idx_combat_style_shared_abilities_style
@@ -703,7 +705,8 @@ impl Database {
                 talent_game_id         TEXT NOT NULL,
                 talent_fqn             TEXT NOT NULL,
                 PRIMARY KEY (combat_style_codename, talent_game_id),
-                FOREIGN KEY (talent_game_id) REFERENCES objects(game_id)
+                FOREIGN KEY (talent_game_id) REFERENCES objects(game_id),
+                FOREIGN KEY (combat_style_codename) REFERENCES combat_styles(fqn_segment)
             );
 
             CREATE INDEX IF NOT EXISTS idx_class_utility_talents_style
@@ -846,7 +849,7 @@ impl Database {
             CREATE TABLE IF NOT EXISTS combat_styles (
                 combat_style_id TEXT PRIMARY KEY,   -- game_id of class.pc.advanced.<style>
                 fqn             TEXT NOT NULL UNIQUE,
-                fqn_segment     TEXT NOT NULL,     -- internal name ('force_wizard', 'specialist', ...)
+                fqn_segment     TEXT NOT NULL UNIQUE,     -- internal name ('force_wizard', 'specialist', ...)
                 display_segment TEXT NOT NULL,     -- canonical name ('sage', 'vanguard', ...)
                 faction         TEXT NOT NULL,     -- 'empire' | 'republic' (legacy adv-class faction)
                 attack_type     TEXT NOT NULL,     -- 'force' | 'tech'
@@ -4034,8 +4037,8 @@ fn origin_combat_styles(origin: &str) -> &'static [&'static str] {
         "bounty_hunter" => &["powertech", "mercenary"],
         "agent" => &["operative", "sniper"],
         "jedi_knight" => &["guardian", "sentinel"],
-        "jedi_consular" => &["shadow", "sage"],
-        "trooper" => &["vanguard", "commando"],
+        "jedi_consular" => &["shadow", "force_wizard"],
+        "trooper" => &["specialist", "commando"],
         "smuggler" => &["scoundrel", "gunslinger"],
         _ => &[],
     }
@@ -4060,10 +4063,10 @@ fn combat_style_for(origin: &str, discipline: &str) -> Option<&'static str> {
         ("agent", "engineering" | "marksmanship" | "virulence") => "sniper",
         ("jedi_knight", "defense" | "focus" | "vigilance") => "guardian",
         ("jedi_knight", "combat" | "concentration" | "watchman") => "sentinel",
-        ("jedi_consular", "balance" | "seer" | "telekinetics") => "sage",
+        ("jedi_consular", "balance" | "seer" | "telekinetics") => "force_wizard",
         ("jedi_consular", "combat" | "infiltration" | "serenity") => "shadow",
         ("trooper", "assault_specialist" | "combat_medic" | "gunnery") => "commando",
-        ("trooper", "plasmatech" | "shield_specialist" | "tactics") => "vanguard",
+        ("trooper", "plasmatech" | "shield_specialist" | "tactics") => "specialist",
         ("smuggler", "ruffian" | "sawbones" | "scrapper") => "scoundrel",
         ("smuggler", "dirty_fighting" | "saboteur" | "sharpshooter") => "gunslinger",
         _ => return None,
@@ -4538,11 +4541,35 @@ mod tests {
         .unwrap();
     }
 
+    /// Helper: seed `combat_styles` rows for a given origin so disciplines/css/cut
+    /// inserts can satisfy their FK to combat_styles(fqn_segment).
+    fn seed_combat_styles_for(db: &Database, origin: &str) {
+        let conn = db.conn.lock().unwrap();
+        for cs in origin_combat_styles(origin) {
+            let game_id = format!("cs_{}", cs);
+            let fqn = format!("class.pc.advanced.{}", cs);
+            conn.execute(
+                "INSERT OR IGNORE INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, json) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'class', '{}')",
+                params![game_id, format!("sid_{}", cs), format!("ph_{}", cs), format!("guid_{}", cs), fqn],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO combat_styles \
+                   (combat_style_id, fqn, fqn_segment, display_segment, faction, attack_type) \
+                 VALUES (?1, ?2, ?3, ?3, 'unknown', 'unknown')",
+                params![game_id, fqn, cs],
+            )
+            .unwrap();
+        }
+    }
+
     #[test]
     fn populate_disciplines_emits_combat_style_codename_and_routes_shared_pool() {
         let path = temp_db_path("disc_rework");
         let db = Database::with_grammar(&path, None).unwrap();
         db.init_schema().unwrap();
+        seed_combat_styles_for(&db, "sith_warrior");
 
         // Combat-discipline ability for sith_warrior (vengeance is a juggernaut spec).
         insert_obj(
@@ -4636,6 +4663,7 @@ mod tests {
         let path = temp_db_path("disc_tal_rework");
         let db = Database::with_grammar(&path, None).unwrap();
         db.init_schema().unwrap();
+        seed_combat_styles_for(&db, "sith_warrior");
 
         // Combat-discipline talent (no fan-out).
         insert_obj(

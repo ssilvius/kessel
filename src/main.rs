@@ -539,24 +539,26 @@ fn main() -> Result<()> {
     let npc_chain_count = db.populate_quest_chain_npc_giver()?;
     println!("  Quest chain NPC-giver edges: {}", npc_chain_count);
 
-    // Eleventh pass: derive disciplines, discipline_abilities, and the new
+    // Eleventh pass: class taxonomy (#94). Origins are hardcoded (no GOM
+    // object); combat styles come from class.pc.advanced.* with display
+    // names resolved through cdx.advanced_classes.*. Must run before
+    // populate_disciplines so disciplines/css/cut FKs to combat_styles
+    // (fqn_segment) resolve.
+    let origin_count = db.populate_origins()?;
+    let combat_style_count = db.populate_combat_styles()?;
+
+    // Twelfth pass: derive disciplines, discipline_abilities, and the
     // combat_style_shared_abilities table (per-origin shared/utility/mod
     // pools, fanned to both combat styles).
     let (disc_count, disc_abl_count, css_abl_count) = db.populate_disciplines()?;
 
-    // Twelfth pass: derive discipline→talent + class_utility_talents.
+    // Thirteenth pass: derive discipline→talent + class_utility_talents.
     // Per-origin utility talents fan to both combat styles; combat-discipline
     // talents stay scoped to their own discipline (no fan-out).
     let (disc_tal_count, cut_count) = db.populate_discipline_talents()?;
 
-    // Thirteenth pass: decode talent→ability GUID refs from tal.* payloads
+    // Fourteenth pass: decode talent→ability GUID refs from tal.* payloads
     let talent_abl_count = db.populate_talent_abilities()?;
-
-    // Fourteenth pass: class taxonomy (#94). Origins are hardcoded (no GOM
-    // object); combat styles come from class.pc.advanced.* with display
-    // names resolved through cdx.advanced_classes.*.
-    let origin_count = db.populate_origins()?;
-    let combat_style_count = db.populate_combat_styles()?;
 
     // Print summary
     let stats = db.stats()?;
