@@ -1909,14 +1909,18 @@ impl Database {
         let dict = StatDictionary::from_embedded()?;
         let conn = self.conn.lock().unwrap();
 
-        let payloads: Vec<(String, Option<String>)> = {
+        let payloads: Vec<(String, String, Option<String>)> = {
             let mut stmt = conn.prepare(
-                "SELECT game_id, json_extract(json, '$.payload_b64') \
+                "SELECT game_id, fqn, json_extract(json, '$.payload_b64') \
                  FROM objects WHERE fqn LIKE 'tal.spvp.%' AND is_canonical = 1",
             )?;
-            let rows: Vec<(String, Option<String>)> = stmt
+            let rows: Vec<(String, String, Option<String>)> = stmt
                 .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
                 })?
                 .filter_map(|r| r.ok())
                 .collect();
@@ -1931,7 +1935,7 @@ impl Database {
         )?;
 
         let mut count: u64 = 0;
-        for (game_id, payload_b64) in &payloads {
+        for (game_id, fqn, payload_b64) in &payloads {
             let Some(b64) = payload_b64 else { continue };
             let Ok(payload) = BASE64.decode(b64) else {
                 continue;
@@ -1942,7 +1946,10 @@ impl Database {
             let mut rank_per_label: std::collections::HashMap<String, i64> =
                 std::collections::HashMap::new();
             for rec in decode_gsf_stats(&payload) {
-                let label = dict.talent_label(rec.stat_id);
+                // FQN-aware lookup so context-overloaded stat_ids (0x40 acting
+                // as comm_range_units on minor_sensors.com_range.*, etc.) ship
+                // with the domain-correct label instead of the generic default.
+                let label = dict.talent_label_for(rec.stat_id, fqn);
                 let rank = rank_per_label.entry(label.label.clone()).or_insert(0);
                 *rank += 1;
                 stmt.execute(params![
