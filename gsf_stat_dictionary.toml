@@ -100,6 +100,233 @@ confidence = "guess"
 notes      = "Paired with 0x22; semantics unverified"
 
 
+# --- 2026-05-18 expansion (huttspawn build-calculator pass) ---
+# Each addition is anchored to the canonical minor_<slot>.<stat> talent FQN
+# whose name string makes the meaning unambiguous (e.g. minor_armor.hull_strength
+# -> "Structural Reinforcement, +8%"). See PR description for the verification
+# query (gsf_talent_stats JOIN talents ON FQN).
+
+[talent_stats.0x08]
+label      = "hull_strength_pct"
+unit       = "pct"
+confidence = "verified"
+notes      = "minor_armor.hull_strength.{base,upgrade} +8% / +4/+8/+12; drone.*.tier_X 'Fortified Beacon' +10-20%"
+
+[talent_stats.0x38]
+label      = "evasion_pct"
+unit       = "pct"
+confidence = "verified"
+notes      = "minor_armor.evasion.* (Composite Plating +3%); crew.defensive.evasion (Response Tuning +5%); shield.distortion_field.base +9%"
+
+[talent_stats.0x45]
+label      = "weapon_power_pool_pct"
+unit       = "pct"
+confidence = "verified"
+notes      = "minor_magazine.weapon_power.* (Blaster Power +8%); crew.engineering.weapon_power_pool (Power to Blasters +15%)"
+
+[talent_stats.0x46]
+label      = "shield_power_pool_pct"
+unit       = "pct"
+confidence = "verified"
+notes      = "minor_reactor.shield_power.* +8%; crew.defensive.shield_power_pool (Power to Shields +10%); shield bases match 2014 SWTORStrategies values (directional +20%, overcharged +50%, quick_recharge -30%, fortress +20%, charged_plating +40%)"
+
+[talent_stats.0x58]
+label      = "damage_reduction_pct"
+unit       = "pct"
+confidence = "verified"
+notes      = "minor_armor.damage_reduction.* (Durasteel Plating +8%); crew.defensive.damage_reduction (Structural Support +9%)"
+
+[talent_stats.0x4d]
+label      = "pweapon_rof_pct"
+unit       = "pct"
+confidence = "verified"
+notes      = "minor_capacitor.pweapon_rof.* (Quick-Charge Capacitor +6%); laser.{ion,laser,light,quad}_cannon.tier_X 'Increased Rate of Fire'"
+
+[talent_stats.0x1e]
+label      = "weapon_power_regen_pct"
+unit       = "pct"
+confidence = "verified"
+notes      = "minor_magazine.weapon_power_regen.* (Blaster Power Regeneration +8% base, +4/+8/+12 upgrade); paired with 0x1f"
+
+[talent_stats.0x1f]
+label      = "weapon_power_regen_pct_alt"
+unit       = "pct"
+confidence = "verified"
+notes      = "Paired with 0x1e; values match. Only appears on the same minor_magazine.weapon_power_regen.* talents"
+
+[talent_stats.0x20]
+label      = "shield_power_regen_pct"
+unit       = "pct"
+confidence = "verified"
+notes      = "minor_reactor.shield_power_regen.* (+8% base); crew.defensive.shield_power_regen (Quick Recharge +15%); shield ability outliers (overcharged_shield.base -60%, quick_recharge.base +55%, shield_projector.base +35%)"
+
+[talent_stats.0x21]
+label      = "shield_power_regen_pct_alt"
+unit       = "pct"
+confidence = "verified"
+notes      = "Paired with 0x20; matches on component/crew. Shield ability rows diverge (quick_recharge.base = 75.0, quick_recharge.tier3a = 100.0) -- those values are NOT percentages but appear to be a delay/threshold scalar. Filter to WHERE label='shield_power_regen_pct' for clean rollup"
+
+[talent_stats.0x2f]
+label      = "pweapon_range_pct"
+unit       = "pct"
+confidence = "verified"
+notes      = "minor_capacitor.pweapon_range.* (Precision Capacitor +4% base, +2/+4/+6 upgrade); laser tier_2 +5% Increased Range; rocket_pod.tier_5a +10%. Triple-encoded with 0x30 and 0x31 (identical values per row -- consumers should pick one)"
+
+[talent_stats.0x30]
+label      = "pweapon_range_pct_alt1"
+unit       = "pct"
+confidence = "verified"
+notes      = "Paired with 0x2f and 0x31; identical values. Likely a per-band (short/medium/long) split that always carries the same delta"
+
+[talent_stats.0x31]
+label      = "pweapon_range_pct_alt2"
+unit       = "pct"
+confidence = "verified"
+notes      = "Paired with 0x2f and 0x30. Also picks up missile range (all missile.*.tier_4{a,b} 'Increased Range' +10%, proton_torpedoes.tier5b +15%, target_tracker.tier4b +10%)"
+
+[talent_stats.0x3f]
+label      = "sensor_range_units"
+unit       = "units"
+confidence = "verified"
+notes      = "minor_sensors.sensor_range.* (Increased Sensor Range +20 units base, +10/+20/+30 upgrade); crew.tactical.sensor_radius (Peripheral Vision +30); drone.sensor_beacon.tier2 +50. Distinct from 0x68 sensor_radius_units (which fires on aoe/mine radius)"
+
+[talent_stats.0x44]
+label      = "sensor_dampening_units"
+unit       = "units"
+confidence = "verified"
+notes      = "minor_sensors.sensor_dampen.* (Increased Dampening +16 units base, +8/+16/+24 upgrade); crew.tactical.sensor_damping (Silent Running +20)"
+
+[talent_stats.0x4a]
+label      = "shield_piercing_pct"
+unit       = "pct"
+confidence = "verified"
+notes      = "Laser/missile/railgun 'Shield Piercing' tier upgrades (+8% to +15%)"
+
+[talent_stats.0x4c]
+label      = "hull_damage_pct"
+unit       = "pct"
+confidence = "verified"
+notes      = "Laser tier_5a 'Increased Hull Damage' +16%; railgun.slug_railgun.tier_4a 'Improved Damage to Hull' +6%"
+
+[talent_stats.0x4e]
+label      = "accuracy_pct"
+unit       = "pct"
+confidence = "verified"
+notes      = "crew.offensive.accuracy (Pinpointing +6%); laser tier 'Improved Targeting/Accuracy' (+2-6%); railgun 'Increased Accuracy and Tracking' +3%"
+
+[talent_stats.0x50]
+label      = "power_transfer_cost_pct"
+unit       = "pct"
+confidence = "verified"
+notes      = "shield.directional_shield.tier1 'Remove Transfer Cost' = -1.0 (-100%); shield.xfer_to_engine.tier2 'Reduce Power Cost' -10%"
+
+[talent_stats.0x51]
+label      = "engine_ability_power_cost_pct"
+unit       = "pct"
+confidence = "verified"
+notes      = "Engine ability tier1 'Reduced Power Cost' (-10% to -20%) on every engine maneuver; crew.engineering.engine_power_efficiency (Efficient Maneuvers -13%). Paired with 0x26 and 0x27 on the crew passive"
+
+[talent_stats.0x52]
+label      = "weapon_power_draw_pct"
+unit       = "pct"
+confidence = "verified"
+notes      = "railgun.{plasma,slug}_railgun.tier_{3,4b} 'Reduced Power Draw' -10%. Distinct from 0x56 weapon_power_cost_pct (laser-side)"
+
+[talent_stats.0x55]
+label      = "shield_regen_delay_pct"
+unit       = "pct"
+confidence = "verified"
+notes      = "minor_reactor.shield_regen_cooldown.* (-24% base, -12/-24/-36 upgrade); crew.defensive.shield_power_regen secondary effect (-15%); shield.quick_recharge.base -15%. OUTLIER: shield.directional_shield.tier3a stores -3.0 = -3 seconds raw delta (not a percentage) -- consumers can filter WHERE label='shield_regen_delay_pct' AND ABS(value) < 1.0 for clean pct rollup"
+
+[talent_stats.0x56]
+label      = "weapon_power_cost_pct"
+unit       = "pct"
+confidence = "verified"
+notes      = "laser tier_2/tier_4b 'Reduced Power Cost' -10%; crew.engineering.weapon_power_efficiency (Efficient Fire -13%). Laser-side counterpart to 0x52 weapon_power_draw_pct (railgun)"
+
+[talent_stats.0x59]
+label      = "armor_pierce_flag"
+unit       = "bool"
+confidence = "verified"
+notes      = "All values = 1.0 (boolean flag). Laser/missile/railgun 'Ignore Armor' tier upgrades that grant 100% armor pierce on a hit type"
+
+[talent_stats.0x5a]
+label      = "charge_time_pct"
+unit       = "pct"
+confidence = "verified"
+notes      = "Railgun tier_1 'Reduced Charge Time' -10% (plasma/slug/ion railguns)"
+
+[talent_stats.0x5d]
+label      = "secondary_weapon_cooldown_pct"
+unit       = "pct"
+confidence = "verified"
+notes      = "crew.offensive.secondary_weapons_cooldown (Rapid Reload -12%). OUTLIERS: missile.interdiction_missiles.tier_2 (-3.0) and missile.target_tracker.tier3 (-5.0) store raw seconds. Filter WHERE ABS(value) < 1.0 for percent rollup"
+
+[talent_stats.0x5e]
+label      = "engine_speed_pct"
+unit       = "pct"
+confidence = "verified"
+notes      = "minor_thrusters.engine_speed.* (Increased Speed +4% base, +2/+4/+6 upgrade); engine ability tier3a 'Increased Ship Speed' +10%"
+
+[talent_stats.0x6a]
+label      = "crit_damage_pct"
+unit       = "pct"
+confidence = "verified"
+notes      = "laser.quad_laser.tier_4a 'Increased Critical Hit Damage' +15%. Distinct from 0x69 crit_chance_pct"
+
+[talent_stats.0x26]
+label      = "engine_ability_power_cost_pct_alt1"
+unit       = "pct"
+confidence = "verified"
+notes      = "Paired with 0x27 and 0x51 on crew.engineering.engine_power_efficiency (Efficient Maneuvers -13%). Single-record stat; semantics same as 0x51"
+
+[talent_stats.0x27]
+label      = "engine_ability_power_cost_pct_alt2"
+unit       = "pct"
+confidence = "verified"
+notes      = "Paired with 0x26 and 0x51 on crew.engineering.engine_power_efficiency. Single-record stat"
+
+
+# --- FQN-prefix overrides ---
+# Some stat_ids carry context-dependent semantics. The "default" label below is
+# correct for the most common talents that emit the byte (e.g. shield.shield_projector
+# uses 0x40 for cooldown_delta_seconds), but specific FQN families repurpose the
+# slot for a domain-specific stat. When the talent's FQN starts with `fqn_prefix`,
+# the populate function replaces the default label/unit/confidence with the
+# override below.
+[[talent_stat_overrides]]
+fqn_prefix = "tal.spvp.minor_sensors.com_range"
+stat_id    = "0x40"
+label      = "comm_range_units"
+unit       = "units"
+confidence = "verified"
+notes      = "minor_sensors.com_range.{base,upgrade} +40 / +20/+40/+60 units. The 0x40 slot defaults to cooldown_delta_seconds but for comm_range talents it's distance units"
+
+[[talent_stat_overrides]]
+fqn_prefix = "tal.spvp.crew.tactical.communications_range"
+stat_id    = "0x40"
+label      = "comm_range_units"
+unit       = "units"
+confidence = "verified"
+notes      = "crew.tactical.communications_range (Comm Boost +50 units). Same 0x40-as-units repurposing as the minor_sensors.com_range talents"
+
+[[talent_stat_overrides]]
+fqn_prefix = "tal.spvp.minor_sensors.sensor_range"
+stat_id    = "0x41"
+label      = "sensor_range_duration_seconds"
+unit       = "s"
+confidence = "guess"
+notes      = "minor_sensors.sensor_range.* carries BOTH 0x3f (sensor_range_units, the primary effect) and 0x41 with the same value scale. 0x41 normally encodes duration_extension_seconds for active abilities; for this passive its meaning is unclear but values align with the unit count (20/10/20/30). Treat as redundant pending verification"
+
+[[talent_stat_overrides]]
+fqn_prefix = "tal.spvp.crew.tactical.sensor_volume"
+stat_id    = "0x41"
+label      = "sensor_volume_units"
+unit       = "units"
+confidence = "verified"
+notes      = "crew.tactical.sensor_volume (Depth of Field +35 units). The 0x41 slot defaults to duration_extension_seconds but this crew passive grants a sensor-volume bonus"
+
+
 # abl.spvp.* prop_id (u16) -- u16 LE prop_id with high byte 0x04, followed
 # by f32 LE value. Stat-ID semantics differ from `tal.spvp.*` -- 0x0402
 # is cooldown for GSF base abilities, an animation marker for ground.

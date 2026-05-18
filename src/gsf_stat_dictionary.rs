@@ -26,6 +26,17 @@ pub struct StatDictionary {
     pub ability_stats: HashMap<u16, StatLabel>,
     /// `abl.*` ground -- prop_id (u16) -> label
     pub ground_ability_props: HashMap<u16, StatLabel>,
+    /// FQN-prefix overrides for `tal.spvp.*` stat_ids whose meaning depends on
+    /// the parent talent (e.g. 0x40 is normally `cooldown_delta_seconds` but
+    /// `minor_sensors.com_range.*` repurposes it as `comm_range_units`).
+    pub talent_stat_overrides: Vec<TalentStatOverride>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TalentStatOverride {
+    pub fqn_prefix: String,
+    pub stat_id: u8,
+    pub label: StatLabel,
 }
 
 impl StatDictionary {
@@ -42,9 +53,22 @@ impl StatDictionary {
             ability_stats: HashMap<String, Entry>,
             #[serde(default)]
             ground_ability_props: HashMap<String, Entry>,
+            #[serde(default)]
+            talent_stat_overrides: Vec<OverrideEntry>,
         }
         #[derive(serde::Deserialize)]
         struct Entry {
+            label: String,
+            unit: String,
+            confidence: String,
+            #[serde(default)]
+            #[allow(dead_code)]
+            notes: Option<String>,
+        }
+        #[derive(serde::Deserialize)]
+        struct OverrideEntry {
+            fqn_prefix: String,
+            stat_id: String,
             label: String,
             unit: String,
             confidence: String,
@@ -99,10 +123,28 @@ impl StatDictionary {
             );
         }
 
+        let mut talent_stat_overrides = Vec::with_capacity(file.talent_stat_overrides.len());
+        for entry in file.talent_stat_overrides {
+            let stat_id = parse_hex(&entry.stat_id)? as u8;
+            talent_stat_overrides.push(TalentStatOverride {
+                fqn_prefix: entry.fqn_prefix,
+                stat_id,
+                label: StatLabel {
+                    label: entry.label,
+                    unit: entry.unit,
+                    confidence: entry.confidence,
+                },
+            });
+        }
+        // Longest prefix first so a more specific override wins over a shorter
+        // sibling if any future entries overlap.
+        talent_stat_overrides.sort_by_key(|ov| std::cmp::Reverse(ov.fqn_prefix.len()));
+
         Ok(Self {
             talent_stats,
             ability_stats,
             ground_ability_props,
+            talent_stat_overrides,
         })
     }
 
@@ -118,6 +160,19 @@ impl StatDictionary {
                 unit: String::new(),
                 confidence: "unknown".to_string(),
             })
+    }
+
+    /// FQN-aware label lookup for `tal.spvp.*`. Consults `talent_stat_overrides`
+    /// first; falls back to the default `talent_label` mapping. Use this from
+    /// `populate_gsf_talent_stats` so context-overloaded stat_ids (0x40 acting
+    /// as comm range on minor_sensors.com_range.*) ship with the right label.
+    pub fn talent_label_for(&self, stat_id: u8, fqn: &str) -> StatLabel {
+        for ov in &self.talent_stat_overrides {
+            if ov.stat_id == stat_id && fqn.starts_with(&ov.fqn_prefix) {
+                return ov.label.clone();
+            }
+        }
+        self.talent_label(stat_id)
     }
 
     /// Look up a label for an `abl.spvp.*` prop_id.
@@ -172,5 +227,52 @@ mod tests {
         let label = dict.talent_label(0xFE);
         assert_eq!(label.label, "unknown_0xfe");
         assert_eq!(label.confidence, "unknown");
+    }
+
+    #[test]
+    fn fqn_override_relabels_collision_stats() {
+        let dict = StatDictionary::from_embedded().unwrap();
+        // Default for 0x40 is cooldown_delta_seconds.
+        let default_label = dict.talent_label_for(0x40, "tal.spvp.shield.shield_projector.tier1");
+        assert_eq!(default_label.label, "cooldown_delta_seconds");
+        assert_eq!(default_label.unit, "s");
+
+        // minor_sensors.com_range.* repurposes 0x40 as comm_range_units.
+        let overridden = dict.talent_label_for(0x40, "tal.spvp.minor_sensors.com_range.base");
+        assert_eq!(overridden.label, "comm_range_units");
+        assert_eq!(overridden.unit, "units");
+        assert_eq!(overridden.confidence, "verified");
+
+        // crew.tactical.communications_range is also overridden.
+        let comm_boost = dict.talent_label_for(0x40, "tal.spvp.crew.tactical.communications_range");
+        assert_eq!(comm_boost.label, "comm_range_units");
+
+        // crew.tactical.sensor_volume reuses 0x41 as sensor_volume_units.
+        let sensor_volume = dict.talent_label_for(0x41, "tal.spvp.crew.tactical.sensor_volume");
+        assert_eq!(sensor_volume.label, "sensor_volume_units");
+        assert_eq!(sensor_volume.unit, "units");
+    }
+
+    #[test]
+    fn new_decoded_labels_present() {
+        let dict = StatDictionary::from_embedded().unwrap();
+        // Spot-check the labels huttspawn needs for the build calculator.
+        for (id, expected) in [
+            (0x46u8, "shield_power_pool_pct"),
+            (0x45, "weapon_power_pool_pct"),
+            (0x08, "hull_strength_pct"),
+            (0x58, "damage_reduction_pct"),
+            (0x38, "evasion_pct"),
+            (0x4e, "accuracy_pct"),
+            (0x3f, "sensor_range_units"),
+            (0x44, "sensor_dampening_units"),
+            (0x55, "shield_regen_delay_pct"),
+            (0x20, "shield_power_regen_pct"),
+            (0x1e, "weapon_power_regen_pct"),
+        ] {
+            let label = dict.talent_label(id);
+            assert_eq!(label.label, expected, "stat 0x{:02x}", id);
+            assert_eq!(label.confidence, "verified", "stat 0x{:02x}", id);
+        }
     }
 }
