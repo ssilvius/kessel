@@ -287,6 +287,23 @@ confidence = "verified"
 notes      = "Paired with 0x26 and 0x51 on crew.engineering.engine_power_efficiency. Single-record stat"
 
 
+# --- 2026-05-20 expansion (#117 leftover talent stats) ---
+# The last two unknown_0x talent_stat IDs left after the #116 pass. Both
+# anchored on the talent's localized name string -- the name IS the label.
+
+[talent_stats.0x3e]
+label      = "charge_time_seconds_delta"
+unit       = "s"
+confidence = "verified"
+notes      = "Single record on tal.spvp.drone.sniper_sentry_drone.tier5b ('Reduced Charge Time') = -0.5s. Raw-seconds counterpart to 0x5a charge_time_pct (railgun tier_1 -10%). Drone-side rather than railgun-side"
+
+[talent_stats.0x57]
+label      = "shield_bleedthrough_pct"
+unit       = "pct"
+confidence = "verified"
+notes      = "tal.spvp.shield.charged_plating.base = 0.33 (base 33% bleedthrough); tier1 ('Reduce Shield Damage Bleedthrough') = -0.10 (-10%). Both rows anchored on the talent name string. Charged Plating is the shield that converts shield damage to hull damage; 0x57 is the conversion rate"
+
+
 # --- FQN-prefix overrides ---
 # Some stat_ids carry context-dependent semantics. The "default" label below is
 # correct for the most common talents that emit the byte (e.g. shield.shield_projector
@@ -361,6 +378,26 @@ label      = "duration_seconds"
 unit       = "s"
 confidence = "guess"
 notes      = "Range observed 100..500"
+
+
+# --- 2026-05-20 expansion (#117 FQN-anchored ability decodes) ---
+# Two prop_ids where the ability FQN + value combination is unambiguous.
+# The remaining 12 unknown_0x ability prop_ids (0x0407, 0x0409, 0x041a,
+# 0x0424, 0x0435, 0x043e, 0x0451, 0x045d, 0x04ba, 0x04f7, 0x04f8, 0x04f9)
+# need in-game ground-truth from Sean's Blackbolt capture pass -- see #117
+# PR description for the capture ask.
+
+[ability_stats.0x0410]
+label      = "chargeup_time_seconds"
+unit       = "s"
+confidence = "verified"
+notes      = "Uniform 2.047 on abl.spvp.railgun.{ion,plasma,slug}_railgun.chargeup. The trailing .chargeup FQN segment names the stat type directly; the value (~2s) matches railgun chargeup behaviour. Paired with talent 0x5a charge_time_pct which encodes the railgun tier_1 'Reduced Charge Time' -10% delta"
+
+[ability_stats.0x0439]
+label      = "damage_value"
+unit       = "damage"
+confidence = "verified"
+notes      = "Single record on abl.spvp.damage.collison.impact (Selfdamage) = 100.0. The .impact FQN segment names the action; 100 is the collision damage value. Distinct from 0x0424 (uniform 5.0 across all laser.<comp>.damage) which is a per-laser secondary stat -- needs ground-truth"
 
 
 # abl.* (ground ability) `0x04xx` prop_id (u16) labels for ability_stats.raw_props.
