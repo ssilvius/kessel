@@ -380,12 +380,21 @@ confidence = "guess"
 notes      = "Range observed 100..500"
 
 
-# --- 2026-05-20 expansion (#117 FQN-anchored ability decodes) ---
-# Two prop_ids where the ability FQN + value combination is unambiguous.
-# The remaining 12 unknown_0x ability prop_ids (0x0407, 0x0409, 0x041a,
-# 0x0424, 0x0435, 0x043e, 0x0451, 0x045d, 0x04ba, 0x04f7, 0x04f8, 0x04f9)
-# need in-game ground-truth from Sean's Blackbolt capture pass -- see #117
-# PR description for the capture ask.
+# --- 2026-05-20 expansion (#117 corpus-anchored ability decodes) ---
+# Labels anchored on either the ability FQN segment OR a structural twin in
+# the talent_stats dictionary (the "compound power-cost record" form
+# `CC 08 4B DA B5 <pool> 04 <f32>` where the pool byte selects the
+# power-pool family and the talent counterpart names the per-class
+# percentage delta).
+#
+# 6 false-positive prop_ids (0x0409, 0x04ba, 0x0435, 0x043e, 0x0451, 0x045d)
+# previously emitted by the window scanner were CE-content-ref or
+# CF-content-guid byte sequences misread as f32 records. The decoder now
+# rejects those windows (see src/schema/gsf_ability.rs).
+#
+# 2 real-but-unlabelable prop_ids (0x0407 drone-only, 0x0424 laser-only)
+# carry FQN-class context but the binary does not name them; downstream
+# consumers can route by FQN prefix.
 
 [ability_stats.0x0410]
 label      = "chargeup_time_seconds"
@@ -397,7 +406,43 @@ notes      = "Uniform 2.047 on abl.spvp.railgun.{ion,plasma,slug}_railgun.charge
 label      = "damage_value"
 unit       = "damage"
 confidence = "verified"
-notes      = "Single record on abl.spvp.damage.collison.impact (Selfdamage) = 100.0. The .impact FQN segment names the action; 100 is the collision damage value. Distinct from 0x0424 (uniform 5.0 across all laser.<comp>.damage) which is a per-laser secondary stat -- needs ground-truth"
+notes      = "Single record on abl.spvp.damage.collison.impact (Selfdamage) = 100.0. The .impact FQN segment names the action; 100 is the collision damage value"
+
+[ability_stats.0x04f8]
+label      = "engine_power_cost_ratio"
+unit       = "ratio"
+confidence = "verified"
+notes      = "Engine power-pool cost per activation. Appears on all 9 engine abilities in the compound record `CC 08 4B DA B5 F8 04 <f32>` (engine-class trailer 5B 2C 4D 2F). Values 0.10-0.50 are fractions of the engine power pool: barrel_roll 0.35, koiogran 0.25, smugglers_drift 0.25, retro_thrusters 0.25, power_dive 0.10, interdiction_drive 0.50, face_target 0.25, xfer_to_shields 0.20, xfer_to_weapons 0.20. Structural twin to talent 0x51 engine_ability_power_cost_pct (tier_1 'Reduced Power Cost' -10..-20% on every engine maneuver)"
+
+[ability_stats.0x04f7]
+label      = "shield_power_cost_ratio"
+unit       = "ratio"
+confidence = "verified"
+notes      = "Shield power-pool cost per activation. Compound record `CC 08 4B DA B5 F7 04 <f32>` with shield-class trailer (5B 2C 4D 30). Values: directional_shield 0.10, xfer_to_engine 0.20. Structural twin to talent 0x50 power_transfer_cost_pct (directional_shield.tier1 'Remove Transfer Cost' = -1.0; xfer_to_engine.tier2 'Reduce Power Cost' -10%)"
+
+[ability_stats.0x04f9]
+label      = "weapon_power_cost_ratio"
+unit       = "ratio"
+confidence = "verified"
+notes      = "Weapon power-pool cost per shot. Compound record `CC 08 4B DA B5 F9 04 <f32>`. Values: railgun.{ion,plasma,slug}.chargeup 0.12, secondary.ion_burst.on_fire 0.30, secondary.plama_lance.on_fire 0.60. Structural twin to talents 0x52 weapon_power_draw_pct (railgun -10%) and 0x56 weapon_power_cost_pct (laser/secondary -10%)"
+
+[ability_stats.0x041a]
+label      = "hard_cast_time_seconds"
+unit       = "s"
+confidence = "guess"
+notes      = "Sentry drone arming + item-consume cast time: drone.sentry_missile.missile 2.5s, drone.sentry_sniper.railgun 4.0s, itemgrant.consume_item 3.0s. Same prop_id and semantic as the ground-ability dictionary entry for 0x041a (hard_cast_time_seconds). Confidence: guess pending ground-truth -- the values are plausible for the activity but the semantic is borrowed from the ground dictionary rather than corpus-confirmed for GSF"
+
+[ability_stats.0x0407]
+label      = "range_units"
+unit       = "100m"
+confidence = "verified"
+notes      = "Drone-weapon range in 100m units (value * 100 = meters). Anchored against in-corpus description strings: drone.sentry_missile.missile = 70 matches sentry_missile.summon description 'range of 7000m'; drone.sentry_sniper.railgun = 100 matches sentry_sniper.summon description '10000m range'. Same 100m-unit convention as 0x0421 (e.g. drone.sentry_interdiction.interdiction_field value 30 = 3000m radius per its summon description)"
+
+[ability_stats.0x0424]
+label      = "laser_class_constant"
+unit       = "unknown"
+confidence = "unknown"
+notes      = "Real property record. Uniform 5.0 across all 9 laser.<comp>.damage rows and 50.0 on missile.target_painter.impact. The uniformity ACROSS lasers (despite different damage/arc/range per cannon) rules out per-component variance -- this is a class-level constant. The 10x jump from laser to target_painter mirrors primary->secondary class tier. Could be damage_tier_index, weapon_power_per_shot_class, or class_marker. Not disambiguable from binary structure alone. Route by FQN: appears only on `.damage` (laser) and `.impact` (target_painter)"
 
 
 # abl.* (ground ability) `0x04xx` prop_id (u16) labels for ability_stats.raw_props.
