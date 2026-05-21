@@ -439,10 +439,10 @@ confidence = "verified"
 notes      = "Drone-weapon range in 100m units (value * 100 = meters). Anchored against in-corpus description strings: drone.sentry_missile.missile = 70 matches sentry_missile.summon description 'range of 7000m'; drone.sentry_sniper.railgun = 100 matches sentry_sniper.summon description '10000m range'. Same 100m-unit convention as 0x0421 (e.g. drone.sentry_interdiction.interdiction_field value 30 = 3000m radius per its summon description)"
 
 [ability_stats.0x0424]
-label      = "laser_class_constant"
-unit       = "unknown"
-confidence = "unknown"
-notes      = "Real property record. Uniform 5.0 across all 9 laser.<comp>.damage rows and 50.0 on missile.target_painter.impact. The uniformity ACROSS lasers (despite different damage/arc/range per cannon) rules out per-component variance -- this is a class-level constant. The 10x jump from laser to target_painter mirrors primary->secondary class tier. Could be damage_tier_index, weapon_power_per_shot_class, or class_marker. Not disambiguable from binary structure alone. Route by FQN: appears only on `.damage` (laser) and `.impact` (target_painter)"
+label      = "weapon_class_marker"
+unit       = "class"
+confidence = "guess"
+notes      = "Position-0 property in the flat block of direct-fire damage/impact sub-abilities. Class-level constant -- NOT per-component variance. GSF values: 5.0 on all 9 abl.spvp.laser.<comp>.damage rows, 50.0 on abl.spvp.missile.target_painter.impact. Wider corpus shows a hierarchy of values for the same prop_id across the legacy space-combat namespace: 100.0 on abl.space_combat.freeflight.primaryweapons.* (heavy primaries), 400.0 on abl.space_combat.player.torpedo, 500.0 on abl.space_combat.freeflight.chargeupweapons.*_onhit. The pattern (5/50/100/400/500) tracks weapon power tier within the SWTOR weapon namespace. CB-token blocks following the property block are IDENTICAL bytes across standard/heavy/quad lasers, confirming the .damage payload carries no per-component variance -- per-laser damage/range/arc lives in a separate scFF*Prototype singleton (out of scope for #117; tracked under #115 / scFFComponentsPrototype). Label is 'guess' because the binary does not name the field; the structural argument is class-marker, not in-game-validated"
 
 
 # abl.* (ground ability) `0x04xx` prop_id (u16) labels for ability_stats.raw_props.
