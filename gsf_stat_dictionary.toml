@@ -287,6 +287,23 @@ confidence = "verified"
 notes      = "Paired with 0x26 and 0x51 on crew.engineering.engine_power_efficiency. Single-record stat"
 
 
+# --- 2026-05-20 expansion (#117 leftover talent stats) ---
+# The last two unknown_0x talent_stat IDs left after the #116 pass. Both
+# anchored on the talent's localized name string -- the name IS the label.
+
+[talent_stats.0x3e]
+label      = "charge_time_seconds_delta"
+unit       = "s"
+confidence = "verified"
+notes      = "Single record on tal.spvp.drone.sniper_sentry_drone.tier5b ('Reduced Charge Time') = -0.5s. Raw-seconds counterpart to 0x5a charge_time_pct (railgun tier_1 -10%). Drone-side rather than railgun-side"
+
+[talent_stats.0x57]
+label      = "shield_bleedthrough_pct"
+unit       = "pct"
+confidence = "verified"
+notes      = "tal.spvp.shield.charged_plating.base = 0.33 (base 33% bleedthrough); tier1 ('Reduce Shield Damage Bleedthrough') = -0.10 (-10%). Both rows anchored on the talent name string. Charged Plating is the shield that converts shield damage to hull damage; 0x57 is the conversion rate"
+
+
 # --- FQN-prefix overrides ---
 # Some stat_ids carry context-dependent semantics. The "default" label below is
 # correct for the most common talents that emit the byte (e.g. shield.shield_projector
@@ -361,6 +378,71 @@ label      = "duration_seconds"
 unit       = "s"
 confidence = "guess"
 notes      = "Range observed 100..500"
+
+
+# --- 2026-05-20 expansion (#117 corpus-anchored ability decodes) ---
+# Labels anchored on either the ability FQN segment OR a structural twin in
+# the talent_stats dictionary (the "compound power-cost record" form
+# `CC 08 4B DA B5 <pool> 04 <f32>` where the pool byte selects the
+# power-pool family and the talent counterpart names the per-class
+# percentage delta).
+#
+# 6 false-positive prop_ids (0x0409, 0x04ba, 0x0435, 0x043e, 0x0451, 0x045d)
+# previously emitted by the window scanner were CE-content-ref or
+# CF-content-guid byte sequences misread as f32 records. The decoder now
+# rejects those windows (see src/schema/gsf_ability.rs).
+#
+# 2 real-but-unlabelable prop_ids (0x0407 drone-only, 0x0424 laser-only)
+# carry FQN-class context but the binary does not name them; downstream
+# consumers can route by FQN prefix.
+
+[ability_stats.0x0410]
+label      = "chargeup_time_seconds"
+unit       = "s"
+confidence = "verified"
+notes      = "Uniform 2.047 on abl.spvp.railgun.{ion,plasma,slug}_railgun.chargeup. The trailing .chargeup FQN segment names the stat type directly; the value (~2s) matches railgun chargeup behaviour. Paired with talent 0x5a charge_time_pct which encodes the railgun tier_1 'Reduced Charge Time' -10% delta"
+
+[ability_stats.0x0439]
+label      = "damage_value"
+unit       = "damage"
+confidence = "verified"
+notes      = "Single record on abl.spvp.damage.collison.impact (Selfdamage) = 100.0. The .impact FQN segment names the action; 100 is the collision damage value"
+
+[ability_stats.0x04f8]
+label      = "engine_power_cost_ratio"
+unit       = "ratio"
+confidence = "verified"
+notes      = "Engine power-pool cost per activation. Appears on all 9 engine abilities in the compound record `CC 08 4B DA B5 F8 04 <f32>` (engine-class trailer 5B 2C 4D 2F). Values 0.10-0.50 are fractions of the engine power pool: barrel_roll 0.35, koiogran 0.25, smugglers_drift 0.25, retro_thrusters 0.25, power_dive 0.10, interdiction_drive 0.50, face_target 0.25, xfer_to_shields 0.20, xfer_to_weapons 0.20. Structural twin to talent 0x51 engine_ability_power_cost_pct (tier_1 'Reduced Power Cost' -10..-20% on every engine maneuver)"
+
+[ability_stats.0x04f7]
+label      = "shield_power_cost_ratio"
+unit       = "ratio"
+confidence = "verified"
+notes      = "Shield power-pool cost per activation. Compound record `CC 08 4B DA B5 F7 04 <f32>` with shield-class trailer (5B 2C 4D 30). Values: directional_shield 0.10, xfer_to_engine 0.20. Structural twin to talent 0x50 power_transfer_cost_pct (directional_shield.tier1 'Remove Transfer Cost' = -1.0; xfer_to_engine.tier2 'Reduce Power Cost' -10%)"
+
+[ability_stats.0x04f9]
+label      = "weapon_power_cost_ratio"
+unit       = "ratio"
+confidence = "verified"
+notes      = "Weapon power-pool cost per shot. Compound record `CC 08 4B DA B5 F9 04 <f32>`. Values: railgun.{ion,plasma,slug}.chargeup 0.12, secondary.ion_burst.on_fire 0.30, secondary.plama_lance.on_fire 0.60. Structural twin to talents 0x52 weapon_power_draw_pct (railgun -10%) and 0x56 weapon_power_cost_pct (laser/secondary -10%)"
+
+[ability_stats.0x041a]
+label      = "hard_cast_time_seconds"
+unit       = "s"
+confidence = "guess"
+notes      = "Sentry drone arming + item-consume cast time: drone.sentry_missile.missile 2.5s, drone.sentry_sniper.railgun 4.0s, itemgrant.consume_item 3.0s. Same prop_id and semantic as the ground-ability dictionary entry for 0x041a (hard_cast_time_seconds). Confidence: guess pending ground-truth -- the values are plausible for the activity but the semantic is borrowed from the ground dictionary rather than corpus-confirmed for GSF"
+
+[ability_stats.0x0407]
+label      = "range_units"
+unit       = "100m"
+confidence = "verified"
+notes      = "Drone-weapon range in 100m units (value * 100 = meters). Anchored against in-corpus description strings: drone.sentry_missile.missile = 70 matches sentry_missile.summon description 'range of 7000m'; drone.sentry_sniper.railgun = 100 matches sentry_sniper.summon description '10000m range'. Same 100m-unit convention as 0x0421 (e.g. drone.sentry_interdiction.interdiction_field value 30 = 3000m radius per its summon description)"
+
+[ability_stats.0x0424]
+label      = "weapon_class_marker"
+unit       = "class"
+confidence = "guess"
+notes      = "Position-0 property in the flat block of direct-fire damage/impact sub-abilities. Class-level constant -- NOT per-component variance. GSF values: 5.0 on all 9 abl.spvp.laser.<comp>.damage rows, 50.0 on abl.spvp.missile.target_painter.impact. Wider corpus shows a hierarchy of values for the same prop_id across the legacy space-combat namespace: 100.0 on abl.space_combat.freeflight.primaryweapons.* (heavy primaries), 400.0 on abl.space_combat.player.torpedo, 500.0 on abl.space_combat.freeflight.chargeupweapons.*_onhit. The pattern (5/50/100/400/500) tracks weapon power tier within the SWTOR weapon namespace. CB-token blocks following the property block are IDENTICAL bytes across standard/heavy/quad lasers, confirming the .damage payload carries no per-component variance -- per-laser damage/range/arc lives in a separate scFF*Prototype singleton (out of scope for #117; tracked under #115 / scFFComponentsPrototype). Label is 'guess' because the binary does not name the field; the structural argument is class-marker, not in-game-validated"
 
 
 # abl.* (ground ability) `0x04xx` prop_id (u16) labels for ability_stats.raw_props.
