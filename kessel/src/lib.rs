@@ -13,5 +13,6 @@ pub mod myp;
 pub mod pbuk;
 pub mod quest;
 pub mod schema;
+pub mod scpt;
 pub mod stb;
 pub mod xml_parser;
