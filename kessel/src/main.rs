@@ -6,6 +6,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+mod buckets_info;
 mod db;
 mod dds;
 mod gifts;
