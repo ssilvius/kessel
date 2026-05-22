@@ -456,6 +456,13 @@ fn main() -> Result<()> {
     let objectives_count = db.populate_quest_objectives()?;
     println!("  Quest objectives recorded: {}", objectives_count);
 
+    // Expand quest_prerequisites flag-graph (#131, closes #67) -- widens the
+    // payload-string prefix whitelist from "has_" only to the full SWTOR
+    // flag family (qstrew_, qstv_, cflag_, glob_, cdx_, ach_completed_,
+    // completed_).
+    let prereq_count = db.populate_quest_prerequisites_graph()?;
+    println!("  Quest prereq edges: {}", prereq_count);
+
     // Item classification from FQN (#59): slot, rating, rarity, source, etc.
     let item_count = db.populate_item_tables()?;
     println!("  Items classified: {}", item_count);
