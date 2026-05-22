@@ -968,6 +968,73 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_class_specs_origin ON class_specs(origin_code);
             CREATE INDEX IF NOT EXISTS idx_class_specs_role ON class_specs(role);
 
+            -- Ability typed columns (#138) -- mirrors `quest_details` pattern
+            -- since `abilities` is a VIEW over objects, not a base table.
+            -- Foundation pass ships the schema; populator deferred to
+            -- follow-on once per-property post-CF40 value decode is verified.
+            -- Columns drawn from client.gom Ability schema (46 props, 5
+            -- named enums: aiAbility, ablAutoAttack, ablUIDisplayType,
+            -- tgtRule, staCombatMode).
+            CREATE TABLE IF NOT EXISTS ability_details (
+                fqn               TEXT PRIMARY KEY,
+                ai_ability        TEXT,
+                auto_attack       TEXT,
+                ui_display_type   TEXT,
+                target_rule       TEXT,
+                combat_mode       TEXT
+            );
+
+            -- NPC typed columns (#139) -- 32 props, 5 named enums from
+            -- client.gom Npc schema.
+            CREATE TABLE IF NOT EXISTS npc_details (
+                fqn               TEXT PRIMARY KEY,
+                difficulty        TEXT,
+                faction           TEXT,
+                class_role        TEXT,
+                ai_template       TEXT,
+                level             INTEGER
+            );
+
+            -- Item typed columns (#140) -- complements existing item_details.
+            -- Adds schema-derived columns separate from the FQN-classified ones.
+            CREATE TABLE IF NOT EXISTS item_schema_details (
+                fqn               TEXT PRIMARY KEY,
+                rarity            TEXT,
+                binding           TEXT,
+                stack_size_max    INTEGER
+            );
+
+            -- Schematic typed columns (#140) -- 35 props from Schematic schema.
+            CREATE TABLE IF NOT EXISTS schematic_details (
+                fqn               TEXT PRIMARY KEY,
+                profession        TEXT,
+                tier              INTEGER,
+                training_cost     INTEGER
+            );
+
+            -- Talent typed columns (#140) -- 7 props from Talent schema.
+            CREATE TABLE IF NOT EXISTS talent_details (
+                fqn               TEXT PRIMARY KEY,
+                discipline_code   TEXT,
+                tree_position     INTEGER,
+                tier              INTEGER
+            );
+
+            -- Talent effects (#143) -- structured CF40 D954FB02 STAT enum +
+            -- effAction enum decode of talent effect blocks. Foundation pass
+            -- ships the schema; populator requires per-property post-CF40
+            -- byte-layout decode (deferred).
+            CREATE TABLE IF NOT EXISTS talent_effects (
+                fqn               TEXT NOT NULL,
+                ordinal           INTEGER NOT NULL,
+                stat              TEXT,
+                action            TEXT,
+                value_float       REAL,
+                value_int         INTEGER,
+                PRIMARY KEY (fqn, ordinal)
+            );
+            CREATE INDEX IF NOT EXISTS idx_talent_effects_stat ON talent_effects(stat);
+
             -- Extraction metadata
             CREATE TABLE IF NOT EXISTS meta (
                 key TEXT PRIMARY KEY,
@@ -5996,5 +6063,31 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn typed_detail_tables_exist_after_init() {
+        let path = temp_db_path("typed_details");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+        let conn = db.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+            .unwrap();
+        let names: std::collections::HashSet<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        for t in [
+            "ability_details",
+            "npc_details",
+            "item_schema_details",
+            "schematic_details",
+            "talent_details",
+            "talent_effects",
+        ] {
+            assert!(names.contains(t), "missing typed-details table: {t}");
+        }
     }
 }
