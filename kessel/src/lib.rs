@@ -17,6 +17,7 @@ pub mod pbuk;
 pub mod prototypes_info;
 pub mod quest;
 pub mod schema;
+pub mod scpt;
 pub mod stb;
 pub mod xml_parser;
 pub mod xml_utf16;
