@@ -1,0 +1,26 @@
+[package]
+name = "kessel-discovery"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+description = "Discovery and reverse-engineering tooling for kessel. Not shipped by default; build with `cargo build -p kessel-discovery` or `cargo build --workspace`."
+publish = false
+
+# Discovery binaries are picked up automatically from src/bin/*.rs
+# (no explicit [[bin]] declarations needed)
+
+[dependencies]
+kessel = { path = "../kessel" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+regex.workspace = true
+flate2.workspace = true
+zstd.workspace = true
+clap.workspace = true
+hex.workspace = true
+base64.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+indicatif.workspace = true

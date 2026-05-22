@@ -2,13 +2,25 @@
 
 SWTOR game data extractor. Parses binary `.tor` archives and outputs structured data to SQLite.
 
+## Workspace layout
+
+Cargo workspace with two crates:
+
+- `kessel/` -- the production crate (the `kessel` binary + library). This is what ships.
+- `kessel-discovery/` -- one-off reverse-engineering tools, probes, dumps, scanners. Not shipped by default; built on demand for discovery work.
+
 ## Build and test
 
 ```bash
+# Default: only builds production `kessel` binary
 cargo build --release
-cargo test
-cargo clippy -- -D warnings
+cargo test -p kessel
+cargo clippy -p kessel -- -D warnings
 cargo fmt --check
+
+# Full workspace (includes ~60 discovery binaries)
+cargo build --release --workspace
+cargo build --release -p kessel-discovery --bin <name>  # one-off recon tool
 ```
 
 ## Run extraction
