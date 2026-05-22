@@ -191,6 +191,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::excessive_precision)]
     fn rejects_huge_magnitudes() {
         let payload = rec(0x0400, -536576.125);
         assert!(decode_gsf_ability_stats(&payload).is_empty());
@@ -284,10 +285,10 @@ mod tests {
     fn consumes_template_and_content_guids() {
         // `CF 40 + 8 bytes` and `CF E0 + 6 bytes` tokens.
         let mut payload = vec![0xCF, 0x40];
-        payload.extend(std::iter::repeat(0xAA).take(8));
+        payload.extend(std::iter::repeat_n(0xAA, 8));
         payload.push(0xCF);
         payload.push(0xE0);
-        payload.extend(std::iter::repeat(0xBB).take(6));
+        payload.extend(std::iter::repeat_n(0xBB, 6));
         payload.extend_from_slice(&rec(0x0402, 30.0));
         let recs = decode_gsf_ability_stats(&payload);
         assert_eq!(recs.len(), 1);
