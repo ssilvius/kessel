@@ -5,6 +5,7 @@
 pub mod db;
 pub mod dds;
 pub mod gifts;
+pub mod gom_schema;
 pub mod grammar;
 pub mod gsf_stat_dictionary;
 pub mod hash;
