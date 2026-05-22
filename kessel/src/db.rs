@@ -284,6 +284,28 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_quest_details_type ON quest_details(mission_type);
             CREATE INDEX IF NOT EXISTS idx_quest_details_planet ON quest_details(planet);
 
+            -- Quest objectives (#130, closes #15).
+            -- Populated from the Quest class_ref array referenced by client.gom
+            -- Quest property [38] (QuestObjective struct). Foundation pass
+            -- records detected-objective count via marker scan; per-objective
+            -- field decode (target_fqn, kind enum, count, name_string_id) lands
+            -- in a follow-on PR once class_ref element byte-layout is verified.
+            CREATE TABLE IF NOT EXISTS quest_objectives (
+                quest_game_id   TEXT NOT NULL,
+                quest_fqn       TEXT NOT NULL,
+                ordinal         INTEGER NOT NULL,
+                target_fqn      TEXT,
+                kind            TEXT NOT NULL,
+                count           INTEGER,
+                name_string_id  INTEGER,
+                raw_props       TEXT,
+                PRIMARY KEY (quest_game_id, ordinal)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_quest_objectives_target ON quest_objectives(target_fqn);
+            CREATE INDEX IF NOT EXISTS idx_quest_objectives_kind ON quest_objectives(kind);
+            CREATE INDEX IF NOT EXISTS idx_quest_objectives_quest_fqn ON quest_objectives(quest_fqn);
+
             -- Item details (classified from FQN patterns; #59).
             -- Set name and set bonus require GOM payload parsing and are
             -- deferred to a follow-up issue.
@@ -1368,9 +1390,6 @@ impl Database {
         Ok(detail_count)
     }
 
-    /// Populate the typed columns added by `migrate_quest_typed_columns` for
-    /// every Quest object. Foundation pass (#129): walks each payload via the
-    /// schema-aware GOM walker and records marker presence for the 4 named
     /// Quest enums. Real value decode lands in a follow-on PR.
     pub fn populate_quest_details_typed(&self) -> Result<u64> {
         self.flush()?;
@@ -1438,6 +1457,76 @@ impl Database {
         }
         tx.commit()?;
         Ok(updated)
+    }
+
+    /// Populate `quest_objectives` from each Quest payload (#130, closes #15).
+    ///
+    /// Foundation pass: for each Quest payload, run the schema-aware walker
+    /// (#125) and look for class_ref markers that the dict identifies as the
+    /// QuestObjective struct. When found, record one placeholder row per
+    /// quest with ordinal 0 + `kind = "MARKER_PRESENT"`. Per-objective field
+    /// decode (target_fqn, real kind enum, count, name_string_id) lands in a
+    /// follow-on PR once class_ref array element byte-layout is verified.
+    pub fn populate_quest_objectives(&self) -> Result<u64> {
+        self.flush()?;
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
+        let rows: Vec<(String, String, String)> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT game_id, fqn, json FROM objects \
+                 WHERE kind = 'Quest' AND is_canonical = 1",
+            )?;
+            let collected: Vec<(String, String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            collected
+        };
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut inserted = 0u64;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR REPLACE INTO quest_objectives \
+                    (quest_game_id, quest_fqn, ordinal, target_fqn, kind, count, name_string_id, raw_props) \
+                 VALUES (?1, ?2, ?3, NULL, ?4, NULL, NULL, NULL)",
+            )?;
+            for (game_id, fqn, json_str) in &rows {
+                let payload = match serde_json::from_str::<serde_json::Value>(json_str)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("payload_b64")
+                            .and_then(|p| p.as_str())
+                            .map(String::from)
+                    })
+                    .and_then(|b64| BASE64.decode(b64).ok())
+                {
+                    Some(bytes) => bytes,
+                    None => continue,
+                };
+                let decoded = match decode_payload_schema_aware(&payload, QUEST_CLASS_TYPE_HI32) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                let named = decoded.named_props.as_object();
+                let has_class_ref = named
+                    .map(|m| m.keys().any(|k| k.starts_with("class_ref")))
+                    .unwrap_or(false);
+                if has_class_ref {
+                    stmt.execute(params![game_id, fqn, 0i64, "MARKER_PRESENT"])?;
+                    inserted += 1;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(inserted)
     }
 
     /// Populate `item_details` from every `kind = 'Item'` row by classifying
@@ -5553,5 +5642,31 @@ mod tests {
             )
             .unwrap();
         assert_eq!(activity.as_deref(), Some("PRESENT"));
+    }
+
+    #[test]
+    fn quest_objectives_table_exists_after_init() {
+        let path = temp_db_path("quest_obj_table");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+        let conn = db.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='quest_objectives'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "quest_objectives table missing after init");
+    }
+
+    #[test]
+    fn populate_quest_objectives_handles_empty_archive() {
+        let path = temp_db_path("quest_obj_empty");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+        // No Quest objects inserted -> zero rows.
+        let n = db.populate_quest_objectives().unwrap();
+        assert_eq!(n, 0);
     }
 }
