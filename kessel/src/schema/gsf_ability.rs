@@ -115,6 +115,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::excessive_precision)]
     fn rejects_huge_magnitudes() {
         let payload = rec(0x0400, -536576.125);
         assert!(decode_gsf_ability_stats(&payload).is_empty());
