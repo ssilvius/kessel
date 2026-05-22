@@ -450,6 +450,12 @@ fn main() -> Result<()> {
     let quest_typed = db.populate_quest_details_typed()?;
     println!("  Quest details typed: {} rows updated", quest_typed);
 
+    // Schema-aware quest objectives (#130 foundation): marker-presence pass
+    // recording quests that emit QuestObjective class_ref markers. Per-objective
+    // field decode lands in a follow-on PR.
+    let objectives_count = db.populate_quest_objectives()?;
+    println!("  Quest objectives recorded: {}", objectives_count);
+
     // Item classification from FQN (#59): slot, rating, rarity, source, etc.
     let item_count = db.populate_item_tables()?;
     println!("  Items classified: {}", item_count);
