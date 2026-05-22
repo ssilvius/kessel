@@ -193,6 +193,7 @@ mod tests {
     #[test]
     #[allow(clippy::excessive_precision)]
     fn rejects_huge_magnitudes() {
+        // Literal preserved verbatim from real-corpus reject case; allow lint.
         let payload = rec(0x0400, -536576.125);
         assert!(decode_gsf_ability_stats(&payload).is_empty());
     }
