@@ -12,6 +12,7 @@ pub mod gsf_stat_dictionary;
 pub mod hash;
 pub mod icon_overrides;
 pub mod myp;
+pub mod node;
 pub mod pbuk;
 pub mod prototypes_info;
 pub mod quest;
