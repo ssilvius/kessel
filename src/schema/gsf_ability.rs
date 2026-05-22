@@ -117,7 +117,9 @@ fn try_consume_opaque(payload: &[u8], i: usize) -> Option<usize> {
 /// record's f32 payload overlaps with a real token.
 fn starts_opaque_token(rest: &[u8], off: usize) -> bool {
     let Some(a) = rest.get(off) else { return false };
-    let Some(b) = rest.get(off + 1) else { return false };
+    let Some(b) = rest.get(off + 1) else {
+        return false;
+    };
     matches!((a, b), (0xCE, 0x0B) | (0xCF, 0x40) | (0xCF, 0xE0))
 }
 
