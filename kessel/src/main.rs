@@ -10,6 +10,7 @@ mod buckets_info;
 mod db;
 mod dds;
 mod gifts;
+mod gom_schema;
 mod grammar;
 mod gsf_stat_dictionary;
 mod hash;
