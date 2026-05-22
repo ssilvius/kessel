@@ -1529,6 +1529,81 @@ impl Database {
         Ok(inserted)
     }
 
+    /// Expand `quest_prerequisites` by scanning quest payload strings for the
+    /// full set of SWTOR flag-style variable refs (#131, closes #67).
+    ///
+    /// `populate_quest_tables` only captures payload string refs starting
+    /// with `has_`, which yields ~10 rows for 1,513 quests. This pass widens
+    /// the prefix whitelist to the known SWTOR flag families to recover the
+    /// rest of the story-arc graph:
+    ///
+    /// - `has_*`, `qstrew_*`, `qstv_*`, `cflag_*`, `glob_*`, `cdx_*`,
+    ///   `ach_completed_*`, `completed_*`
+    ///
+    /// Each matching string is recorded verbatim as the `variable` column on
+    /// the existing `quest_prerequisites(fqn, variable)` schema. Idempotent
+    /// via `INSERT OR IGNORE`.
+    pub fn populate_quest_prerequisites_graph(&self) -> Result<u64> {
+        self.flush()?;
+
+        const PREFIXES: &[&str] = &[
+            "has_",
+            "qstrew_",
+            "qstv_",
+            "cflag_",
+            "glob_",
+            "cdx_",
+            "ach_completed_",
+            "completed_",
+        ];
+
+        let rows: Vec<(String, String)> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT fqn, json FROM objects WHERE kind = 'Quest' AND is_canonical = 1",
+            )?;
+            let collected: Vec<(String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            collected
+        };
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut inserted = 0u64;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR IGNORE INTO quest_prerequisites (fqn, variable) VALUES (?1, ?2)",
+            )?;
+            for (fqn, json_str) in &rows {
+                let v: serde_json::Value = match serde_json::from_str(json_str) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let strings = match v.get("strings").and_then(|s| s.as_array()) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                for s_value in strings {
+                    let s = match s_value.as_str() {
+                        Some(s) => s,
+                        None => continue,
+                    };
+                    if PREFIXES.iter().any(|p| s.starts_with(p)) {
+                        let affected = stmt.execute(params![fqn, s])?;
+                        if affected > 0 {
+                            inserted += 1;
+                        }
+                    }
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(inserted)
+    }
+
     /// Populate `item_details` from every `kind = 'Item'` row by classifying
     /// the FQN. Mirrors `populate_quest_tables` in shape.
     pub fn populate_item_tables(&self) -> Result<u64> {
@@ -5668,5 +5743,75 @@ mod tests {
         // No Quest objects inserted -> zero rows.
         let n = db.populate_quest_objectives().unwrap();
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn populate_quest_prerequisites_graph_extracts_flag_families() {
+        let path = temp_db_path("quest_prereqs_graph");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+        let json = serde_json::json!({
+            "strings": [
+                "has_completed_intro",
+                "qstrew_lord_grathan_xp",
+                "qstv_act1_state",
+                "cflag_dark_choice",
+                "glob_world_event",
+                "cdx_lore_unlock",
+                "ach_completed_kill_boss",
+                "completed_phase_1",
+                "ignored_random_string",
+                "qst.unrelated.fqn",
+            ]
+        })
+        .to_string();
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, json, is_canonical) \
+                 VALUES ('q1', 'sid', 'ph', 'g1', 'qst.test.example', 'Quest', ?1, 1)",
+                params![json],
+            )
+            .unwrap();
+        }
+        let n = db.populate_quest_prerequisites_graph().unwrap();
+        assert_eq!(n, 8, "should capture all 8 flag-family prefixes");
+        let conn = db.conn.lock().unwrap();
+        let variables: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT variable FROM quest_prerequisites WHERE fqn = 'qst.test.example' ORDER BY variable")
+                .unwrap();
+            stmt.query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        assert!(variables.contains(&"qstrew_lord_grathan_xp".to_string()));
+        assert!(variables.contains(&"cdx_lore_unlock".to_string()));
+        assert!(!variables.iter().any(|v| v == "ignored_random_string"));
+    }
+
+    #[test]
+    fn populate_quest_prerequisites_graph_is_idempotent() {
+        let path = temp_db_path("quest_prereqs_idem");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+        let json = serde_json::json!({"strings": ["has_one", "qstv_two"]}).to_string();
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, json, is_canonical) \
+                 VALUES ('q1', 'sid', 'ph', 'g1', 'qst.test.idem', 'Quest', ?1, 1)",
+                params![json],
+            )
+            .unwrap();
+        }
+        let first = db.populate_quest_prerequisites_graph().unwrap();
+        let second = db.populate_quest_prerequisites_graph().unwrap();
+        assert_eq!(first, 2);
+        assert_eq!(
+            second, 0,
+            "INSERT OR IGNORE should produce zero affected on re-run"
+        );
     }
 }
