@@ -952,6 +952,22 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_appearances_fqn ON appearances(fqn);
             CREATE INDEX IF NOT EXISTS idx_appearances_guid ON appearances(guid);
 
+            -- Class specs (#137) extracted from chrspec.tbl UTF-16 XML.
+            -- Holds the per-class spec definitions referenced by the existing
+            -- `disciplines` table; foundation pass ships the schema so
+            -- downstream extractors can target it.
+            CREATE TABLE IF NOT EXISTS class_specs (
+                spec_id          TEXT PRIMARY KEY,
+                spec_name        TEXT,
+                origin_code      TEXT,
+                discipline_code  TEXT,
+                role             TEXT,
+                primary_stat     TEXT,
+                raw_xml          TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_class_specs_origin ON class_specs(origin_code);
+            CREATE INDEX IF NOT EXISTS idx_class_specs_role ON class_specs(role);
+
             -- Extraction metadata
             CREATE TABLE IF NOT EXISTS meta (
                 key TEXT PRIMARY KEY,
@@ -5959,6 +5975,22 @@ mod tests {
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='appearances'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn class_specs_table_exists_after_init() {
+        let path = temp_db_path("class_specs_table");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+        let conn = db.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='class_specs'",
                 [],
                 |row| row.get(0),
             )
