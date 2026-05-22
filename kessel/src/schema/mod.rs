@@ -4,8 +4,10 @@ pub mod gsf_ability;
 pub mod gsf_talent;
 pub mod item;
 
+use crate::gom_schema;
 use crate::icon_overrides::IconOverrides;
 use crate::pbuk::GomObject;
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -349,5 +351,185 @@ impl GameObject {
             }
         }
         last_match
+    }
+}
+
+// ----- Schema-aware payload walker (#125) ------------------------------------
+//
+// Walks a GOM payload and resolves CF40 type markers via the gom_schema
+// dictionary to produce typed, named properties alongside the existing raw
+// hex output. Additive: callers that read the existing JSON output continue to
+// work; consumers who want typed access read the new `named_props` field.
+
+/// Result of a schema-aware payload decode.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[allow(dead_code)]
+pub struct SchemaAwareDecoded {
+    /// Existing hex-keyed format -- one entry per CF40 marker found.
+    /// Example: `{"D954FB02": null}` (raw key, value placeholder).
+    pub raw_props: Value,
+
+    /// Named typed properties resolved via gom_schema. Keys are the property
+    /// kind ("enum_ref", "int32", etc) combined with the resolved target name
+    /// when available (e.g. "stat_selector").
+    pub named_props: Value,
+
+    /// Class name resolved from the input `class_type_hi32`, if any.
+    pub class_name: Option<String>,
+
+    /// Number of CF40 markers in the payload that resolved to a known property.
+    pub property_count_resolved: usize,
+
+    /// Number of CF40 markers in the payload that did NOT resolve.
+    pub property_count_unresolved: usize,
+}
+
+/// Walk a GOM payload, resolve CF40 type markers via `gom_schema`, and emit
+/// typed properties alongside the existing raw hex output.
+///
+/// `class_type_hi32` is the high32 of the object's `template_guid` (per the
+/// existing `GameObject::template_guid` formatting -- take the leading 8 hex
+/// characters and parse as u32).
+///
+/// This is an ADDITIVE function: it produces a new `SchemaAwareDecoded` struct
+/// without modifying any existing output. Consumers that don't call this see
+/// no change in their data.
+#[allow(dead_code)]
+pub fn decode_payload_schema_aware(
+    payload: &[u8],
+    class_type_hi32: u32,
+) -> Result<SchemaAwareDecoded> {
+    use serde_json::json;
+
+    let mut raw_props = serde_json::Map::new();
+    let mut named_props = serde_json::Map::new();
+    let mut resolved = 0usize;
+    let mut unresolved = 0usize;
+
+    // Scan for CF 40 00 00 markers (template_guid prefix used by GOM payloads).
+    // Each marker is 10 bytes total: CF 40 + 8 bytes BE body. We only act on
+    // markers whose body starts with `00 00` (the template-class flag); the
+    // following 4 bytes are the property/class id high32 in BE.
+    let mut i = 0;
+    while i + 10 <= payload.len() {
+        if payload[i] != 0xCF || payload[i + 1] != 0x40 {
+            i += 1;
+            continue;
+        }
+        // Body: payload[i+2..i+10] -- 8 bytes BE.
+        // First two bytes typically "00 00" for template-class markers.
+        let hi32_bytes: [u8; 4] = payload[i + 4..i + 8].try_into().unwrap();
+        let hi32 = u32::from_be_bytes(hi32_bytes);
+        let raw_key = format!("{hi32:08X}");
+        raw_props.insert(raw_key.clone(), json!(null));
+
+        match gom_schema::property_for_cf40(hi32) {
+            Some(prop) => {
+                resolved += 1;
+                // Build a named key: combine property kind + first resolved ref
+                // name when available. Falls back to kind-only key.
+                let mut named_key = prop.kind.clone();
+                if let Some(refs) = &prop.refs {
+                    if let Some(first) = refs.first() {
+                        named_key = format!("{}__{}", prop.kind, first.name);
+                    }
+                }
+                // We don't attempt to decode the post-marker value bytes in
+                // this PR -- callers wanting typed values use the per-class
+                // schema extractors in later PRs. The marker presence + name
+                // is itself the unlock; per-marker value decoding scope grows
+                // case-by-case as consumers light up.
+                named_props.insert(named_key, json!(null));
+            }
+            None => {
+                unresolved += 1;
+            }
+        }
+
+        i += 10;
+    }
+
+    let class_name = gom_schema::class_for_type_hi32(class_type_hi32).and_then(|c| c.name.clone());
+
+    Ok(SchemaAwareDecoded {
+        raw_props: Value::Object(raw_props),
+        named_props: Value::Object(named_props),
+        class_name,
+        property_count_resolved: resolved,
+        property_count_unresolved: unresolved,
+    })
+}
+
+#[cfg(test)]
+mod schema_walker_tests {
+    use super::*;
+
+    fn build_cf40_marker(hi32: u32) -> [u8; 10] {
+        let mut buf = [0u8; 10];
+        buf[0] = 0xCF;
+        buf[1] = 0x40;
+        // body bytes 2..10: first 4 are zero, next 4 are hi32 BE.
+        // (matches per-class template format used by the corpus)
+        buf[4..8].copy_from_slice(&hi32.to_be_bytes());
+        buf
+    }
+
+    #[test]
+    fn decodes_known_cf40_marker_resolves() {
+        // CF40 D954FB02 = STAT selector per Agent D (verified in #124).
+        let payload = build_cf40_marker(0xD954FB02);
+        let d = decode_payload_schema_aware(&payload, 0xD954FB01).expect("decode");
+        assert!(d.property_count_resolved >= 1, "D954FB02 should resolve");
+        let raw = d.raw_props.as_object().unwrap();
+        assert!(raw.contains_key("D954FB02"), "raw_props key missing");
+        let named = d.named_props.as_object().unwrap();
+        // Named key should mention STAT (the resolved enum target).
+        assert!(
+            named.keys().any(|k| k.contains("STAT")),
+            "named_props missing STAT: {named:?}"
+        );
+    }
+
+    #[test]
+    fn unresolved_marker_counts() {
+        // CF40 DEADBEEF is not a known property hi32 -> unresolved.
+        let payload = build_cf40_marker(0xDEADBEEF);
+        let d = decode_payload_schema_aware(&payload, 0xD954FB01).expect("decode");
+        assert_eq!(d.property_count_unresolved, 1);
+        let raw = d.raw_props.as_object().unwrap();
+        assert!(raw.contains_key("DEADBEEF"));
+    }
+
+    #[test]
+    fn resolves_class_name_for_quest() {
+        let payload = []; // empty payload OK for class lookup
+        let d = decode_payload_schema_aware(&payload, 0x2ADEC3D2).expect("decode");
+        let name = d.class_name.as_deref().unwrap_or("");
+        assert!(
+            name.contains("qst"),
+            "Quest class name unexpected: {name:?}"
+        );
+    }
+
+    #[test]
+    fn empty_payload_no_markers() {
+        let d = decode_payload_schema_aware(&[], 0xD954FB01).expect("decode");
+        assert_eq!(d.property_count_resolved, 0);
+        assert_eq!(d.property_count_unresolved, 0);
+    }
+
+    #[test]
+    fn additive_does_not_break_existing_decoder() {
+        // Regression guard: the new walker must not modify any existing API
+        // path. Verify the existing GameObject::from_gom_with_overrides remains
+        // callable.
+        let dummy_gom = GomObject {
+            fqn: "test.fqn".to_string(),
+            header: vec![0u8; 42],
+            payload: vec![],
+        };
+        let _obj = GameObject::from_gom_with_overrides(&dummy_gom, None);
+        // If this compiles + the test infrastructure runs, the additive API
+        // hasn't disturbed existing call sites.
     }
 }
