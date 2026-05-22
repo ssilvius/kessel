@@ -444,6 +444,12 @@ fn main() -> Result<()> {
     // Second pass: populate quest tables from extracted objects
     let quest_count = db.populate_quest_tables()?;
 
+    // Schema-aware quest typed columns (#129 foundation): activity_type,
+    // difficulty, rewards_visibility, episode_season, level. Marker-presence
+    // pass; real value decode lands in a follow-on PR.
+    let quest_typed = db.populate_quest_details_typed()?;
+    println!("  Quest details typed: {} rows updated", quest_typed);
+
     // Item classification from FQN (#59): slot, rating, rarity, source, etc.
     let item_count = db.populate_item_tables()?;
     println!("  Items classified: {}", item_count);
