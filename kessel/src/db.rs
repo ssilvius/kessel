@@ -921,6 +921,22 @@ impl Database {
 
             CREATE INDEX IF NOT EXISTS idx_item_set_members_set ON item_set_members(set_fqn);
 
+            -- Creatures (#133) extracted from .node PROT prototypes whose
+            -- FQN starts with `creature.*`. PROT format unlock from #126.
+            -- Population requires NodeRecord input; foundation pass ships
+            -- the schema so downstream tooling can target it.
+            CREATE TABLE IF NOT EXISTS creatures (
+                game_id          TEXT PRIMARY KEY,
+                fqn              TEXT NOT NULL,
+                template_guid    TEXT NOT NULL,
+                string_id        INTEGER,
+                species          TEXT,
+                difficulty       TEXT,
+                raw_props        TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_creatures_fqn ON creatures(fqn);
+            CREATE INDEX IF NOT EXISTS idx_creatures_species ON creatures(species);
+
             -- Extraction metadata
             CREATE TABLE IF NOT EXISTS meta (
                 key TEXT PRIMARY KEY,
@@ -5704,16 +5720,8 @@ mod tests {
         let db = Database::with_grammar(&path, None).unwrap();
         db.init_schema().unwrap();
 
-        // Build a synthetic payload with a CF40 marker for a property whose
-        // walker-resolved named_key contains "qstActivityType". We use the
-        // schema-walker's actual resolution path: scan crate::gom_schema to
-        // find a property whose enum_ref points at qstActivityType.
         let activity_hi32 = {
             let mut found: Option<u32> = None;
-            // Iterate the dict's known classes -> property_refs -> property
-            // and pick the first whose refs[0].name == "qstActivityType".
-            // Avoid panicking if not present (schema changed) -- the test
-            // then skips assertion.
             let class = crate::gom_schema::class_for_type_hi32(QUEST_CLASS_TYPE_HI32);
             if let Some(c) = class {
                 for prop_ref in &c.property_refs {
@@ -5736,9 +5744,6 @@ mod tests {
             found
         };
         if activity_hi32.is_none() {
-            // Schema does not currently expose qstActivityType -- skip rather
-            // than encode a brittle assertion. The schema migration test above
-            // already proves the column exists.
             return;
         }
         let hi32 = activity_hi32.unwrap();
@@ -5799,7 +5804,6 @@ mod tests {
         let path = temp_db_path("quest_obj_empty");
         let db = Database::with_grammar(&path, None).unwrap();
         db.init_schema().unwrap();
-        // No Quest objects inserted -> zero rows.
         let n = db.populate_quest_objectives().unwrap();
         assert_eq!(n, 0);
     }
@@ -5913,5 +5917,21 @@ mod tests {
         // Re-run is idempotent
         let n2 = db.populate_quest_npcs_direct().unwrap();
         assert_eq!(n2, 0);
+    }
+
+    #[test]
+    fn creatures_table_exists_after_init() {
+        let path = temp_db_path("creatures_table");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+        let conn = db.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='creatures'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
     }
 }
