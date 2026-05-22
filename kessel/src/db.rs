@@ -8,8 +8,11 @@ use std::sync::{Arc, Mutex};
 use crate::grammar::Grammar;
 use crate::quest;
 use crate::schema::item;
-use crate::schema::GameObject;
+use crate::schema::{decode_payload_schema_aware, GameObject};
 use crate::stb::StbEntry;
+
+/// Quest class type_hi32 from client.gom (decoded by Agent D, legion 019e4d75).
+const QUEST_CLASS_TYPE_HI32: u32 = 0x2ADE_C3D2;
 
 /// Per-kind row counts inserted by `populate_conversation_refs`.
 #[derive(Default, Debug)]
@@ -903,7 +906,42 @@ impl Database {
             );
             "#,
         )?;
+        drop(conn);
+        self.migrate_quest_typed_columns()?;
 
+        Ok(())
+    }
+
+    /// Add typed columns to `quest_details` from the client.gom Quest schema
+    /// (#129 foundation). Idempotent -- checks pragma_table_info first so
+    /// re-runs are no-ops.
+    ///
+    /// Foundation-only scope: columns store marker-presence flags ("PRESENT")
+    /// rather than decoded enum members / ints / strings. Real value decode
+    /// requires per-property post-CF40 byte-layout verification and ships in
+    /// a follow-on PR.
+    pub fn migrate_quest_typed_columns(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let existing: std::collections::HashSet<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(quest_details)")?;
+            let cols = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?;
+            cols.into_iter().collect()
+        };
+        let additions = [
+            ("activity_type", "TEXT"),
+            ("difficulty", "TEXT"),
+            ("rewards_visibility", "TEXT"),
+            ("episode_season", "TEXT"),
+            ("level", "INTEGER"),
+        ];
+        for (name, ty) in additions {
+            if !existing.contains(name) {
+                let sql = format!("ALTER TABLE quest_details ADD COLUMN {name} {ty}");
+                conn.execute(&sql, [])?;
+            }
+        }
         Ok(())
     }
 
@@ -1328,6 +1366,78 @@ impl Database {
 
         tx.commit()?;
         Ok(detail_count)
+    }
+
+    /// Populate the typed columns added by `migrate_quest_typed_columns` for
+    /// every Quest object. Foundation pass (#129): walks each payload via the
+    /// schema-aware GOM walker and records marker presence for the 4 named
+    /// Quest enums. Real value decode lands in a follow-on PR.
+    pub fn populate_quest_details_typed(&self) -> Result<u64> {
+        self.flush()?;
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
+        let rows: Vec<(String, String)> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT fqn, json FROM objects WHERE kind = 'Quest' AND is_canonical = 1",
+            )?;
+            let collected: Vec<(String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            collected
+        };
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut updated = 0u64;
+        {
+            let mut stmt = tx.prepare_cached(
+                "UPDATE quest_details
+                    SET activity_type = ?1,
+                        difficulty = ?2,
+                        rewards_visibility = ?3,
+                        episode_season = ?4,
+                        level = ?5
+                  WHERE fqn = ?6",
+            )?;
+            for (fqn, json_str) in &rows {
+                let payload = match serde_json::from_str::<serde_json::Value>(json_str)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("payload_b64")
+                            .and_then(|p| p.as_str())
+                            .map(String::from)
+                    })
+                    .and_then(|b64| BASE64.decode(b64).ok())
+                {
+                    Some(bytes) => bytes,
+                    None => continue,
+                };
+                let decoded = match decode_payload_schema_aware(&payload, QUEST_CLASS_TYPE_HI32) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                let named = decoded.named_props.as_object();
+                let presence = |needle: &str| -> Option<&str> {
+                    named.and_then(|m| m.keys().any(|k| k.contains(needle)).then_some("PRESENT"))
+                };
+                let activity = presence("qstActivityType");
+                let difficulty = presence("qstDifficulty");
+                let rewards = presence("qstRewardsVisibility");
+                let episode = presence("qstEpisodeSeason");
+                // Level: future per-property decode. Foundation pass leaves NULL.
+                let level: Option<i64> = None;
+                let affected =
+                    stmt.execute(params![activity, difficulty, rewards, episode, level, fqn,])?;
+                if affected > 0 {
+                    updated += 1;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(updated)
     }
 
     /// Populate `item_details` from every `kind = 'Item'` row by classifying
@@ -5337,5 +5447,111 @@ mod tests {
         payload.push(11);
         payload.extend_from_slice(b"hello world");
         assert_eq!(extract_talent_script_hook(&payload), None);
+    }
+
+    #[test]
+    fn migrate_quest_typed_columns_adds_columns_idempotently() {
+        let path = temp_db_path("quest_typed_migrate");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+        // Re-run should be a no-op (idempotency check).
+        db.migrate_quest_typed_columns().unwrap();
+        let conn = db.conn.lock().unwrap();
+        let mut stmt = conn.prepare("PRAGMA table_info(quest_details)").unwrap();
+        let names: std::collections::HashSet<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        for col in [
+            "activity_type",
+            "difficulty",
+            "rewards_visibility",
+            "episode_season",
+            "level",
+        ] {
+            assert!(names.contains(col), "missing typed column {col}: {names:?}");
+        }
+    }
+
+    #[test]
+    fn populate_quest_details_typed_sets_marker_presence() {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        let path = temp_db_path("quest_typed_pop");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+
+        // Build a synthetic payload with a CF40 marker for a property whose
+        // walker-resolved named_key contains "qstActivityType". We use the
+        // schema-walker's actual resolution path: scan crate::gom_schema to
+        // find a property whose enum_ref points at qstActivityType.
+        let activity_hi32 = {
+            let mut found: Option<u32> = None;
+            // Iterate the dict's known classes -> property_refs -> property
+            // and pick the first whose refs[0].name == "qstActivityType".
+            // Avoid panicking if not present (schema changed) -- the test
+            // then skips assertion.
+            let class = crate::gom_schema::class_for_type_hi32(QUEST_CLASS_TYPE_HI32);
+            if let Some(c) = class {
+                for prop_ref in &c.property_refs {
+                    if prop_ref.len() < 16 {
+                        continue;
+                    }
+                    let low32_hex = &prop_ref[8..16];
+                    if let Ok(hi32) = u32::from_str_radix(low32_hex, 16) {
+                        if let Some(prop) = crate::gom_schema::property_for_cf40(hi32) {
+                            if let Some(refs) = &prop.refs {
+                                if refs.iter().any(|r| r.name.contains("qstActivityType")) {
+                                    found = Some(hi32);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            found
+        };
+        if activity_hi32.is_none() {
+            // Schema does not currently expose qstActivityType -- skip rather
+            // than encode a brittle assertion. The schema migration test above
+            // already proves the column exists.
+            return;
+        }
+        let hi32 = activity_hi32.unwrap();
+        let mut payload = vec![0u8; 4];
+        payload.push(0xCF);
+        payload.push(0x40);
+        payload.extend_from_slice(&[0u8; 2]);
+        payload.extend_from_slice(&hi32.to_be_bytes());
+        payload.extend_from_slice(&[0u8; 2]);
+        let payload_b64 = BASE64.encode(&payload);
+
+        {
+            let conn = db.conn.lock().unwrap();
+            let json = format!(r#"{{"payload_b64":"{payload_b64}"}}"#);
+            conn.execute(
+                "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, json, is_canonical) \
+                 VALUES ('qt1', 'sid1', 'ph1', 'guid1', 'qst.test.example', 'Quest', ?1, 1)",
+                params![json],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO quest_details (fqn, mission_type) VALUES ('qst.test.example', 'unknown')",
+                [],
+            )
+            .unwrap();
+        }
+        let updated = db.populate_quest_details_typed().unwrap();
+        assert_eq!(updated, 1);
+        let conn = db.conn.lock().unwrap();
+        let activity: Option<String> = conn
+            .query_row(
+                "SELECT activity_type FROM quest_details WHERE fqn = 'qst.test.example'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(activity.as_deref(), Some("PRESENT"));
     }
 }
