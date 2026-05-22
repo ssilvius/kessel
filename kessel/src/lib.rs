@@ -17,3 +17,4 @@ pub mod quest;
 pub mod schema;
 pub mod stb;
 pub mod xml_parser;
+pub mod xml_utf16;

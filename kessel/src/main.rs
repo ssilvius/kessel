@@ -21,6 +21,7 @@ mod quest;
 mod schema;
 mod stb;
 mod unknowns;
+mod xml_utf16;
 
 #[derive(Parser, Debug)]
 #[command(name = "kessel")]
