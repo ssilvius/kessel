@@ -15,6 +15,7 @@ mod hash;
 mod icon_overrides;
 mod myp;
 mod pbuk;
+mod prototypes_info;
 mod quest;
 mod schema;
 mod stb;

@@ -11,6 +11,7 @@ pub mod hash;
 pub mod icon_overrides;
 pub mod myp;
 pub mod pbuk;
+pub mod prototypes_info;
 pub mod quest;
 pub mod schema;
 pub mod stb;
