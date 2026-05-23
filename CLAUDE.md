@@ -67,6 +67,26 @@ Data flow:
 
 ## Known gaps
 
-- NODE files (`.node` prototypes in `/resources/systemgenerated/prototypes/`) are not yet parsed. Player abilities live here, not in bucket files.
-- GSF talent stat extraction covers 250/350 talents (#80, gsf_talent_stats table). The remaining ~100 are flag-only talents whose effects live on the parent ability or in script hooks; surfacing those would require parent-ability stat-block parsing as a separate pass.
-- No automated test for full extraction pipeline (needs SWTOR assets)
+- GSF talent stat extraction covers 250/350 talents (#80, gsf_talent_stats
+  table). The remaining ~100 are flag-only talents whose effects live on the
+  parent ability or in script hooks; surfacing those would require
+  parent-ability stat-block parsing as a separate pass.
+- No automated test for full extraction pipeline (needs SWTOR assets).
+- GSF per-component combat math (per-laser damage, range, accuracy, firing
+  arc) lives in `swtor.exe`, not in any `.tor` data file. Confirmed via
+  exhaustive byte search (legion `019e4cbb`). Recovery path: Sean's in-game
+  capture, or swtor.exe decompile (out of kessel scope).
+- CC field hash → name dictionary unknown. The 4-byte CC hashes (6F6FAE37
+  stringRef, 17E2840B abilityRef, etc.) referenced in MAPPINGS.md are not in
+  client.gom -- they live in a separate proprietary Bioware namespace.
+  Requires a known-plaintext attack to reverse (spike issue #144).
+- SCPT compiled-native scripts (1,196 in
+  `/resources/systemgenerated/compilednative/`) contain UI/SFX logic, not
+  combat math. Decoder available as `kessel::scpt` (#127) but no consumer
+  wired by default.
+- Per-property post-CF40 value byte layout (int8/16/32, enum_ref, string,
+  array, class_ref) is not yet decoded. The schema-aware walker (#125)
+  resolves marker names and emits typed property keys, but value extraction
+  is foundation-only on quest_details (#129) and quest_objectives (#130) --
+  values are recorded as `"PRESENT"` flags rather than decoded enum members
+  or ints. Follow-on PRs lift these per Quest/Ability/Item/Npc class.
