@@ -937,6 +937,21 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_creatures_fqn ON creatures(fqn);
             CREATE INDEX IF NOT EXISTS idx_creatures_species ON creatures(species);
 
+            -- Appearances (#136) extracted from .epp UTF-16 XML files at
+            -- /resources/gamedata/epp/<id>.epp. Parser lands in #128
+            -- (kessel::schema::appearance). 20,515 entries per sub-agent E
+            -- catalog. Foundation pass ships the schema; populator deferred.
+            CREATE TABLE IF NOT EXISTS appearances (
+                game_id              TEXT PRIMARY KEY,
+                fqn                  TEXT NOT NULL,
+                guid                 TEXT NOT NULL,
+                asset_version        INTEGER,
+                creation_time_stamp  TEXT,
+                fx_actions_json      TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_appearances_fqn ON appearances(fqn);
+            CREATE INDEX IF NOT EXISTS idx_appearances_guid ON appearances(guid);
+
             -- Extraction metadata
             CREATE TABLE IF NOT EXISTS meta (
                 key TEXT PRIMARY KEY,
@@ -5928,6 +5943,22 @@ mod tests {
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='creatures'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn appearances_table_exists_after_init() {
+        let path = temp_db_path("appearances_table");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+        let conn = db.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='appearances'",
                 [],
                 |row| row.get(0),
             )
