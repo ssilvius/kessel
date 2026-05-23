@@ -480,6 +480,12 @@ fn main() -> Result<()> {
     // Third pass: resolve a:enc.* refs in quest payloads to npc.* via encounter payloads
     db.populate_quest_npcs()?;
 
+    // Third-pass complement (#132 / closes #48 #49): scan quest payload strings
+    // for direct npc.* refs that the enc/spn graph misses. Picks up planetary
+    // side-quest givers and interact targets named inline.
+    let direct_npc_count = db.populate_quest_npcs_direct()?;
+    println!("  Direct quest->npc edges: {}", direct_npc_count);
+
     // Fourth pass: extract quest_reward_* variable names from quest payloads
     db.populate_quest_rewards()?;
 

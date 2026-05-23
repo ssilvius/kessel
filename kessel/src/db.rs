@@ -1606,6 +1606,65 @@ impl Database {
 
     /// Populate `item_details` from every `kind = 'Item'` row by classifying
     /// the FQN. Mirrors `populate_quest_tables` in shape.
+    /// Add direct quest -> npc edges by scanning each quest payload's strings
+    /// for `npc.*` refs (#132, closes #48 #49).
+    ///
+    /// `populate_quest_npcs` joins quests to NPCs via the encounter+spawn
+    /// graph. Planetary side quests often name their NPC directly in the
+    /// quest payload without going through enc/spn intermediaries, so those
+    /// rows never appear in `quest_npcs`. This pass picks up the direct case.
+    /// Idempotent via `INSERT OR IGNORE`.
+    pub fn populate_quest_npcs_direct(&self) -> Result<u64> {
+        self.flush()?;
+
+        let rows: Vec<(String, String)> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT fqn, json FROM objects WHERE kind = 'Quest' AND is_canonical = 1",
+            )?;
+            let collected: Vec<(String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            collected
+        };
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut inserted = 0u64;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR IGNORE INTO quest_npcs (quest_fqn, npc_fqn) VALUES (?1, ?2)",
+            )?;
+            for (fqn, json_str) in &rows {
+                let v: serde_json::Value = match serde_json::from_str(json_str) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let strings = match v.get("strings").and_then(|s| s.as_array()) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+                for s_value in strings {
+                    let s = match s_value.as_str() {
+                        Some(s) => s,
+                        None => continue,
+                    };
+                    if s.starts_with("npc.") && seen.insert(s.to_string()) {
+                        let affected = stmt.execute(params![fqn, s])?;
+                        if affected > 0 {
+                            inserted += 1;
+                        }
+                    }
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(inserted)
+    }
+
     pub fn populate_item_tables(&self) -> Result<u64> {
         self.flush()?;
 
@@ -5813,5 +5872,46 @@ mod tests {
             second, 0,
             "INSERT OR IGNORE should produce zero affected on re-run"
         );
+    }
+
+    #[test]
+    fn populate_quest_npcs_direct_picks_up_inline_refs() {
+        let path = temp_db_path("quest_npcs_direct");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+        let json = serde_json::json!({
+            "strings": [
+                "npc.korriban.overseer_ragate",
+                "npc.korriban.acolyte_grunt",
+                "qst.unrelated.fqn",
+                "npc.korriban.overseer_ragate", // duplicate must dedupe
+                "spn.korriban.spawn_table",
+            ]
+        })
+        .to_string();
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, json, is_canonical) \
+                 VALUES ('q1', 'sid', 'ph', 'g1', 'qst.korriban.side_a', 'Quest', ?1, 1)",
+                params![json],
+            )
+            .unwrap();
+        }
+        let n = db.populate_quest_npcs_direct().unwrap();
+        assert_eq!(n, 2, "should insert 2 unique npc.* edges");
+        let count: i64 = {
+            let conn = db.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM quest_npcs WHERE quest_fqn = 'qst.korriban.side_a'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(count, 2);
+        // Re-run is idempotent
+        let n2 = db.populate_quest_npcs_direct().unwrap();
+        assert_eq!(n2, 0);
     }
 }
