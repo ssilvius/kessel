@@ -182,11 +182,21 @@ pub fn parse(data: &[u8]) -> Result<Vec<GomObject>> {
     parse_object_dblb(objects_dblb)
 }
 
-/// True for bytes that can appear inside a GOM FQN string. FQNs are
-/// dot-separated lowercase identifiers like `tal.spvp.engine.barrel_roll.tier1`.
+/// True for bytes that can appear inside a GOM FQN string. Most FQNs are
+/// dot-separated lowercase identifiers like `tal.spvp.engine.barrel_roll.tier1`,
+/// but PBUK singleton prototype names use PascalCase / camelCase
+/// (`tagTablePrototype`, `colCollectionItemsPrototype`, `Suburb`, `Federation`),
+/// so both cases must be accepted.
 fn is_fqn_byte(b: u8) -> bool {
-    b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'_'
+    b.is_ascii_alphabetic() || b.is_ascii_digit() || b == b'.' || b == b'_'
 }
+
+/// Maximum number of bytes the walkback can shift. Bounded to prevent runaway
+/// scans if a preamble happens to end with fqn-shaped bytes, but large enough
+/// to cover the longest singleton FQNs observed in the corpus
+/// (`colCollectionItemsPrototype` = 27 chars + a few bytes for the preamble
+/// terminator).
+const WALKBACK_MAX_STEPS: usize = 64;
 
 /// Number of bytes the nominal FQN offset (`object_start + 42`) overshot the
 /// real FQN start. The GOM "header" is mostly non-ASCII; if the byte right
@@ -199,7 +209,7 @@ fn walkback_amount(data: &[u8], object_start: usize) -> usize {
         return 0;
     }
     let mut steps = 0;
-    while steps < 8 && nominal > steps && is_fqn_byte(data[nominal - 1 - steps]) {
+    while steps < WALKBACK_MAX_STEPS && nominal > steps && is_fqn_byte(data[nominal - 1 - steps]) {
         steps += 1;
     }
     steps
@@ -611,5 +621,83 @@ mod tests {
             strings,
             vec!["spn.location.korriban.mob.tomb_2_marka_ragnos.mob02.standard_m_01".to_string()]
         );
+    }
+
+    #[test]
+    fn is_fqn_byte_accepts_pascal_case_singletons() {
+        // Singleton prototypes use PascalCase / camelCase: tagTablePrototype,
+        // colCollectionItemsPrototype, Suburb, Federation. Uppercase letters
+        // must be valid FQN bytes or walkback stops one byte too early on
+        // singletons whose first letter is uppercase.
+        assert!(is_fqn_byte(b'T'));
+        assert!(is_fqn_byte(b'S'));
+        assert!(is_fqn_byte(b'F'));
+        assert!(is_fqn_byte(b't'));
+        assert!(is_fqn_byte(b'.'));
+        assert!(is_fqn_byte(b'_'));
+        assert!(is_fqn_byte(b'0'));
+        assert!(!is_fqn_byte(b' '));
+        assert!(!is_fqn_byte(0));
+        assert!(!is_fqn_byte(0xCF));
+    }
+
+    #[test]
+    fn walkback_amount_handles_pascal_case_first_letter() {
+        // Synthetic: object at offset 0, FQN "Suburb" ends exactly at the
+        // nominal boundary (byte 41 = last char). walkback should return 6
+        // to cover the full PascalCase name so the parser shifts the slice
+        // and reads "Suburb" intact, not "uburb".
+        let mut data = vec![0xCC; 36];
+        data.extend_from_slice(b"Suburb"); // bytes 36..42
+        data.push(0); // null at 42
+        data.extend_from_slice(&[0xCC; 16]); // tail bytes
+
+        let walkback = walkback_amount(&data, 0);
+        assert_eq!(
+            walkback, 6,
+            "walkback must cover all 6 bytes of 'Suburb' (S+u+b+u+r+b)"
+        );
+    }
+
+    #[test]
+    fn walkback_amount_handles_long_singleton_fqn_past_old_cap() {
+        // Synthetic: FQN "tagTablePrototype" (17 chars) ends at nominal=42.
+        // Old code capped walkback at 8 steps, which chopped the FQN mid-name.
+        // New cap (WALKBACK_MAX_STEPS = 64) covers the full singleton width.
+        let mut data = vec![0xCC; 25];
+        data.extend_from_slice(b"tagTablePrototype"); // bytes 25..42
+        data.push(0); // null at 42
+        data.extend_from_slice(&[0xCC; 16]);
+
+        let walkback = walkback_amount(&data, 0);
+        assert_eq!(
+            walkback, 17,
+            "walkback must cover all 17 bytes of 'tagTablePrototype'"
+        );
+    }
+
+    #[test]
+    fn walkback_amount_stops_at_non_fqn_byte() {
+        // Regression: walkback must stop when it hits a non-FQN byte
+        // (a null or other binary marker indicating preamble).
+        let mut data = vec![0xCC; 30];
+        data.push(0); // explicit terminator at byte 30 (non-fqn)
+        data.extend_from_slice(b"abc");
+        // Pad to ensure nominal index is in-range
+        data.extend_from_slice(&[0xCC; 12]);
+
+        let walkback = walkback_amount(&data, 0);
+        // From nominal=42: byte 41=0xCC (not fqn), so walkback=0
+        assert_eq!(walkback, 0);
+    }
+
+    #[test]
+    fn walkback_amount_respects_max_steps_cap() {
+        // Construct a buffer entirely of fqn-shaped bytes from nominal
+        // backward. The cap (64) must bound the result; otherwise a
+        // pathological payload could cause walkback to scan to offset 0.
+        let data = vec![b'a'; 200];
+        let walkback = walkback_amount(&data, 100);
+        assert_eq!(walkback, WALKBACK_MAX_STEPS);
     }
 }
