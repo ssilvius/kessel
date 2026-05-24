@@ -758,6 +758,21 @@ fn should_extract_object(fqn: &str, unfiltered: bool) -> bool {
             | "spn"
             | "plc"
             | "epp"
+            // Per kessel issue #169: surface previously-dropped PBUK
+            // categories as queryable GameObjects. Each is documented in
+            // docs/probes/pbuk-prefix-probes.md by category.
+            | "dis"  // disciplines (authoritative; consumed by issue #170)
+            | "stg"  // cutscene/mission staging
+            | "hyd"  // gameplay event handlers / scene triggers
+            | "cnd"  // named boolean conditions / predicate library
+            | "npp"  // NPC build/spec packages / loadout templates
+            | "dyn"  // dynamic boss-fight placeables (multi-state)
+            | "apn"  // animation packages per NPC
+            | "cos"  // cosmetic NPC archetype tags
+            | "pcs"  // player character species presets
+            | "nco"  // NPC companions, era-tagged
+            | "mrp"  // mount/reward packages, event-tied
+            | "ipp" // item paint/pattern prototypes
     ) {
         return false;
     }
@@ -977,6 +992,79 @@ fn accept_variant(seen: &mut HashMap<String, u64>, fqn: &str, obj: &schema::Game
         _ => {
             seen.insert(fqn.to_string(), score);
             true
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_extract_object_accepts_new_whitelisted_prefixes() {
+        // Per kessel issue #169: 11 previously-dropped PBUK prefixes are now
+        // accepted. One representative FQN per prefix per
+        // docs/probes/pbuk-prefix-probes.md.
+        let samples = [
+            "dis.powertech.firebug",
+            "stg.location.hoth.class.spy.supply_cache_a",
+            "hyd.location.nar_shaddaa.mob.hub2.green.rep1.room02.poi00",
+            "cnd.itm.has_item.lots.armor.bh_tro_dps",
+            "npp.location.makeb.mercenaries.infantry_bms_elite",
+            "dyn.operation.iokath.boss.scyva.combat.railgun_cove_blue",
+            "apn.npc.qtr.1x1.raid.karaggas_palace.enemy.trash",
+            "cos.location.tatooine.mob.refurbished_militia_droid",
+            "pcs.jedi_knight.female.rattataki_legacy",
+            "nco.companions_original.warrior.broonmark",
+            "mrp.galactic_seasons.season_5.mouse_droid",
+            "ipp.custom.sow.progresson.ge_a13_purple_holo.legs",
+        ];
+        for fqn in samples {
+            assert!(
+                should_extract_object(fqn, false),
+                "{fqn} must be accepted by the post-#169 whitelist"
+            );
+        }
+    }
+
+    #[test]
+    fn should_extract_object_still_rejects_unknown_prefix() {
+        assert!(!should_extract_object("zzzunknownprefix.foo", false));
+        assert!(!should_extract_object("randomgarbage", false));
+    }
+
+    #[test]
+    fn should_extract_object_still_rejects_versioned_fqns() {
+        // The /N/M suffix gate is unchanged; versioned FQNs still get
+        // normalized at a different layer.
+        assert!(!should_extract_object("abl.foo.bar/7/0", false));
+    }
+
+    #[test]
+    fn should_extract_object_preserves_existing_accepts() {
+        // Regression guard for the existing 19 whitelisted prefixes.
+        for fqn in [
+            "abl.sith_warrior.ravage",
+            "tal.spvp.laser.rapid_fire_laser.tier_4a",
+            "itm.eq.legacy.weapon.lightsaber.darth_marrs",
+            "npc.companion.t7-o1",
+            "schem.armor.synthweaving.tier1",
+            "qst.location.alderaan.class.sith_warrior.battle_organa",
+            "cdx.persons.ilum.supreme_commander_rans",
+            "ach.operations.iokath.hardmode16.kill_izax",
+            "mpn.location.open_worlds.class.jedi_knight",
+            "pkg.profession_trainer.synthweaving_base",
+            "cnv.location.nar_shaddaa.class.sith_warrior.general_kligton",
+            "apc.companion.class.mtx.creature.nathema_voreclaw.healer",
+            "class.pc.advanced.sorcerer",
+            "enc.flashpoint.manaan.boss.enc_ortuno",
+            "spn.qtr.1x4.raid.asation.enemy.trash.ruins.ruins_assassin",
+            "plc.location.belsavis.class.trooper.multi.ship_holoterminal",
+        ] {
+            assert!(
+                should_extract_object(fqn, false),
+                "{fqn} must continue to be accepted (regression guard)"
+            );
         }
     }
 }
