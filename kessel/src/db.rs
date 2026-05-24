@@ -14,6 +14,26 @@ use crate::stb::StbEntry;
 /// Quest class type_hi32 from client.gom (decoded by Agent D, legion 019e4d75).
 const QUEST_CLASS_TYPE_HI32: u32 = 0x2ADE_C3D2;
 
+/// Count non-overlapping occurrences of a byte pattern in a payload.
+/// Used by singleton extraction to record cheap shape hints (CF E0 marker
+/// count, CF 40 marker count) without committing to a full decoder pass.
+fn count_byte_pattern(payload: &[u8], pattern: &[u8]) -> usize {
+    if pattern.is_empty() || payload.len() < pattern.len() {
+        return 0;
+    }
+    let mut count = 0;
+    let mut i = 0;
+    while i + pattern.len() <= payload.len() {
+        if &payload[i..i + pattern.len()] == pattern {
+            count += 1;
+            i += pattern.len();
+        } else {
+            i += 1;
+        }
+    }
+    count
+}
+
 /// Per-kind row counts inserted by `populate_conversation_refs`.
 #[derive(Default, Debug)]
 pub struct ConversationRefCounts {
@@ -1035,6 +1055,23 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_talent_effects_stat ON talent_effects(stat);
 
+            -- PBUK singleton prototypes (#171): one row per zero-dot PBUK
+            -- object. These are master tables / config blobs the game references
+            -- by FQN (tagTablePrototype, colCollectionItemsPrototype,
+            -- cnqConquestInfoPrototype, etc -- ~370 in current corpus).
+            -- Foundation for per-singleton decoders (#172 + future).
+            CREATE TABLE IF NOT EXISTS singletons (
+                fqn            TEXT PRIMARY KEY,
+                payload_size   INTEGER NOT NULL,
+                payload_b64    TEXT NOT NULL,
+                string_count   INTEGER NOT NULL,
+                cf_e0_count    INTEGER NOT NULL,
+                cf_40_count    INTEGER NOT NULL,
+                header_hex     TEXT NOT NULL,
+                extracted_at   INTEGER NOT NULL DEFAULT (unixepoch())
+            );
+            CREATE INDEX IF NOT EXISTS idx_singletons_size ON singletons(payload_size DESC);
+
             -- Extraction metadata
             CREATE TABLE IF NOT EXISTS meta (
                 key TEXT PRIMARY KEY,
@@ -1141,6 +1178,43 @@ impl Database {
                 conn.execute(&sql, [])?;
             }
         }
+        Ok(())
+    }
+
+    /// Insert one PBUK singleton prototype (#171). Singletons are zero-dot
+    /// PBUK objects (master tables / config blobs) like tagTablePrototype,
+    /// colCollectionItemsPrototype, cnqConquestInfoPrototype. They sit
+    /// outside the `objects` table because their shape doesn't match the
+    /// per-instance GameObject model (no per-instance GUID semantics, no
+    /// kind label, no string_id linkage). The raw payload + a few cheap
+    /// shape hints land in `singletons` for per-singleton decoders to
+    /// consume in follow-on issues.
+    pub fn insert_singleton(&self, obj: &crate::pbuk::GomObject) -> Result<()> {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
+        let strings = obj.extract_strings();
+        let string_count = strings.len() as i64;
+        let cf_e0_count = count_byte_pattern(&obj.payload, &[0xCF, 0xE0, 0x00]) as i64;
+        let cf_40_count = count_byte_pattern(&obj.payload, &[0xCF, 0x40, 0x00, 0x00]) as i64;
+        let payload_b64 = BASE64.encode(&obj.payload);
+        let header_hex = hex::encode(&obj.header);
+
+        // extracted_at uses the table's DEFAULT (unixepoch()) by omitting the column.
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO singletons \
+               (fqn, payload_size, payload_b64, string_count, cf_e0_count, cf_40_count, header_hex) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                obj.fqn,
+                obj.payload.len() as i64,
+                payload_b64,
+                string_count,
+                cf_e0_count,
+                cf_40_count,
+                header_hex,
+            ],
+        )?;
         Ok(())
     }
 

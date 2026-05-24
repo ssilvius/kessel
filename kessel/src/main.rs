@@ -259,6 +259,12 @@ fn main() -> Result<()> {
                                     continue;
                                 };
                                 obj.fqn = fqn.clone();
+                                if is_singleton_fqn(&fqn) {
+                                    if db.insert_singleton(&obj).is_ok() {
+                                        total_objects += 1;
+                                    }
+                                    continue;
+                                }
                                 let game_obj = schema::GameObject::from_gom_with_overrides(
                                     &obj,
                                     icon_overrides.as_ref(),
@@ -294,6 +300,12 @@ fn main() -> Result<()> {
                                 continue;
                             };
                             obj.fqn = fqn.clone();
+                            if is_singleton_fqn(&fqn) {
+                                if db.insert_singleton(&obj).is_ok() {
+                                    total_objects += 1;
+                                }
+                                continue;
+                            }
                             let game_obj = schema::GameObject::from_gom_with_overrides(
                                 &obj,
                                 icon_overrides.as_ref(),
@@ -950,6 +962,14 @@ fn should_extract_object(fqn: &str, unfiltered: bool) -> bool {
     true
 }
 
+/// True for FQNs that are PBUK singleton prototypes (zero-dot PascalCase /
+/// camelCase identifiers like `tagTablePrototype`, `colCollectionItemsPrototype`).
+/// These bypass `should_extract_object`'s prefix whitelist and route to the
+/// `singletons` table instead of `objects`.
+fn is_singleton_fqn(fqn: &str) -> bool {
+    !fqn.is_empty() && !fqn.contains('.') && !fqn.contains('/')
+}
+
 fn process_pbuk(
     data: &[u8],
     db: &db::Database,
@@ -965,6 +985,16 @@ fn process_pbuk(
             continue;
         };
         obj.fqn = fqn.clone();
+
+        // Singletons (zero-dot PBUK objects) route to their own table.
+        // Per kessel issue #171: they're master tables / config blobs whose
+        // shape doesn't match the per-instance GameObject model.
+        if is_singleton_fqn(&fqn) {
+            db.insert_singleton(&obj)?;
+            count += 1;
+            continue;
+        }
+
         let game_obj = schema::GameObject::from_gom_with_overrides(&obj, overrides);
         if !accept_variant(versioned_seen, &fqn, &game_obj) {
             continue;
@@ -1049,6 +1079,23 @@ mod tests {
         // The /N/M suffix gate is unchanged; versioned FQNs still get
         // normalized at a different layer.
         assert!(!should_extract_object("abl.foo.bar/7/0", false));
+    }
+
+    #[test]
+    fn is_singleton_fqn_classifies_correctly() {
+        // Per kessel issue #171: zero-dot, non-slash, non-empty FQNs are
+        // singleton prototypes (master tables / config blobs).
+        assert!(is_singleton_fqn("tagTablePrototype"));
+        assert!(is_singleton_fqn("colCollectionItemsPrototype"));
+        assert!(is_singleton_fqn("Suburb"));
+        assert!(is_singleton_fqn("cnqConquestInfoPrototype"));
+        // Per-instance objects (dotted) are NOT singletons.
+        assert!(!is_singleton_fqn("abl.sith_warrior.ravage"));
+        assert!(!is_singleton_fqn("dis.powertech.firebug"));
+        // Versioned variants are filtered before this check fires, but
+        // defensively the slash-containing case is rejected.
+        assert!(!is_singleton_fqn("abl.foo.bar/7/0"));
+        assert!(!is_singleton_fqn(""));
     }
 
     #[test]
