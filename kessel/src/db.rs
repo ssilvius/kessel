@@ -1044,7 +1044,70 @@ impl Database {
         )?;
         drop(conn);
         self.migrate_quest_typed_columns()?;
+        self.migrate_disciplines_from_dis_columns()?;
 
+        Ok(())
+    }
+
+    /// Add columns to `disciplines` populated from authoritative `dis.*`
+    /// records (issue #170): the discipline's short codename
+    /// (`power_pyrotech`), icon + mod-tree apc.* refs as game_ids, and the
+    /// signature ability's game_id (`flaming_fist` for Pyrotech). Also creates
+    /// the `discipline_mods` join table for the 8-tier x 3-choice mod tree
+    /// with per-mod level gates and default-selection flags.
+    ///
+    /// Idempotent -- safe to re-run; checks pragma_table_info first.
+    pub fn migrate_disciplines_from_dis_columns(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let existing: std::collections::HashSet<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(disciplines)")?;
+            let cols = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?;
+            cols.into_iter().collect()
+        };
+        let additions = [
+            ("codename", "TEXT"),
+            ("icon_apc_game_id", "TEXT"),
+            ("mod_tree_apc_game_id", "TEXT"),
+            ("signature_ability_game_id", "TEXT"),
+        ];
+        for (name, ty) in additions {
+            if !existing.contains(name) {
+                let sql = format!("ALTER TABLE disciplines ADD COLUMN {name} {ty}");
+                conn.execute(&sql, [])?;
+            }
+        }
+        // 8 tiers x 3 choices = 24 mods per discipline. (discipline_fqn_prefix,
+        // mod_index) is the PK; (discipline_fqn_prefix, tier_ordinal,
+        // ui_position) is also unique but not enforced as a constraint.
+        // `target_game_id` is NULL when the dis.* CF E0 ref doesn't resolve
+        // (versioned-only ability category -- issue #179 investigates).
+        conn.execute(
+            r#"
+            CREATE TABLE IF NOT EXISTS discipline_mods (
+                discipline_fqn_prefix     TEXT NOT NULL,
+                mod_index                 INTEGER NOT NULL,
+                tier_ordinal              INTEGER NOT NULL,
+                ui_position               INTEGER NOT NULL,
+                level_required            INTEGER NOT NULL,
+                target_guid               TEXT NOT NULL,
+                target_game_id            TEXT,
+                is_default                INTEGER NOT NULL,
+                PRIMARY KEY (discipline_fqn_prefix, mod_index),
+                FOREIGN KEY (discipline_fqn_prefix) REFERENCES disciplines(fqn_prefix)
+            );
+            "#,
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_discipline_mods_target ON discipline_mods(target_game_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_discipline_mods_tier ON discipline_mods(discipline_fqn_prefix, tier_ordinal)",
+            [],
+        )?;
         Ok(())
     }
 
@@ -4012,6 +4075,168 @@ impl Database {
 
         tx.commit()?;
         Ok((disc_count, abl_count, shared_count))
+    }
+
+    /// Populate authoritative discipline data from `dis.*` PBUK records
+    /// (issue #170). Updates the new columns on `disciplines` (codename,
+    /// icon_apc_game_id, mod_tree_apc_game_id, signature_ability_game_id)
+    /// and fills `discipline_mods` with the 8-tier x 3-choice mod tree per
+    /// docs/probes/dis-payload-format.md.
+    ///
+    /// Returns (disciplines_updated, mods_inserted).
+    pub fn populate_disciplines_from_dis(&self) -> Result<(u64, u64)> {
+        use crate::schema::discipline::decode_dis_payload;
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
+        self.flush()?;
+
+        let payloads: Vec<(String, String)> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT fqn, json_extract(json, '$.payload_b64') FROM objects \
+                 WHERE fqn LIKE 'dis.%' AND is_canonical = 1",
+            )?;
+            let rows: Vec<(String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        };
+
+        // Build GUID -> game_id lookup once (per-record SQL queries inside the
+        // tight loop would re-acquire the lock; resolve up-front instead).
+        let guid_to_game_id: std::collections::HashMap<String, String> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt =
+                conn.prepare("SELECT guid, game_id FROM objects WHERE guid IS NOT NULL")?;
+            let rows: std::collections::HashMap<String, String> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        };
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        let mut disc_count = 0u64;
+        let mut mod_count = 0u64;
+        {
+            let mut update_disc = tx.prepare_cached(
+                "UPDATE disciplines SET \
+                    codename = ?1, \
+                    icon_apc_game_id = ?2, \
+                    mod_tree_apc_game_id = ?3, \
+                    signature_ability_game_id = ?4 \
+                 WHERE fqn_prefix = ?5",
+            )?;
+            let mut insert_mod = tx.prepare_cached(
+                "INSERT OR REPLACE INTO discipline_mods \
+                   (discipline_fqn_prefix, mod_index, tier_ordinal, ui_position, \
+                    level_required, target_guid, target_game_id, is_default) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )?;
+            let mut fqn_prefix_stmt = tx.prepare_cached(
+                "SELECT fqn_prefix FROM disciplines \
+                 WHERE combat_style_codename = ?1 AND discipline_name = ?2",
+            )?;
+
+            for (dis_fqn, payload_b64) in &payloads {
+                let Ok(payload) = BASE64.decode(payload_b64) else {
+                    continue;
+                };
+                let record = match decode_dis_payload(&payload) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!("dis decode failed for {dis_fqn}: {e}");
+                        continue;
+                    }
+                };
+
+                // Map dis.<class>.<discipline> -> the abl.<class>.skill.<discipline>
+                // fqn_prefix used as the disciplines table key. The codename
+                // alone isn't enough because shadow.combat and sentinel.combat
+                // share `sent_combat` (Bioware data quirk per probe doc).
+                let segments: Vec<&str> = dis_fqn.split('.').collect();
+                if segments.len() < 3 {
+                    continue;
+                }
+                let dis_style_segment = segments[1]; // e.g. "powertech", "sage"
+                let discipline_name = segments[2]; // e.g. "firebug", "balance"
+
+                // dis.* records mostly use combat_styles.fqn_segment as
+                // segment[1], but "sage" appears as the short alias for
+                // fqn_segment "force_wizard". Translate known aliases.
+                let combat_style = match dis_style_segment {
+                    "sage" => "force_wizard",
+                    other => other,
+                };
+
+                let fqn_prefix: Option<String> = fqn_prefix_stmt
+                    .query_row(params![combat_style, discipline_name], |row| row.get(0))
+                    .ok();
+                let Some(fqn_prefix) = fqn_prefix else {
+                    tracing::warn!(
+                        "dis {dis_fqn} has no matching disciplines row (combat_style={combat_style}, name={discipline_name})"
+                    );
+                    continue;
+                };
+
+                let icon_game_id = guid_to_game_id.get(&record.icon_apc_guid);
+                let mod_tree_game_id = guid_to_game_id.get(&record.mod_tree_apc_guid);
+                let signature_game_id = guid_to_game_id.get(&record.signature_ability_guid);
+
+                update_disc.execute(params![
+                    record.codename,
+                    icon_game_id,
+                    mod_tree_game_id,
+                    signature_game_id,
+                    fqn_prefix,
+                ])?;
+                disc_count += 1;
+
+                // Build a (tier_ordinal, ui_position) lookup for each mod
+                // index from the 8 tier triplets.
+                let mut tier_lookup: std::collections::HashMap<u8, (u8, u8)> =
+                    std::collections::HashMap::new();
+                for tier in &record.tiers {
+                    for (pos, idx) in tier.choice_indices.iter().enumerate() {
+                        tier_lookup.insert(*idx, (tier.ordinal, pos as u8));
+                    }
+                }
+
+                // Set of default mod indices for is_default flag.
+                let default_set: std::collections::HashSet<u8> = record
+                    .defaults
+                    .iter()
+                    .map(|d| d.default_mod_index)
+                    .collect();
+
+                for entry in &record.mods {
+                    let (tier_ordinal, ui_position) =
+                        tier_lookup.get(&entry.index).copied().unwrap_or((0, 0));
+                    let target_game_id = guid_to_game_id.get(&entry.guid);
+                    let is_default = i32::from(default_set.contains(&entry.index));
+                    insert_mod.execute(params![
+                        fqn_prefix,
+                        entry.index,
+                        tier_ordinal,
+                        ui_position,
+                        entry.level,
+                        entry.guid,
+                        target_game_id,
+                        is_default,
+                    ])?;
+                    mod_count += 1;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok((disc_count, mod_count))
     }
 
     /// Populate `discipline_talents` by FQN pattern.
