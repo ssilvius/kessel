@@ -607,6 +607,11 @@ fn main() -> Result<()> {
     // docs/probes/dis-payload-format.md.
     let (dis_disc_count, dis_mod_count) = db.populate_disciplines_from_dis()?;
 
+    // Twelfth-and-three-quarters pass: GSF requisition costs from the two
+    // sc...Cost singletons (issue #172, closes #115). First per-singleton
+    // decoder on top of the #171 singleton pipeline.
+    let (gsf_component_costs, gsf_tier_costs) = db.populate_gsf_requisition_costs()?;
+
     // Thirteenth pass: derive discipline→talent + class_utility_talents.
     // Per-origin utility talents fan to both combat styles; combat-discipline
     // talents stay scoped to their own discipline (no fan-out).
@@ -638,6 +643,10 @@ fn main() -> Result<()> {
     println!(
         "    Disciplines (dis.*): {} enriched, {} mods",
         dis_disc_count, dis_mod_count
+    );
+    println!(
+        "    GSF requisition costs: {} components + {} tier upgrades",
+        gsf_component_costs, gsf_tier_costs
     );
     println!(
         "    Combat-style shared: {} abilities, {} utility talents",
