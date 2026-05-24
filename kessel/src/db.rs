@@ -5845,10 +5845,15 @@ mod tests {
             return;
         }
         let hi32 = activity_hi32.unwrap();
+        // Real CF40 marker wire format per schema/mod.rs walker (post #165 fix):
+        //   CF 40 00 00 [type_byte] [hi32 BE 4 bytes]
+        // The type_byte (0x40 here as a generic stand-in) is required for the
+        // walker to land on the correct hi32 offset.
         let mut payload = vec![0u8; 4];
         payload.push(0xCF);
         payload.push(0x40);
         payload.extend_from_slice(&[0u8; 2]);
+        payload.push(0x40);
         payload.extend_from_slice(&hi32.to_be_bytes());
         payload.extend_from_slice(&[0u8; 2]);
         let payload_b64 = BASE64.encode(&payload);

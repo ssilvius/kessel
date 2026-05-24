@@ -408,18 +408,28 @@ pub fn decode_payload_schema_aware(
     let mut unresolved = 0usize;
 
     // Scan for CF 40 00 00 markers (template_guid prefix used by GOM payloads).
-    // Each marker is 10 bytes total: CF 40 + 8 bytes BE body. We only act on
-    // markers whose body starts with `00 00` (the template-class flag); the
-    // following 4 bytes are the property/class id high32 in BE.
+    // Wire format per real-payload inspection (talent / quest / ability /
+    // npc / item samples from spice-baseline 2026-05-23):
+    //
+    //   byte 0..2   CF 40
+    //   byte 2..4   00 00            (template-class flag)
+    //   byte 4      type/flags byte  (0x11/0x13/0x40 observed)
+    //   byte 5..9   hi32 BE          (property/class id high32)
+    //   byte 9..    value tail       (varies by property type_tag)
+    //
+    // The walker only resolves marker NAMES here; per-property value decode
+    // is the consumer's job (see populate_*_typed / populate_talent_effects).
     let mut i = 0;
-    while i + 10 <= payload.len() {
-        if payload[i] != 0xCF || payload[i + 1] != 0x40 {
+    while i + 9 <= payload.len() {
+        if payload[i] != 0xCF
+            || payload[i + 1] != 0x40
+            || payload[i + 2] != 0x00
+            || payload[i + 3] != 0x00
+        {
             i += 1;
             continue;
         }
-        // Body: payload[i+2..i+10] -- 8 bytes BE.
-        // First two bytes typically "00 00" for template-class markers.
-        let hi32_bytes: [u8; 4] = payload[i + 4..i + 8].try_into().unwrap();
+        let hi32_bytes: [u8; 4] = payload[i + 5..i + 9].try_into().unwrap();
         let hi32 = u32::from_be_bytes(hi32_bytes);
         let raw_key = format!("{hi32:08X}");
         raw_props.insert(raw_key.clone(), json!(null));
@@ -427,19 +437,12 @@ pub fn decode_payload_schema_aware(
         match gom_schema::property_for_cf40(hi32) {
             Some(prop) => {
                 resolved += 1;
-                // Build a named key: combine property kind + first resolved ref
-                // name when available. Falls back to kind-only key.
                 let mut named_key = prop.kind.clone();
                 if let Some(refs) = &prop.refs {
                     if let Some(first) = refs.first() {
                         named_key = format!("{}__{}", prop.kind, first.name);
                     }
                 }
-                // We don't attempt to decode the post-marker value bytes in
-                // this PR -- callers wanting typed values use the per-class
-                // schema extractors in later PRs. The marker presence + name
-                // is itself the unlock; per-marker value decoding scope grows
-                // case-by-case as consumers light up.
                 named_props.insert(named_key, json!(null));
             }
             None => {
@@ -447,7 +450,7 @@ pub fn decode_payload_schema_aware(
             }
         }
 
-        i += 10;
+        i += 9;
     }
 
     let class_name = gom_schema::class_for_type_hi32(class_type_hi32).and_then(|c| c.name.clone());
@@ -465,13 +468,15 @@ pub fn decode_payload_schema_aware(
 mod schema_walker_tests {
     use super::*;
 
-    fn build_cf40_marker(hi32: u32) -> [u8; 10] {
-        let mut buf = [0u8; 10];
+    fn build_cf40_marker(hi32: u32) -> [u8; 9] {
+        // Real wire format: CF 40 00 00 [type_byte] [hi32 BE 4 bytes].
+        // type_byte is non-zero in real payloads (0x11/0x13/0x40 observed);
+        // use 0x40 here as a generic stand-in.
+        let mut buf = [0u8; 9];
         buf[0] = 0xCF;
         buf[1] = 0x40;
-        // body bytes 2..10: first 4 are zero, next 4 are hi32 BE.
-        // (matches per-class template format used by the corpus)
-        buf[4..8].copy_from_slice(&hi32.to_be_bytes());
+        buf[4] = 0x40;
+        buf[5..9].copy_from_slice(&hi32.to_be_bytes());
         buf
     }
 
@@ -517,6 +522,37 @@ mod schema_walker_tests {
         let d = decode_payload_schema_aware(&[], 0xD954FB01).expect("decode");
         assert_eq!(d.property_count_resolved, 0);
         assert_eq!(d.property_count_unresolved, 0);
+    }
+
+    #[test]
+    fn decodes_real_talent_payload_markers() {
+        // Real `tal.sith_inquisitor.skill.electric_induction` payload prefix.
+        // Markers: A787EE87 at +2 (effect-block array), 5CE87488 at +27 (int8).
+        let payload: [u8; 88] = [
+            0x08, 0x04, 0xCF, 0x40, 0x00, 0x00, 0x13, 0xA7, 0x87, 0xEE, 0x87, 0x08, 0x02, 0x09,
+            0x02, 0x02, 0xCF, 0x26, 0xF1, 0xAA, 0xD9, 0xFC, 0xA9, 0xED, 0x09, 0x04, 0x04, 0xCF,
+            0x40, 0x00, 0x00, 0x11, 0x5C, 0xE8, 0x74, 0x88, 0x02, 0xCE, 0x0C, 0x1E, 0xD6, 0x00,
+            0x00, 0x00, 0x01, 0x01, 0x06, 0x07, 0x73, 0x74, 0x72, 0x2E, 0x74, 0x61, 0x6C, 0xCC,
+            0x37, 0xAE, 0x6F, 0x6F, 0xE7, 0x08, 0x05, 0x04, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00,
+            0x00, 0x01, 0x08, 0x05, 0x06, 0x00, 0x00, 0xCF, 0xD9, 0xAD, 0xAE, 0xC5, 0xF2, 0x75,
+            0xD8, 0x46, 0x04, 0x04,
+        ];
+        // Talent class type_hi32 = 0xD954FB01 per gom_schema 019e4d75.
+        let d = decode_payload_schema_aware(&payload, 0xD954FB01).expect("decode");
+        let raw = d.raw_props.as_object().unwrap();
+        assert!(
+            raw.contains_key("A787EE87"),
+            "A787EE87 (effect-block array) should resolve: {raw:?}"
+        );
+        assert!(
+            raw.contains_key("5CE87488"),
+            "5CE87488 (int8) should resolve: {raw:?}"
+        );
+        assert!(
+            d.property_count_resolved >= 2,
+            "expected >=2 resolved markers, got {}",
+            d.property_count_resolved
+        );
     }
 
     #[test]
