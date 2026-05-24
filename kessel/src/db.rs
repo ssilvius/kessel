@@ -1055,6 +1055,25 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_talent_effects_stat ON talent_effects(stat);
 
+            -- GSF requisition costs (#115 / #172). Decoded from the
+            -- scFFComponentsCostPrototype + scFFComponentUpgradesCostPrototype
+            -- singletons. (target_guid, cost_kind, tier) is the natural key;
+            -- a single component appears once with cost_kind = 'component_unlock'
+            -- and tier = 0, then five times with cost_kind = 'tier_upgrade' and
+            -- tier = 1..5. target_game_id resolves the GUID into kessel's
+            -- objects table (NULL when the component's content GUID isn't in
+            -- the extracted set).
+            CREATE TABLE IF NOT EXISTS gsf_requisition_costs (
+                target_guid       TEXT NOT NULL,
+                cost_kind         TEXT NOT NULL CHECK (cost_kind IN ('component_unlock', 'tier_upgrade')),
+                tier              INTEGER NOT NULL,
+                cost              INTEGER NOT NULL,
+                target_game_id    TEXT,
+                target_fqn        TEXT,
+                PRIMARY KEY (target_guid, cost_kind, tier)
+            );
+            CREATE INDEX IF NOT EXISTS idx_gsf_req_costs_target ON gsf_requisition_costs(target_game_id);
+
             -- PBUK singleton prototypes (#171): one row per zero-dot PBUK
             -- object. These are master tables / config blobs the game references
             -- by FQN (tagTablePrototype, colCollectionItemsPrototype,
@@ -4311,6 +4330,93 @@ impl Database {
         }
         tx.commit()?;
         Ok((disc_count, mod_count))
+    }
+
+    /// Populate `gsf_requisition_costs` from the GSF cost singletons
+    /// (`scFFComponentsCostPrototype` for unlock costs and
+    /// `scFFComponentUpgradesCostPrototype` for per-tier upgrade costs).
+    /// Closes #115; first per-singleton decoder on top of the #171
+    /// singleton pipeline.
+    ///
+    /// Returns (component_unlock_rows, tier_upgrade_rows).
+    pub fn populate_gsf_requisition_costs(&self) -> Result<(u64, u64)> {
+        use crate::schema::gsf_costs::{decode_component_upgrades_cost, decode_components_cost};
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
+        // Load the two singleton payloads from the singletons table.
+        let payloads: std::collections::HashMap<String, Vec<u8>> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT fqn, payload_b64 FROM singletons \
+                 WHERE fqn IN ('scFFComponentsCostPrototype', 'scFFComponentUpgradesCostPrototype')",
+            )?;
+            let rows: std::collections::HashMap<String, Vec<u8>> = stmt
+                .query_map([], |row| {
+                    let fqn: String = row.get(0)?;
+                    let b64: String = row.get(1)?;
+                    Ok((fqn, b64))
+                })?
+                .filter_map(|r| r.ok())
+                .filter_map(|(fqn, b64)| BASE64.decode(&b64).ok().map(|b| (fqn, b)))
+                .collect();
+            rows
+        };
+
+        // Resolve target GUIDs to game_ids + fqns up front (avoid per-row SQL
+        // in the hot loop).
+        let guid_to_object: std::collections::HashMap<String, (String, String)> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt =
+                conn.prepare("SELECT guid, game_id, fqn FROM objects WHERE guid IS NOT NULL")?;
+            let rows: std::collections::HashMap<String, (String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        (row.get::<_, String>(1)?, row.get::<_, String>(2)?),
+                    ))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        };
+
+        let mut component_rows = 0u64;
+        let mut tier_rows = 0u64;
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        {
+            let mut insert = tx.prepare_cached(
+                "INSERT OR REPLACE INTO gsf_requisition_costs \
+                   (target_guid, cost_kind, tier, cost, target_game_id, target_fqn) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            let mut insert_costs =
+                |costs: Vec<crate::schema::gsf_costs::GsfCost>, counter: &mut u64| -> Result<()> {
+                    for cost in costs {
+                        let resolved = guid_to_object.get(&cost.target_guid);
+                        insert.execute(params![
+                            cost.target_guid,
+                            cost.kind.as_sql(),
+                            cost.tier,
+                            cost.cost,
+                            resolved.map(|(gid, _)| gid.as_str()),
+                            resolved.map(|(_, fqn)| fqn.as_str()),
+                        ])?;
+                        *counter += 1;
+                    }
+                    Ok(())
+                };
+
+            if let Some(payload) = payloads.get("scFFComponentsCostPrototype") {
+                insert_costs(decode_components_cost(payload)?, &mut component_rows)?;
+            }
+            if let Some(payload) = payloads.get("scFFComponentUpgradesCostPrototype") {
+                insert_costs(decode_component_upgrades_cost(payload)?, &mut tier_rows)?;
+            }
+        }
+        tx.commit()?;
+        Ok((component_rows, tier_rows))
     }
 
     /// Populate `discipline_talents` by FQN pattern.

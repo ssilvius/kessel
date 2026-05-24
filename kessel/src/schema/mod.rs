@@ -3,6 +3,7 @@
 pub mod appearance;
 pub mod discipline;
 pub mod gsf_ability;
+pub mod gsf_costs;
 pub mod gsf_talent;
 pub mod item;
 
