@@ -103,6 +103,18 @@ impl GameObject {
                 "dyn" => "Dynamic",
                 "hyd" => "Hydra",
                 "tal" => "Talent",
+                // Per kessel issue #169: kind labels for the 11 newly-whitelisted
+                // PBUK prefixes. Categories per docs/probes/pbuk-prefix-probes.md.
+                "dis" => "Discipline",
+                "stg" => "Stage",
+                "cnd" => "Condition",
+                "npp" => "NpcPackage",
+                "apn" => "AnimationPackage",
+                "cos" => "CosmeticTag",
+                "pcs" => "CharacterPreset",
+                "nco" => "NpcCompanion",
+                "mrp" => "MountPackage",
+                "ipp" => "ItemPaintPattern",
                 other => other,
             }
         } else {
