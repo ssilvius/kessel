@@ -588,6 +588,13 @@ fn main() -> Result<()> {
     // pools, fanned to both combat styles).
     let (disc_count, disc_abl_count, css_abl_count) = db.populate_disciplines()?;
 
+    // Twelfth-and-a-half pass: enrich disciplines with authoritative data
+    // decoded from dis.* PBUK payloads (issue #170). Adds codename, icon +
+    // mod-tree apc refs, signature ability, and populates discipline_mods
+    // with the 8-tier × 3-choice mod tree per
+    // docs/probes/dis-payload-format.md.
+    let (dis_disc_count, dis_mod_count) = db.populate_disciplines_from_dis()?;
+
     // Thirteenth pass: derive discipline→talent + class_utility_talents.
     // Per-origin utility talents fan to both combat styles; combat-discipline
     // talents stay scoped to their own discipline (no fan-out).
@@ -615,6 +622,10 @@ fn main() -> Result<()> {
     println!(
         "    Disciplines: {} ({} ability slots, {} talent slots, {} talent->ability links)",
         stats.disciplines, stats.discipline_abilities, disc_tal_count, stats.talent_abilities
+    );
+    println!(
+        "    Disciplines (dis.*): {} enriched, {} mods",
+        dis_disc_count, dis_mod_count
     );
     println!(
         "    Combat-style shared: {} abilities, {} utility talents",
