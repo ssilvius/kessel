@@ -117,7 +117,11 @@ fn main() -> Result<()> {
         i = str_end;
     }
 
-    eprintln!("decoded {} tag records ({} malformed CE matches skipped)", tags.len(), malformed);
+    eprintln!(
+        "decoded {} tag records ({} malformed CE matches skipped)",
+        tags.len(),
+        malformed
+    );
     eprintln!();
     eprintln!("--- first 8 ---");
     for (h, s) in tags.iter().take(8) {
