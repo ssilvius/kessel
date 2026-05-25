@@ -1116,6 +1116,49 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_ability_effect_blocks_guid
                 ON ability_effect_blocks(block_guid);
 
+            -- Tag dictionary (#174). Decoded from the `tagTablePrototype`
+            -- singleton. ~6750 entries, all in the `tag.abl.*` namespace.
+            -- Two marker forms:
+            --   CE  → 7-byte hash (44 legacy records)
+            --   CF  → 8-byte hash (6706 records)
+            -- The hash is what abilities/talents reference in their payloads;
+            -- `tag_fqn` is the human-readable name.
+            CREATE TABLE IF NOT EXISTS tags (
+                tag_hash       TEXT PRIMARY KEY,
+                tag_fqn        TEXT NOT NULL,
+                hash_marker    TEXT NOT NULL CHECK (hash_marker IN ('CE', 'CF'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_tags_fqn ON tags(tag_fqn);
+
+            -- Ability ↔ tag edges (#174). One row per (ability FQN, tag FQN)
+            -- pair where the tag's hash bytes appear in any payload variant
+            -- of that ability (canonical OR non-canonical -- tags often live
+            -- on the longer non-canonical variant that kessel deduplicates).
+            -- Aggregated per FQN so users get a stable tag set regardless of
+            -- which variant happens to be canonical.
+            CREATE TABLE IF NOT EXISTS ability_tags (
+                ability_fqn        TEXT NOT NULL,
+                ability_game_id    TEXT,
+                tag_hash           TEXT NOT NULL,
+                tag_fqn            TEXT NOT NULL,
+                PRIMARY KEY (ability_fqn, tag_hash),
+                FOREIGN KEY (tag_hash) REFERENCES tags(tag_hash)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ability_tags_tag ON ability_tags(tag_hash);
+            CREATE INDEX IF NOT EXISTS idx_ability_tags_game_id ON ability_tags(ability_game_id);
+
+            -- Talent ↔ tag edges (#174). Same shape as ability_tags.
+            CREATE TABLE IF NOT EXISTS talent_tags (
+                talent_fqn         TEXT NOT NULL,
+                talent_game_id     TEXT,
+                tag_hash           TEXT NOT NULL,
+                tag_fqn            TEXT NOT NULL,
+                PRIMARY KEY (talent_fqn, tag_hash),
+                FOREIGN KEY (tag_hash) REFERENCES tags(tag_hash)
+            );
+            CREATE INDEX IF NOT EXISTS idx_talent_tags_tag ON talent_tags(tag_hash);
+            CREATE INDEX IF NOT EXISTS idx_talent_tags_game_id ON talent_tags(talent_game_id);
+
             -- Extraction metadata
             CREATE TABLE IF NOT EXISTS meta (
                 key TEXT PRIMARY KEY,
@@ -4517,6 +4560,131 @@ impl Database {
         drop(insert);
         tx.commit()?;
         Ok((written, unresolved))
+    }
+
+    /// Populate `tags`, `ability_tags`, and `talent_tags` from the
+    /// `tagTablePrototype` singleton + ability/talent payload scan (#174).
+    ///
+    /// Returns `(tag_count, ability_edge_count, talent_edge_count)`.
+    ///
+    /// Critical: scans BOTH canonical and non-canonical rows per abl/tal FQN
+    /// because tag-hash references typically live on the longer non-canonical
+    /// variant that kessel's content-GUID deduplication marks as
+    /// `is_canonical = 0`.
+    pub fn populate_tags_and_edges(&self) -> Result<(u64, u64, u64)> {
+        use crate::schema::tag_table::{decode_tag_table, TagIndex};
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        use std::collections::{BTreeMap, BTreeSet};
+
+        // Load the tagTablePrototype singleton payload.
+        let tag_payload: Option<Vec<u8>> = {
+            let conn = self.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT payload_b64 FROM singletons WHERE fqn = 'tagTablePrototype'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|b64| BASE64.decode(&b64).ok())
+        };
+        let Some(tag_payload) = tag_payload else {
+            return Ok((0, 0, 0));
+        };
+
+        let records = decode_tag_table(&tag_payload);
+        let index = TagIndex::build(&records);
+        let fqn_to_hash: BTreeMap<String, String> = records
+            .iter()
+            .map(|r| (r.tag_fqn.clone(), r.tag_hash.clone()))
+            .collect();
+
+        // Pull every abl/tal row (canonical + non-canonical) and the canonical
+        // game_id keyed by FQN.
+        let conn = self.conn.lock().unwrap();
+        let payloads: Vec<(String, Vec<u8>)> = {
+            let mut stmt = conn.prepare(
+                "SELECT fqn, json_extract(json, '$.payload_b64') \
+                 FROM objects WHERE fqn LIKE 'abl.%' OR fqn LIKE 'tal.%'",
+            )?;
+            let rows: Vec<(String, Vec<u8>)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .filter_map(|(fqn, b64): (String, String)| {
+                    BASE64.decode(&b64).ok().map(|p| (fqn, p))
+                })
+                .collect();
+            rows
+        };
+        let canonical_game_id: BTreeMap<String, String> = {
+            let mut stmt = conn.prepare(
+                "SELECT fqn, game_id FROM objects \
+                 WHERE (fqn LIKE 'abl.%' OR fqn LIKE 'tal.%') AND is_canonical = 1",
+            )?;
+            let rows: BTreeMap<String, String> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        };
+
+        // Aggregate tag FQNs per ability/talent FQN across all variants.
+        let mut tags_by_fqn: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for (fqn, payload) in &payloads {
+            let hits = index.scan_payload(payload);
+            if hits.is_empty() {
+                continue;
+            }
+            tags_by_fqn.entry(fqn.clone()).or_default().extend(hits);
+        }
+
+        let tx = conn.unchecked_transaction()?;
+        let tag_count = records.len() as u64;
+        {
+            let mut insert_tag = tx.prepare_cached(
+                "INSERT OR REPLACE INTO tags (tag_hash, tag_fqn, hash_marker) \
+                 VALUES (?1, ?2, ?3)",
+            )?;
+            for r in &records {
+                insert_tag.execute(params![r.tag_hash, r.tag_fqn, r.hash_marker])?;
+            }
+        }
+
+        let mut ability_edges = 0u64;
+        let mut talent_edges = 0u64;
+        {
+            let mut insert_abl_tag = tx.prepare_cached(
+                "INSERT OR REPLACE INTO ability_tags \
+                   (ability_fqn, ability_game_id, tag_hash, tag_fqn) \
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            let mut insert_tal_tag = tx.prepare_cached(
+                "INSERT OR REPLACE INTO talent_tags \
+                   (talent_fqn, talent_game_id, tag_hash, tag_fqn) \
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for (fqn, tag_fqns) in &tags_by_fqn {
+                let game_id = canonical_game_id.get(fqn);
+                let is_talent = fqn.starts_with("tal.");
+                for tag_fqn in tag_fqns {
+                    let Some(tag_hash) = fqn_to_hash.get(tag_fqn) else {
+                        continue;
+                    };
+                    if is_talent {
+                        insert_tal_tag.execute(params![fqn, game_id, tag_hash, tag_fqn])?;
+                        talent_edges += 1;
+                    } else {
+                        insert_abl_tag.execute(params![fqn, game_id, tag_hash, tag_fqn])?;
+                        ability_edges += 1;
+                    }
+                }
+            }
+        }
+        tx.commit()?;
+        Ok((tag_count, ability_edges, talent_edges))
     }
 
     /// Populate `discipline_talents` by FQN pattern.
