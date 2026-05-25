@@ -1091,6 +1091,31 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_singletons_size ON singletons(payload_size DESC);
 
+            -- Ability/talent -> effect block linkage (#173). One row per
+            -- indexed CF E0 sub-record in the parent's payload. The parent
+            -- self-reference is NOT included; this table is the structural
+            -- linkage to the parent's effect-block sub-records that carry
+            -- per-block typed properties (Weapon Damage, Modify Meta Stat,
+            -- Play Appearance, Call Effect).
+            --
+            -- block_game_id is NULL when the effect block's GUID doesn't
+            -- resolve to an extracted object (versioned-only ability
+            -- category, issue #179). The raw block_guid is preserved so the
+            -- unresolved edge stays visible in spice instead of being
+            -- silently dropped.
+            CREATE TABLE IF NOT EXISTS ability_effect_blocks (
+                parent_game_id    TEXT NOT NULL,
+                block_index       INTEGER NOT NULL,
+                block_guid        TEXT NOT NULL,
+                block_game_id     TEXT,
+                PRIMARY KEY (parent_game_id, block_index),
+                FOREIGN KEY (parent_game_id) REFERENCES objects(game_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ability_effect_blocks_block
+                ON ability_effect_blocks(block_game_id);
+            CREATE INDEX IF NOT EXISTS idx_ability_effect_blocks_guid
+                ON ability_effect_blocks(block_guid);
+
             -- Extraction metadata
             CREATE TABLE IF NOT EXISTS meta (
                 key TEXT PRIMARY KEY,
@@ -4417,6 +4442,81 @@ impl Database {
         }
         tx.commit()?;
         Ok((component_rows, tier_rows))
+    }
+
+    /// Populate `ability_effect_blocks` from abl.* + tal.* payloads (#173).
+    ///
+    /// Walks every canonical ability/talent payload for indexed CF E0
+    /// effect-block references and writes one row per indexed ref. The
+    /// parent self-reference (first CF E0 marker in the payload) is
+    /// skipped by the decoder. Unresolved block GUIDs (versioned-only
+    /// ability category, #179) leave `block_game_id` NULL but keep the raw
+    /// GUID for downstream visibility.
+    ///
+    /// Returns (rows_written, unresolved_count).
+    pub fn populate_ability_effect_blocks(&self) -> Result<(u64, u64)> {
+        use crate::schema::effect_block::extract_effect_block_refs;
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
+        let conn = self.conn.lock().unwrap();
+
+        let payloads: Vec<(String, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT game_id, json_extract(json, '$.payload_b64') \
+                 FROM objects \
+                 WHERE (fqn LIKE 'abl.%' OR fqn LIKE 'tal.%') AND is_canonical = 1",
+            )?;
+            let rows: Vec<(String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        };
+
+        let guid_to_game_id: std::collections::HashMap<String, String> = {
+            let mut stmt =
+                conn.prepare("SELECT guid, game_id FROM objects WHERE guid IS NOT NULL")?;
+            let rows: std::collections::HashMap<String, String> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        };
+
+        let tx = conn.unchecked_transaction()?;
+        let mut insert = tx.prepare_cached(
+            "INSERT OR REPLACE INTO ability_effect_blocks \
+               (parent_game_id, block_index, block_guid, block_game_id) \
+             VALUES (?1, ?2, ?3, ?4)",
+        )?;
+
+        let mut written: u64 = 0;
+        let mut unresolved: u64 = 0;
+        for (parent_game_id, payload_b64) in &payloads {
+            let Ok(payload) = BASE64.decode(payload_b64) else {
+                continue;
+            };
+            for r in extract_effect_block_refs(&payload) {
+                let resolved = guid_to_game_id.get(&r.block_guid);
+                if resolved.is_none() {
+                    unresolved += 1;
+                }
+                insert.execute(params![
+                    parent_game_id,
+                    r.block_index,
+                    r.block_guid,
+                    resolved,
+                ])?;
+                written += 1;
+            }
+        }
+        drop(insert);
+        tx.commit()?;
+        Ok((written, unresolved))
     }
 
     /// Populate `discipline_talents` by FQN pattern.

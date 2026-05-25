@@ -612,6 +612,12 @@ fn main() -> Result<()> {
     // decoder on top of the #171 singleton pipeline.
     let (gsf_component_costs, gsf_tier_costs) = db.populate_gsf_requisition_costs()?;
 
+    // Twelfth-and-seven-eighths pass: ability/talent → effect block linkage
+    // (issue #173). One row per indexed CF E0 sub-record in each abl.*/tal.*
+    // payload. Unresolved block GUIDs (versioned-only ability category, #179)
+    // are preserved with NULL block_game_id so the gap is visible in spice.
+    let (effect_block_rows, effect_block_unresolved) = db.populate_ability_effect_blocks()?;
+
     // Thirteenth pass: derive discipline→talent + class_utility_talents.
     // Per-origin utility talents fan to both combat styles; combat-discipline
     // talents stay scoped to their own discipline (no fan-out).
@@ -647,6 +653,10 @@ fn main() -> Result<()> {
     println!(
         "    GSF requisition costs: {} components + {} tier upgrades",
         gsf_component_costs, gsf_tier_costs
+    );
+    println!(
+        "    Ability effect blocks: {} rows ({} unresolved GUIDs)",
+        effect_block_rows, effect_block_unresolved
     );
     println!(
         "    Combat-style shared: {} abilities, {} utility talents",
