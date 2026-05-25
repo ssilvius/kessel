@@ -7,6 +7,7 @@ pub mod gsf_ability;
 pub mod gsf_costs;
 pub mod gsf_talent;
 pub mod item;
+pub mod tag_table;
 
 use crate::gom_schema;
 use crate::icon_overrides::IconOverrides;

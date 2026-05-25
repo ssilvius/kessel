@@ -618,6 +618,12 @@ fn main() -> Result<()> {
     // are preserved with NULL block_game_id so the gap is visible in spice.
     let (effect_block_rows, effect_block_unresolved) = db.populate_ability_effect_blocks()?;
 
+    // Twelfth-and-fifteen-sixteenths pass: tag dictionary + ability_tags +
+    // talent_tags (issue #174). Decodes ~6750 tag.abl.* entries from the
+    // tagTablePrototype singleton, then cross-references every abl/tal
+    // payload (both canonical AND non-canonical variants) for hash matches.
+    let (tag_count, abl_tag_edges, tal_tag_edges) = db.populate_tags_and_edges()?;
+
     // Thirteenth pass: derive discipline→talent + class_utility_talents.
     // Per-origin utility talents fan to both combat styles; combat-discipline
     // talents stay scoped to their own discipline (no fan-out).
@@ -657,6 +663,10 @@ fn main() -> Result<()> {
     println!(
         "    Ability effect blocks: {} rows ({} unresolved GUIDs)",
         effect_block_rows, effect_block_unresolved
+    );
+    println!(
+        "    Tags: {} dictionary entries, {} ability edges, {} talent edges",
+        tag_count, abl_tag_edges, tal_tag_edges
     );
     println!(
         "    Combat-style shared: {} abilities, {} utility talents",
