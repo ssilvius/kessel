@@ -2,6 +2,7 @@
 
 pub mod appearance;
 pub mod discipline;
+pub mod effect_block;
 pub mod gsf_ability;
 pub mod gsf_costs;
 pub mod gsf_talent;
