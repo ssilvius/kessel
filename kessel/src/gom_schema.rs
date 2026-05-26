@@ -167,6 +167,14 @@ pub fn enum_for_hash(hash: u64) -> Option<&'static GomEnum> {
     schema().enums_by_hash.get(&key)
 }
 
+/// Resolve an enum name (e.g. "STAT", "effAction") to its declared GomEnum.
+/// Used by the typed-value decoder to look up enum members for enum_ref
+/// properties whose tail format is `<05><enum_index_u8>`.
+#[allow(dead_code)]
+pub fn enum_for_name(name: &str) -> Option<&'static GomEnum> {
+    schema().enums_by_hash.values().find(|e| e.name == name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

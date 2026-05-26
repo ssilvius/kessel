@@ -1208,6 +1208,26 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_ability_effect_blocks_guid
                 ON ability_effect_blocks(block_guid);
 
+            -- Talent stat effects (PR: wire-typed-value-decoder).
+            -- Decoded from CF40 D954FB02 markers in talent payloads.
+            -- Each row: which stat the talent modifies and by how much.
+            -- Verified format: <05><stat_idx_u8><01><04><float32_LE>.
+            -- stat_name resolves to a member of the STAT enum (517 members);
+            -- magnitude is a multiplier (e.g. 0.30 = +30%) per modStatType
+            -- semantics. modStatType is in the D954FB04 effect-block class
+            -- but is not yet decoded per-row here (deferred to per-property
+            -- element grammar work).
+            CREATE TABLE IF NOT EXISTS talent_stat_effects (
+                talent_fqn        TEXT NOT NULL,
+                ordinal           INTEGER NOT NULL,
+                stat_index        INTEGER NOT NULL,
+                stat_name         TEXT NOT NULL,
+                magnitude         REAL NOT NULL,
+                PRIMARY KEY (talent_fqn, ordinal)
+            );
+            CREATE INDEX IF NOT EXISTS idx_talent_stat_effects_stat
+                ON talent_stat_effects(stat_name);
+
             -- Tag dictionary (#174). Decoded from the `tagTablePrototype`
             -- singleton. ~6750 entries, all in the `tag.abl.*` namespace.
             -- Two marker forms:
@@ -1906,15 +1926,27 @@ impl Database {
                     Err(_) => continue,
                 };
                 let named = decoded.named_props.as_object();
-                let presence = |needle: &str| -> Option<&str> {
-                    named.and_then(|m| m.keys().any(|k| k.contains(needle)).then_some("PRESENT"))
+                // Pull the decoded value for each enum property. The walker
+                // now emits real values per docs/probes/typed-value-encoding.md
+                // (PRs #199-#201); enum properties decode to {"enum": "<name>",
+                // "index": N, "name": "<member>"}.
+                let enum_member = |needle: &str| -> Option<String> {
+                    let m = named?;
+                    let (_k, v) = m.iter().find(|(k, _)| k.contains(needle))?;
+                    v.get("name").and_then(|n| n.as_str()).map(String::from)
                 };
-                let activity = presence("qstActivityType");
-                let difficulty = presence("qstDifficulty");
-                let rewards = presence("qstRewardsVisibility");
-                let episode = presence("qstEpisodeSeason");
-                // Level: future per-property decode. Foundation pass leaves NULL.
-                let level: Option<i64> = None;
+                let int_value = |needle: &str| -> Option<i64> {
+                    let m = named?;
+                    let (_k, v) = m.iter().find(|(k, _)| k.contains(needle))?;
+                    v.as_i64()
+                };
+                let activity = enum_member("qstActivityType");
+                let difficulty = enum_member("qstDifficulty");
+                let rewards = enum_member("qstRewardsVisibility");
+                let episode = enum_member("qstEpisodeSeason");
+                // Level: per-property level field may be int8 stored as
+                // an int value (not a wrapped struct). Try direct decode.
+                let level = int_value("Level").or_else(|| int_value("level"));
                 let affected =
                     stmt.execute(params![activity, difficulty, rewards, episode, level, fqn,])?;
                 if affected > 0 {
@@ -2878,6 +2910,8 @@ impl Database {
             collected
         };
 
+        const NPC_CLASS_TYPE_HI32: u32 = 0x0078E1BD;
+
         let tx = conn.unchecked_transaction()?;
         let mut insert = tx.prepare_cached(
             "INSERT OR REPLACE INTO npc_details \
@@ -2901,13 +2935,38 @@ impl Database {
                 .cloned();
             let faction = faction_from_fqn(fqn);
 
+            // Typed-value decode via schema-aware walker. Difficulty +
+            // level come from CF40 markers whose enum/int values are now
+            // surfaced (PR: wire-typed-value-decoder). Best-effort name
+            // matches against the schema-derived property labels.
+            let (difficulty, level) =
+                match decode_payload_schema_aware(&payload, NPC_CLASS_TYPE_HI32) {
+                    Ok(decoded) => {
+                        let named = decoded.named_props.as_object();
+                        let enum_member = |needle: &str| -> Option<String> {
+                            let m = named?;
+                            let (_k, v) = m.iter().find(|(k, _)| k.contains(needle))?;
+                            v.get("name").and_then(|n| n.as_str()).map(String::from)
+                        };
+                        let int_value = |needle: &str| -> Option<i64> {
+                            let m = named?;
+                            let (_k, v) = m.iter().find(|(k, _)| k.contains(needle))?;
+                            v.as_i64()
+                        };
+                        let diff = enum_member("Difficulty").or_else(|| enum_member("difficulty"));
+                        let lvl = int_value("Level").or_else(|| int_value("level"));
+                        (diff, lvl)
+                    }
+                    Err(_) => (None, None),
+                };
+
             insert.execute(params![
                 fqn,
-                None::<String>,
+                difficulty,
                 faction,
                 class_role,
                 ai_template,
-                None::<i64>,
+                level,
             ])?;
             written += 1;
         }
@@ -5142,6 +5201,97 @@ impl Database {
         Ok((written, unresolved))
     }
 
+    /// Populate `talent_stat_effects` by walking every talent payload for
+    /// CF40 D954FB02 markers. Each marker encodes (STAT enum index, float32
+    /// magnitude). Per docs/probes/typed-value-encoding.md the format is
+    /// `<05><stat_idx_u8><01><04><float32_LE>`.
+    ///
+    /// Returns (talents_with_effects, total_effects_inserted).
+    pub fn populate_talent_stat_effects(&self) -> Result<(u64, u64)> {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
+        const D954FB02_HI32: u32 = 0xD954FB02;
+        let stat_enum = match crate::gom_schema::enum_for_name("STAT") {
+            Some(e) => e,
+            None => return Ok((0, 0)),
+        };
+
+        self.flush()?;
+        let conn = self.conn.lock().unwrap();
+        let rows: Vec<(String, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT fqn, json_extract(json, '$.payload_b64') \
+                 FROM objects WHERE fqn LIKE 'tal.%' AND is_canonical = 1",
+            )?;
+            let collected: Vec<(String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            collected
+        };
+
+        let tx = conn.unchecked_transaction()?;
+        let mut insert = tx.prepare_cached(
+            "INSERT OR REPLACE INTO talent_stat_effects \
+               (talent_fqn, ordinal, stat_index, stat_name, magnitude) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+
+        let mut talents_with_effects = 0u64;
+        let mut total_effects = 0u64;
+        let target_hi32_bytes = D954FB02_HI32.to_be_bytes();
+
+        for (fqn, b64) in &rows {
+            let Ok(payload) = BASE64.decode(b64) else {
+                continue;
+            };
+            let mut ordinal: i64 = 0;
+            let mut i = 0;
+            while i + 9 + 8 <= payload.len() {
+                let is_marker = payload[i] == 0xCF
+                    && payload[i + 1] == 0x40
+                    && payload[i + 2] == 0x00
+                    && payload[i + 3] == 0x00
+                    && payload[i + 5..i + 9] == target_hi32_bytes;
+                if !is_marker {
+                    i += 1;
+                    continue;
+                }
+                // Tail: <05><stat_idx_u8><01><04><float32_LE>
+                let tail = &payload[i + 9..];
+                if tail.len() < 8 || tail[0] != 0x05 || tail[2] != 0x01 || tail[3] != 0x04 {
+                    i += 9;
+                    continue;
+                }
+                let stat_idx = tail[1] as usize;
+                let mag = f32::from_le_bytes(tail[4..8].try_into().unwrap());
+                if !mag.is_finite() || stat_idx >= stat_enum.members.len() {
+                    i += 9;
+                    continue;
+                }
+                let stat_name = &stat_enum.members[stat_idx];
+                insert.execute(params![
+                    fqn,
+                    ordinal,
+                    stat_idx as i64,
+                    stat_name,
+                    mag as f64
+                ])?;
+                ordinal += 1;
+                total_effects += 1;
+                i += 9;
+            }
+            if ordinal > 0 {
+                talents_with_effects += 1;
+            }
+        }
+        drop(insert);
+        tx.commit()?;
+        Ok((talents_with_effects, total_effects))
+    }
+
     /// Populate `tags`, `ability_tags`, and `talent_tags` from the
     /// `tagTablePrototype` singleton + ability/talent payload scan (#174).
     ///
@@ -7065,14 +7215,14 @@ mod tests {
     }
 
     #[test]
-    fn populate_quest_details_typed_sets_marker_presence() {
+    fn populate_quest_details_typed_decodes_real_enum_value() {
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
         let path = temp_db_path("quest_typed_pop");
         let db = Database::with_grammar(&path, None).unwrap();
         db.init_schema().unwrap();
 
-        let activity_hi32 = {
-            let mut found: Option<u32> = None;
+        let (activity_hi32, expected_member) = {
+            let mut found: Option<(u32, String)> = None;
             let class = crate::gom_schema::class_for_type_hi32(QUEST_CLASS_TYPE_HI32);
             if let Some(c) = class {
                 for prop_ref in &c.property_refs {
@@ -7083,8 +7233,14 @@ mod tests {
                     if let Ok(hi32) = u32::from_str_radix(low32_hex, 16) {
                         if let Some(prop) = crate::gom_schema::property_for_cf40(hi32) {
                             if let Some(refs) = &prop.refs {
-                                if refs.iter().any(|r| r.name.contains("qstActivityType")) {
-                                    found = Some(hi32);
+                                if let Some(r) =
+                                    refs.iter().find(|r| r.name.contains("qstActivityType"))
+                                {
+                                    // Grab the enum's first member for our expected value
+                                    let mem = crate::gom_schema::enum_for_name(&r.name)
+                                        .and_then(|e| e.members.first().cloned())
+                                        .unwrap_or_default();
+                                    found = Some((hi32, mem));
                                     break;
                                 }
                             }
@@ -7092,23 +7248,20 @@ mod tests {
                     }
                 }
             }
-            found
+            found.unwrap_or((0, String::new()))
         };
-        if activity_hi32.is_none() {
+        if activity_hi32 == 0 || expected_member.is_empty() {
             return;
         }
-        let hi32 = activity_hi32.unwrap();
-        // Real CF40 marker wire format per schema/mod.rs walker (post #165 fix):
-        //   CF 40 00 00 [type_byte] [hi32 BE 4 bytes]
-        // The type_byte (0x40 here as a generic stand-in) is required for the
-        // walker to land on the correct hi32 offset.
+        // Real CF40 marker + value: 05 00 = enum_ref index 0
         let mut payload = vec![0u8; 4];
         payload.push(0xCF);
         payload.push(0x40);
         payload.extend_from_slice(&[0u8; 2]);
         payload.push(0x40);
-        payload.extend_from_slice(&hi32.to_be_bytes());
-        payload.extend_from_slice(&[0u8; 2]);
+        payload.extend_from_slice(&activity_hi32.to_be_bytes());
+        payload.push(0x05); // enum_ref tag
+        payload.push(0x00); // enum index 0
         let payload_b64 = BASE64.encode(&payload);
 
         {
@@ -7136,7 +7289,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(activity.as_deref(), Some("PRESENT"));
+        assert_eq!(activity.as_deref(), Some(expected_member.as_str()));
     }
 
     #[test]

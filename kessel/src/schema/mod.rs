@@ -418,25 +418,36 @@ pub fn decode_payload_schema_aware(
     payload: &[u8],
     class_type_hi32: u32,
 ) -> Result<SchemaAwareDecoded> {
-    use serde_json::json;
-
     let mut raw_props = serde_json::Map::new();
     let mut named_props = serde_json::Map::new();
     let mut resolved = 0usize;
     let mut unresolved = 0usize;
 
     // Scan for CF 40 00 00 markers (template_guid prefix used by GOM payloads).
-    // Wire format per real-payload inspection (talent / quest / ability /
-    // npc / item samples from spice-baseline 2026-05-23):
+    // Wire format per docs/probes/typed-value-encoding.md (verified across
+    // 9.3M markers in 415K canonical objects):
     //
-    //   byte 0..2   CF 40
-    //   byte 2..4   00 00            (template-class flag)
-    //   byte 4      type/flags byte  (0x11/0x13/0x40 observed)
-    //   byte 5..9   hi32 BE          (property/class id high32)
-    //   byte 9..    value tail       (varies by property type_tag)
+    //   byte 0..4   CF 40 00 00
+    //   byte 4      type_flags (per-property stable; not a separate decode)
+    //   byte 5..9   hi32 BE (property id high32; key for gom_schema lookup)
+    //   byte 9      tail[0] = on-wire type tag (NOT always == schema.kind label)
+    //   byte 10..   value bytes per type tag
     //
-    // The walker only resolves marker NAMES here; per-property value decode
-    // is the consumer's job (see populate_*_typed / populate_talent_effects).
+    // Type tags actually observed (verified-from-payloads names, NOT the
+    // mislabeled gom_schema.kind strings):
+    //   0x01, 0x07 = wrapper (advance 1 byte and recurse into inner type)
+    //   0x02, 0x03 = int8 (1-byte signed value)
+    //   0x04       = float32 (4 LE bytes; schema labels this "int32" -- WRONG)
+    //   0x05       = container (per-property element grammar; here we record
+    //                the byte after 0x05 either as enum index resolved against
+    //                the property's refs, or as a list-count)
+    //   0x06       = length-prefixed string (1 len byte + N ASCII bytes;
+    //                schema labels this "float32" -- WRONG)
+    //   0x08       = array (per-property element grammar; here we record the
+    //                element-type byte and stop)
+    //   0x09       = class_ref via embedded CF E0 GUID (12 bytes)
+    //   0x12       = Vec3 of 3 LE float32 (13 bytes)
+    //   0x0E/0x11/0x14/0x15 = never appear in payloads (schema-declared only)
     let mut i = 0;
     while i + 9 <= payload.len() {
         if payload[i] != 0xCF
@@ -450,18 +461,24 @@ pub fn decode_payload_schema_aware(
         let hi32_bytes: [u8; 4] = payload[i + 5..i + 9].try_into().unwrap();
         let hi32 = u32::from_be_bytes(hi32_bytes);
         let raw_key = format!("{hi32:08X}");
-        raw_props.insert(raw_key.clone(), json!(null));
+
+        let (decoded_value, _consumed) = decode_value_tail(payload, i + 9, hi32, 0);
+        raw_props.insert(raw_key.clone(), decoded_value.clone());
 
         match gom_schema::property_for_cf40(hi32) {
             Some(prop) => {
                 resolved += 1;
-                let mut named_key = prop.kind.clone();
+                // Key by hi32 so same-kind properties don't collide.
+                // Format: `kind__HI32[__enum_name]` -- consumers can match
+                // by substring (e.g. "qstActivityType") and still get a
+                // unique value per property occurrence.
+                let mut named_key = format!("{}__{raw_key}", prop.kind);
                 if let Some(refs) = &prop.refs {
                     if let Some(first) = refs.first() {
-                        named_key = format!("{}__{}", prop.kind, first.name);
+                        named_key = format!("{}__{raw_key}__{}", prop.kind, first.name);
                     }
                 }
-                named_props.insert(named_key, json!(null));
+                named_props.insert(named_key, decoded_value);
             }
             None => {
                 unresolved += 1;
@@ -480,6 +497,145 @@ pub fn decode_payload_schema_aware(
         property_count_resolved: resolved,
         property_count_unresolved: unresolved,
     })
+}
+
+/// Decode one typed value tail starting at `payload[pos]`. Returns the
+/// decoded value as a `serde_json::Value` and the number of bytes consumed
+/// from `pos` (inclusive of the type tag byte). `hi32` is the parent CF40
+/// marker's property id, used for enum-name resolution on tag 0x05.
+///
+/// Encoding table per docs/probes/typed-value-encoding.md. Mismatched
+/// schema-dictionary labels are handled correctly here (we go by tail[0],
+/// not by the dictionary's `kind` field which is mislabeled for 5 of 10
+/// tags).
+fn decode_value_tail(payload: &[u8], pos: usize, hi32: u32, depth: u8) -> (Value, usize) {
+    use serde_json::json;
+    if pos >= payload.len() {
+        return (Value::Null, 0);
+    }
+    let tag = payload[pos];
+    // Bound recursion on wrappers
+    if depth > 4 {
+        return (json!({"deep_wrap": format!("0x{tag:02X}")}), 1);
+    }
+    match tag {
+        // Wrappers: advance 1 byte and recurse into the inner type.
+        0x01 | 0x07 => {
+            let (inner, n) = decode_value_tail(payload, pos + 1, hi32, depth + 1);
+            (json!({"wrap": format!("0x{tag:02X}"), "v": inner}), 1 + n)
+        }
+        // int8 (both 0x02 and 0x03 -- schema mislabels 0x03 as "int16")
+        0x02 | 0x03 => {
+            if pos + 1 >= payload.len() {
+                return (Value::Null, 1);
+            }
+            (json!(payload[pos + 1] as i8), 2)
+        }
+        // float32 (schema mislabels this as "int32")
+        0x04 => {
+            if pos + 5 > payload.len() {
+                return (Value::Null, 1);
+            }
+            let bytes: [u8; 4] = payload[pos + 1..pos + 5].try_into().unwrap();
+            let f = f32::from_le_bytes(bytes);
+            if f.is_finite() {
+                (json!(f as f64), 5)
+            } else {
+                (Value::Null, 5)
+            }
+        }
+        // Container / enum-or-list. For enum_ref-typed properties the byte
+        // after 0x05 is the enum index; resolve against the property's
+        // first ref name. For non-enum properties it's a list count.
+        0x05 => {
+            if pos + 1 >= payload.len() {
+                return (Value::Null, 1);
+            }
+            let idx_or_count = payload[pos + 1];
+            // Resolve enum name if the property declares one
+            if let Some(prop) = gom_schema::property_for_cf40(hi32) {
+                if let Some(refs) = &prop.refs {
+                    if let Some(first) = refs.first() {
+                        if first.kind == "enum" {
+                            if let Some(e) = gom_schema::enum_for_name(&first.name) {
+                                if (idx_or_count as usize) < e.members.len() {
+                                    return (
+                                        json!({
+                                            "enum": &first.name,
+                                            "index": idx_or_count,
+                                            "name": &e.members[idx_or_count as usize],
+                                        }),
+                                        2,
+                                    );
+                                }
+                            }
+                            return (json!({"enum": &first.name, "index": idx_or_count}), 2);
+                        }
+                    }
+                }
+            }
+            (json!({"list_count": idx_or_count}), 2)
+        }
+        // Length-prefixed string (schema mislabels this as "float32")
+        0x06 => {
+            if pos + 1 >= payload.len() {
+                return (Value::Null, 1);
+            }
+            let len = payload[pos + 1] as usize;
+            if len == 0 || pos + 2 + len > payload.len() {
+                return (Value::Null, 2);
+            }
+            let bytes = &payload[pos + 2..pos + 2 + len];
+            if bytes.iter().all(|&b| (0x20..0x7F).contains(&b)) {
+                if let Ok(s) = std::str::from_utf8(bytes) {
+                    return (json!(s), 2 + len);
+                }
+            }
+            (Value::Null, 2 + len)
+        }
+        // Array opener with per-property element grammar. Record the
+        // element type byte; per-property full decode lives in consumers.
+        0x08 => {
+            let elem_type = if pos + 1 < payload.len() {
+                Some(payload[pos + 1])
+            } else {
+                None
+            };
+            (
+                json!({"array_element_type": elem_type.map(|b| format!("0x{b:02X}"))}),
+                1,
+            )
+        }
+        // class_ref via embedded CF E0 GUID (12 bytes total: 09 02 00 CF E0 00 + 6-byte tail).
+        0x09 => {
+            if pos + 12 > payload.len() {
+                return (Value::Null, 1);
+            }
+            // Confirm the embedded CF E0 marker shape before pulling the GUID
+            if payload[pos + 3] == 0xCF && payload[pos + 4] == 0xE0 {
+                let tail = &payload[pos + 6..pos + 12];
+                let guid = format!("E000{}", hex::encode_upper(tail));
+                return (json!({"class_ref_guid": guid}), 12);
+            }
+            (
+                json!({"class_ref_raw": hex::encode_upper(&payload[pos + 1..pos + 12])}),
+                12,
+            )
+        }
+        // Vec3 of 3 LE float32 (1 tag + 12 value = 13 bytes)
+        0x12 => {
+            if pos + 13 > payload.len() {
+                return (Value::Null, 1);
+            }
+            let x = f32::from_le_bytes(payload[pos + 1..pos + 5].try_into().unwrap());
+            let y = f32::from_le_bytes(payload[pos + 5..pos + 9].try_into().unwrap());
+            let z = f32::from_le_bytes(payload[pos + 9..pos + 13].try_into().unwrap());
+            (json!([x as f64, y as f64, z as f64]), 13)
+        }
+        // Tags 0x0E/0x11/0x14/0x15 do not appear in payloads per the
+        // 9.3M-marker scan; anything else is unrecognized.
+        _ => (json!({"unknown_tag": format!("0x{tag:02X}")}), 1),
+    }
 }
 
 #[cfg(test)]
