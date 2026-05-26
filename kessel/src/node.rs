@@ -96,16 +96,22 @@ pub fn parse(bytes: &[u8], numeric_id: u64, kind_flag: u8) -> Result<NodeRecord>
 
 /// Discover every `.node` file in the archive and parse each one.
 ///
-/// `kind_flag` is sourced from `prototypes.info`; entries without a PINF row
-/// receive flag `0`. Malformed PROT entries are skipped rather than failing the
-/// whole walk -- the goal is "all parseable nodes" for downstream extractors.
+/// `kind_flag` is looked up by content_guid against the PINF registry
+/// (#180 model): each .node file's PROT header carries a content GUID at
+/// bytes 8..16, and PINF maps that GUID to a routing flag. Records without
+/// a PINF entry get flag `0`. Malformed PROT entries are skipped rather
+/// than failing the whole walk -- the goal is "all parseable nodes" for
+/// downstream extractors.
 #[allow(dead_code)]
 pub fn walk_archive_nodes(
     archive: &mut Archive,
     hash_dict: &HashDictionary,
     pinf: &[PrototypeInfo],
 ) -> Result<Vec<NodeRecord>> {
-    let flag_by_id: HashMap<u64, u8> = pinf.iter().map(|p| (p.numeric_id, p.flag)).collect();
+    let flag_by_guid: HashMap<String, u8> = pinf
+        .iter()
+        .map(|p| (p.content_guid.clone(), p.flag))
+        .collect();
     let proto_hashes: HashSet<u64> = hash_dict
         .paths_matching("/resources/systemgenerated/prototypes/")
         .into_iter()
@@ -130,12 +136,14 @@ pub fn walk_archive_nodes(
         let Some(numeric_id) = numeric_id else {
             continue;
         };
-        let kind_flag = flag_by_id.get(&numeric_id).copied().unwrap_or(0);
         let bytes = match archive.read_entry(&entry) {
             Ok(b) => b,
             Err(_) => continue,
         };
-        if let Ok(rec) = parse(&bytes, numeric_id, kind_flag) {
+        // Parse with placeholder flag 0; post-parse, look up flag by the
+        // parsed content GUID and overwrite.
+        if let Ok(mut rec) = parse(&bytes, numeric_id, 0) {
+            rec.kind_flag = flag_by_guid.get(&rec.template_guid).copied().unwrap_or(0);
             out.push(rec);
         }
     }
