@@ -2895,24 +2895,20 @@ impl Database {
         Ok(written)
     }
 
-    /// Insert one row per `cnv.*` NODE prototype into the `objects` table
-    /// (kind = Conversation), making the 10,735 conversation entities
-    /// queryable alongside PBUK objects (#175).
+    /// Insert one row per PROT-magic .node file into the `objects` table
+    /// (#175 entity layer for cnv.*, #181 extended to non-cnv prototypes
+    /// like creature.*, stg.*, etc.).
     ///
-    /// NODE files at `/resources/systemgenerated/prototypes/<num>.node` carry
-    /// the full conversation playback data. This populator wires them into
-    /// the objects table so downstream consumers can join conversation GUIDs
-    /// back to their FQN + payload, the same way they can for PBUK objects.
+    /// NODE files at `/resources/systemgenerated/prototypes/<num>.node` use
+    /// the PROT format documented in `kessel/src/node.rs`. This populator
+    /// walks every .node file with a valid PROT header, builds a synthetic
+    /// GOM header so the existing `GameObject` constructor reads the
+    /// content GUID the same way it does for PBUK objects, and emits one
+    /// row per file. The `kind` column is derived from the FQN prefix by
+    /// `from_gom_with_overrides`.
     ///
-    /// The internal conversation graph (per-node dialog text, branch
-    /// children, condition expressions, quest-hook type) lives inside each
-    /// payload as standard GOM templates + property records -- decoding that
-    /// per-node structure is filed as a follow-on. This PR ships the entity
-    /// layer so consumers can at least enumerate every conversation by FQN +
-    /// content GUID + size.
-    ///
-    /// Returns the number of conversation objects inserted.
-    pub fn populate_conversation_objects(
+    /// Returns the number of NODE objects inserted.
+    pub fn populate_node_objects(
         &self,
         tor_dir: &std::path::Path,
         hashes: &crate::hash::HashDictionary,
@@ -2961,7 +2957,10 @@ impl Database {
                     fqn_end += 1;
                 }
                 let fqn = match std::str::from_utf8(&data[fqn_start..fqn_end]) {
-                    Ok(s) if s.starts_with("cnv.") => s.to_string(),
+                    // Accept any FQN that contains a dot (kessel's basic
+                    // shape check). Empty or non-dotted FQNs are likely
+                    // corrupt PROT headers.
+                    Ok(s) if s.contains('.') => s.to_string(),
                     _ => continue,
                 };
                 let payload_start = fqn_end + 1;
