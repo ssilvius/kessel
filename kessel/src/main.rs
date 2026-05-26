@@ -565,6 +565,15 @@ fn main() -> Result<()> {
     let gsf_ability_stats_count = db.populate_gsf_ability_stats()?;
     println!("  GSF ability stats: {}", gsf_ability_stats_count);
 
+    // EPP appearance specs + FX specs (#183). UTF-16-LE XML files. epp
+    // carries appearance action lists + fxSpec refs; fxspec carries node
+    // class lists. The two tables JOIN via appearance_specs.fx_spec_refs
+    // → fx_specs.fqn (path-relative keys).
+    let appearance_count = db.populate_appearance_specs(&args.input, &hash_dict)?;
+    println!("  Appearance specs: {}", appearance_count);
+    let fxspec_count = db.populate_fx_specs(&args.input, &hash_dict)?;
+    println!("  FX specs: {}", fxspec_count);
+
     // SCPT scripts (#182). Decrypt every .scpt file in
     // /resources/systemgenerated/compilednative/ and persist the body as a
     // base64-encoded blob. Per-script semantic interpretation downstream.

@@ -59,6 +59,24 @@ fn extract_ascii_strings(payload: &[u8], min_len: usize) -> Vec<String> {
     out
 }
 
+/// Convert a `.fxspec` resource path into the path-relative key used by
+/// `<fxSpecString>` references in `.epp` files. Returns None when the
+/// path doesn't contain a `/fxspec/` segment or a `.fxspec` suffix. Used
+/// by `populate_fx_specs` (#183) to make `appearance_specs.fx_spec_refs`
+/// joinable to `fx_specs.fqn`.
+///
+/// Example: `/resources/art/fx/fxspec/abilities/sith_warrior/sw_massacre_sword_glow.fxspec`
+/// → `abilities/sith_warrior/sw_massacre_sword_glow`.
+fn fxspec_fqn_from_path(path: &str) -> Option<String> {
+    let after_marker = path.split_once("/fxspec/")?.1;
+    let trimmed = after_marker.strip_suffix(".fxspec")?;
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 /// Best-effort faction inference from FQN structure. Returns Some when a
 /// clear faction segment is present, None otherwise. Used by
 /// `populate_npc_details_typed` (#176).
@@ -1199,6 +1217,29 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_ability_tags_tag ON ability_tags(tag_hash);
             CREATE INDEX IF NOT EXISTS idx_ability_tags_game_id ON ability_tags(ability_game_id);
+
+            -- Appearance specs (#183). One row per .epp file at
+            -- /resources/gamedata/epp/.../<name>.epp. FQN is the dotted
+            -- form of the path-relative key. appearance_actions and
+            -- fx_spec_refs are JSON arrays decoded from the XML body;
+            -- raw_xml preserves the full XML for downstream typed-field
+            -- consumers.
+            CREATE TABLE IF NOT EXISTS appearance_specs (
+                fqn                 TEXT PRIMARY KEY,
+                appearance_actions  TEXT,
+                fx_spec_refs        TEXT,
+                raw_xml             TEXT NOT NULL
+            );
+
+            -- FX specs (#183). One row per .fxspec file. node_classes is a
+            -- JSON array of the class names listed in the <classes> block;
+            -- raw_xml preserves the full XML for per-node-instance
+            -- consumers.
+            CREATE TABLE IF NOT EXISTS fx_specs (
+                fqn                 TEXT PRIMARY KEY,
+                node_classes_json   TEXT NOT NULL,
+                raw_xml             TEXT NOT NULL
+            );
 
             -- SCPT compiled-native script bodies (#182, closes #127's
             -- consumer gap). One row per .scpt file at
@@ -2949,6 +2990,144 @@ impl Database {
         }
         self.flush()?;
         Ok(inserted)
+    }
+
+    /// Populate `appearance_specs` from every `.epp` file in the archives
+    /// (#183).
+    ///
+    /// Each row carries the FQN extracted from the XML root attribute,
+    /// JSON-encoded lists of distinct AppearanceAction types and fxSpec
+    /// refs found in the body, and the raw decoded XML. Per-file decode
+    /// failures are skipped silently rather than aborting the walk.
+    pub fn populate_appearance_specs(
+        &self,
+        tor_dir: &std::path::Path,
+        hashes: &crate::hash::HashDictionary,
+    ) -> Result<u64> {
+        use crate::myp::Archive;
+        use crate::schema::epp;
+        use std::collections::HashSet;
+
+        let epp_hashes: HashSet<u64> = hashes
+            .paths_matching(".epp")
+            .into_iter()
+            .filter(|(_, p)| p.ends_with(".epp"))
+            .map(|(h, _)| h)
+            .collect();
+
+        let tor_files: Vec<std::path::PathBuf> = std::fs::read_dir(tor_dir)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|x| x == "tor").unwrap_or(false))
+            .collect();
+
+        let mut written = 0u64;
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction()?;
+        let mut insert = tx.prepare_cached(
+            "INSERT OR REPLACE INTO appearance_specs \
+               (fqn, appearance_actions, fx_spec_refs, raw_xml) \
+             VALUES (?1, ?2, ?3, ?4)",
+        )?;
+        for tor_path in &tor_files {
+            let mut archive = match Archive::open(tor_path) {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            let entries: Vec<_> = match archive.entries() {
+                Ok(e) => e.cloned().collect(),
+                Err(_) => continue,
+            };
+            for entry in &entries {
+                if !epp_hashes.contains(&entry.filename_hash) {
+                    continue;
+                }
+                let data = match archive.read_entry(entry) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                let spec = match epp::decode_epp(&data) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                let actions = serde_json::to_string(&spec.appearance_actions)?;
+                let refs = serde_json::to_string(&spec.fx_spec_refs)?;
+                insert.execute(params![spec.fqn, actions, refs, spec.raw_xml])?;
+                written += 1;
+            }
+        }
+        drop(insert);
+        tx.commit()?;
+        Ok(written)
+    }
+
+    /// Populate `fx_specs` from every `.fxspec` file in the archives (#183).
+    ///
+    /// FQN is derived from the resource path between `/fxspec/` and the
+    /// trailing `.fxspec`, matching the path-relative keys used by
+    /// `appearance_specs.fx_spec_refs`. node_classes is JSON-encoded.
+    pub fn populate_fx_specs(
+        &self,
+        tor_dir: &std::path::Path,
+        hashes: &crate::hash::HashDictionary,
+    ) -> Result<u64> {
+        use crate::myp::Archive;
+        use crate::schema::fxspec;
+        use std::collections::HashSet;
+
+        let fx_hashes: HashSet<(u64, String)> = hashes
+            .paths_matching(".fxspec")
+            .into_iter()
+            .filter(|(_, p)| p.ends_with(".fxspec"))
+            .map(|(h, p)| (h, p.clone()))
+            .collect();
+        let by_hash: std::collections::HashMap<u64, String> = fx_hashes.iter().cloned().collect();
+
+        let tor_files: Vec<std::path::PathBuf> = std::fs::read_dir(tor_dir)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|x| x == "tor").unwrap_or(false))
+            .collect();
+
+        let mut written = 0u64;
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction()?;
+        let mut insert = tx.prepare_cached(
+            "INSERT OR REPLACE INTO fx_specs (fqn, node_classes_json, raw_xml) \
+             VALUES (?1, ?2, ?3)",
+        )?;
+        for tor_path in &tor_files {
+            let mut archive = match Archive::open(tor_path) {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            let entries: Vec<_> = match archive.entries() {
+                Ok(e) => e.cloned().collect(),
+                Err(_) => continue,
+            };
+            for entry in &entries {
+                let Some(path) = by_hash.get(&entry.filename_hash) else {
+                    continue;
+                };
+                let Some(fqn) = fxspec_fqn_from_path(path) else {
+                    continue;
+                };
+                let data = match archive.read_entry(entry) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                let spec = match fxspec::decode_fxspec(&data, fqn) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                let classes = serde_json::to_string(&spec.node_classes)?;
+                insert.execute(params![spec.fqn, classes, spec.raw_xml])?;
+                written += 1;
+            }
+        }
+        drop(insert);
+        tx.commit()?;
+        Ok(written)
     }
 
     /// Populate `scripts` with decrypted SCPT bodies (#182).
