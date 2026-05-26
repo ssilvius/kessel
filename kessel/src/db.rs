@@ -2713,6 +2713,103 @@ impl Database {
         Ok(count)
     }
 
+    /// Insert one row per `cnv.*` NODE prototype into the `objects` table
+    /// (kind = Conversation), making the 10,735 conversation entities
+    /// queryable alongside PBUK objects (#175).
+    ///
+    /// NODE files at `/resources/systemgenerated/prototypes/<num>.node` carry
+    /// the full conversation playback data. This populator wires them into
+    /// the objects table so downstream consumers can join conversation GUIDs
+    /// back to their FQN + payload, the same way they can for PBUK objects.
+    ///
+    /// The internal conversation graph (per-node dialog text, branch
+    /// children, condition expressions, quest-hook type) lives inside each
+    /// payload as standard GOM templates + property records -- decoding that
+    /// per-node structure is filed as a follow-on. This PR ships the entity
+    /// layer so consumers can at least enumerate every conversation by FQN +
+    /// content GUID + size.
+    ///
+    /// Returns the number of conversation objects inserted.
+    pub fn populate_conversation_objects(
+        &self,
+        tor_dir: &std::path::Path,
+        hashes: &crate::hash::HashDictionary,
+    ) -> Result<u64> {
+        use crate::myp::Archive;
+        use crate::pbuk::GomObject;
+        use crate::schema::GameObject;
+        use std::collections::HashSet;
+
+        let proto_hashes: HashSet<u64> = hashes
+            .paths_matching("/resources/systemgenerated/prototypes/")
+            .into_iter()
+            .map(|(h, _)| h)
+            .collect();
+
+        let tor_files: Vec<std::path::PathBuf> = std::fs::read_dir(tor_dir)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|x| x == "tor").unwrap_or(false))
+            .collect();
+
+        let mut inserted = 0u64;
+        for tor_path in &tor_files {
+            let mut archive = match Archive::open(tor_path) {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            let entries: Vec<_> = match archive.entries() {
+                Ok(e) => e.cloned().collect(),
+                Err(_) => continue,
+            };
+            for entry in &entries {
+                if !proto_hashes.contains(&entry.filename_hash) {
+                    continue;
+                }
+                let data = match archive.read_entry(entry) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                if data.len() < 20 || &data[..4] != b"PROT" {
+                    continue;
+                }
+                let fqn_start = 0x14;
+                let mut fqn_end = fqn_start;
+                while fqn_end < data.len() && fqn_end < fqn_start + 200 && data[fqn_end] != 0 {
+                    fqn_end += 1;
+                }
+                let fqn = match std::str::from_utf8(&data[fqn_start..fqn_end]) {
+                    Ok(s) if s.starts_with("cnv.") => s.to_string(),
+                    _ => continue,
+                };
+                let payload_start = fqn_end + 1;
+                if data.len() <= payload_start {
+                    continue;
+                }
+                let payload = data[payload_start..].to_vec();
+
+                // Build a synthetic 42-byte GOM header so from_gom_with_overrides
+                // can read the content GUID at bytes 0..8 the same way it does
+                // for PBUK objects. Template GUID slot (bytes 16..24) is left
+                // zero because cnv objects share one all-cnv template constant
+                // that is not yet wired into kessel.
+                let mut header = vec![0u8; 42];
+                header[0..8].copy_from_slice(&data[8..16]);
+
+                let gom = GomObject {
+                    fqn,
+                    header,
+                    payload,
+                };
+                let obj = GameObject::from_gom_with_overrides(&gom, None);
+                self.insert_object(&obj)?;
+                inserted += 1;
+            }
+        }
+        self.flush()?;
+        Ok(inserted)
+    }
+
     /// Populate `conversation_quest_refs` by scanning every NODE prototype
     /// file in `tor_dir` for CF GUID refs that resolve to a known quest.
     ///

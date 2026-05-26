@@ -564,6 +564,14 @@ fn main() -> Result<()> {
     let gsf_ability_stats_count = db.populate_gsf_ability_stats()?;
     println!("  GSF ability stats: {}", gsf_ability_stats_count);
 
+    // Conversation entities (#175). Wire every cnv.* NODE prototype into
+    // the `objects` table (kind = Conversation) so all ~10,735 conversations
+    // are queryable alongside PBUK objects. Per-node graph structure
+    // (dialog text, branches, conditions, quest-hook type) lives inside each
+    // payload as standard GOM templates and is filed as a follow-on decode.
+    let cnv_objects = db.populate_conversation_objects(&args.input, &hash_dict)?;
+    println!("  Conversation objects: {}", cnv_objects);
+
     // Conversation refs from NODE files (cnv.* prototypes). One pass through
     // the .tor archives extracts CF GUID refs to quest, npc, achievement,
     // codex, item, follow-up conversation, and encounter targets. The
