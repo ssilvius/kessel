@@ -34,6 +34,59 @@ fn count_byte_pattern(payload: &[u8], pattern: &[u8]) -> usize {
     count
 }
 
+/// Pull every ASCII run of length >= `min_len` from a payload, returning
+/// the runs as `String`s in payload order. Used by typed-detail populators
+/// to find well-known string tokens (pkg.aggro.*, role labels, etc.) without
+/// needing per-property byte-layout decode.
+fn extract_ascii_strings(payload: &[u8], min_len: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < payload.len() {
+        if (0x20..0x7F).contains(&payload[i]) {
+            let start = i;
+            while i < payload.len() && (0x20..0x7F).contains(&payload[i]) {
+                i += 1;
+            }
+            if i - start >= min_len {
+                if let Ok(s) = std::str::from_utf8(&payload[start..i]) {
+                    out.push(s.to_string());
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Best-effort faction inference from FQN structure. Returns Some when a
+/// clear faction segment is present, None otherwise. Used by
+/// `populate_npc_details_typed` (#176).
+fn faction_from_fqn(fqn: &str) -> Option<String> {
+    let lower = fqn.to_lowercase();
+    if lower.contains(".alliance.") {
+        Some("alliance".into())
+    } else if lower.contains(".imperial.") || lower.contains(".imp.") {
+        Some("imperial".into())
+    } else if lower.contains(".republic.") || lower.contains(".rep.") {
+        Some("republic".into())
+    } else if lower.contains(".sith_warrior.")
+        || lower.contains(".sith_inquisitor.")
+        || lower.contains(".bounty_hunter.")
+        || lower.contains(".agent.")
+    {
+        Some("imperial".into())
+    } else if lower.contains(".jedi_knight.")
+        || lower.contains(".jedi_consular.")
+        || lower.contains(".trooper.")
+        || lower.contains(".smuggler.")
+    {
+        Some("republic".into())
+    } else {
+        None
+    }
+}
+
 /// Per-kind row counts inserted by `populate_conversation_refs`.
 #[derive(Default, Debug)]
 pub struct ConversationRefCounts {
@@ -2711,6 +2764,80 @@ impl Database {
         drop(stmt);
         tx.commit()?;
         Ok(count)
+    }
+
+    /// Populate `npc_details` with typed fields decoded from NPC payloads
+    /// (#176).
+    ///
+    /// Extracts three real values per NPC:
+    ///   - `class_role`: the human-readable role label (e.g. `Humanoid - Ambient`,
+    ///     `Droid - Assassin`, `Creature - Default`) which appears as the first
+    ///     `"<Title> - <Subtype>"` ASCII string in the payload
+    ///   - `ai_template`: the `pkg.aggro.<...>` template path the AI uses
+    ///   - `faction`: FQN-derived (alliance / imperial / republic) -- NULL when
+    ///     the FQN doesn't carry a clear faction segment
+    ///
+    /// `difficulty` and `level` remain NULL pending the per-property byte
+    /// decode work that's deferred across multiple typed-detail PRs (it is
+    /// the same int8/16/32/enum_ref/string decode gap documented in
+    /// CLAUDE.md and quest_details_typed's foundation pass).
+    ///
+    /// Returns the number of npc_details rows written.
+    pub fn populate_npc_details_typed(&self) -> Result<u64> {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
+        self.flush()?;
+        let conn = self.conn.lock().unwrap();
+        let rows: Vec<(String, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT fqn, json_extract(json, '$.payload_b64') \
+                 FROM objects WHERE kind = 'Npc' AND is_canonical = 1",
+            )?;
+            let collected: Vec<(String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            collected
+        };
+
+        let tx = conn.unchecked_transaction()?;
+        let mut insert = tx.prepare_cached(
+            "INSERT OR REPLACE INTO npc_details \
+               (fqn, difficulty, faction, class_role, ai_template, level) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
+
+        let mut written = 0u64;
+        for (fqn, b64) in &rows {
+            let Ok(payload) = BASE64.decode(b64) else {
+                continue;
+            };
+            let strings = extract_ascii_strings(&payload, 4);
+            let ai_template = strings
+                .iter()
+                .find(|s| s.starts_with("pkg.aggro."))
+                .cloned();
+            let class_role = strings
+                .iter()
+                .find(|s| s.len() < 40 && s.contains(" - ") && s.as_bytes()[0].is_ascii_uppercase())
+                .cloned();
+            let faction = faction_from_fqn(fqn);
+
+            insert.execute(params![
+                fqn,
+                None::<String>,
+                faction,
+                class_role,
+                ai_template,
+                None::<i64>,
+            ])?;
+            written += 1;
+        }
+        drop(insert);
+        tx.commit()?;
+        Ok(written)
     }
 
     /// Insert one row per `cnv.*` NODE prototype into the `objects` table
