@@ -1208,6 +1208,25 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_ability_effect_blocks_guid
                 ON ability_effect_blocks(block_guid);
 
+            -- Ability action records. Decoded from CF40 markers
+            -- E251D1CC (effAction), E251D1CD (effCondition),
+            -- E251D1D0 (effInitializer), E71E2F92 (effLogicOp) in
+            -- ability payloads. Scans BOTH canonical and non-canonical
+            -- variants per FQN -- the rich effect data lives on the
+            -- longer non-canonical variant (same pattern as PR #174 tags).
+            -- Per-action parameter decode (damage values, multipliers)
+            -- is deferred to the E251D1CE/CF parameter-list grammar work.
+            CREATE TABLE IF NOT EXISTS ability_effects (
+                ability_fqn       TEXT NOT NULL,
+                ordinal           INTEGER NOT NULL,
+                kind              TEXT NOT NULL CHECK (kind IN ('action','condition','initializer','logic_op')),
+                enum_index        INTEGER NOT NULL,
+                enum_member       TEXT NOT NULL,
+                PRIMARY KEY (ability_fqn, ordinal)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ability_effects_kind ON ability_effects(kind);
+            CREATE INDEX IF NOT EXISTS idx_ability_effects_member ON ability_effects(enum_member);
+
             -- Talent stat effects (PR: wire-typed-value-decoder).
             -- Decoded from CF40 D954FB02 markers in talent payloads.
             -- Each row: which stat the talent modifies and by how much.
@@ -5199,6 +5218,129 @@ impl Database {
         drop(insert);
         tx.commit()?;
         Ok((written, unresolved))
+    }
+
+    /// Populate `ability_effects` by walking every abl.* payload (canonical
+    /// and non-canonical, since the rich effect data lives on the longer
+    /// non-canonical variant per PR #174 tags) for the four effect-record
+    /// marker hi32s. Aggregates per FQN so consumers see one stable set of
+    /// effects per ability identity, regardless of which variant happens
+    /// to be canonical.
+    ///
+    /// Returns (abilities_with_effects, total_effects_inserted).
+    pub fn populate_ability_effects(&self) -> Result<(u64, u64)> {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        use std::collections::BTreeMap;
+
+        // The four effect-record marker hi32s + their kind label + enum name.
+        const MARKERS: &[(u32, &str, &str)] = &[
+            (0xE251D1CC, "action", "effAction"),
+            (0xE251D1CD, "condition", "effCondition"),
+            (0xE251D1D0, "initializer", "effInitializer"),
+            (0xE71E2F92, "logic_op", "effLogicOp"),
+        ];
+
+        // Resolve enum once
+        let mut enums: Vec<(u32, &str, Option<&crate::gom_schema::GomEnum>)> = Vec::new();
+        for (h, k, name) in MARKERS {
+            enums.push((*h, k, crate::gom_schema::enum_for_name(name)));
+        }
+
+        self.flush()?;
+        let conn = self.conn.lock().unwrap();
+        let rows: Vec<(String, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT fqn, json_extract(json, '$.payload_b64') \
+                 FROM objects WHERE fqn LIKE 'abl.%'",
+            )?;
+            let collected: Vec<(String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            collected
+        };
+
+        // Aggregate across canonical + non-canonical variants per FQN.
+        // Key: ability_fqn. Value: ordered list of (kind, enum_index, member).
+        // Use a deduping set to avoid repeats when the same variant is seen
+        // multiple times, then collapse into ordinal-ordered rows.
+        let mut effects_per_fqn: BTreeMap<String, Vec<(String, i64, String)>> = BTreeMap::new();
+
+        for (fqn, b64) in &rows {
+            let Ok(payload) = BASE64.decode(b64) else {
+                continue;
+            };
+            let mut i = 0;
+            while i + 11 <= payload.len() {
+                if !(payload[i] == 0xCF
+                    && payload[i + 1] == 0x40
+                    && payload[i + 2] == 0x00
+                    && payload[i + 3] == 0x00)
+                {
+                    i += 1;
+                    continue;
+                }
+                let hi32 = u32::from_be_bytes(payload[i + 5..i + 9].try_into().unwrap());
+                let matched = enums.iter().find(|(h, _, _)| *h == hi32);
+                let Some((_, kind, e_opt)) = matched else {
+                    i += 9;
+                    continue;
+                };
+                let Some(e) = e_opt else {
+                    i += 9;
+                    continue;
+                };
+                // Tail is 05 <enum_index_u8> ...
+                if payload[i + 9] != 0x05 {
+                    i += 9;
+                    continue;
+                }
+                let idx = payload[i + 10] as usize;
+                if idx >= e.members.len() {
+                    i += 9;
+                    continue;
+                }
+                let member = e.members[idx].clone();
+                effects_per_fqn.entry(fqn.clone()).or_default().push((
+                    kind.to_string(),
+                    idx as i64,
+                    member,
+                ));
+                i += 9;
+            }
+        }
+
+        // Dedup: collapse identical (kind, enum_index, member) tuples per FQN
+        // while preserving first-seen order.
+        for v in effects_per_fqn.values_mut() {
+            let mut seen = std::collections::HashSet::new();
+            v.retain(|t| seen.insert(t.clone()));
+        }
+
+        let tx = conn.unchecked_transaction()?;
+        let mut insert = tx.prepare_cached(
+            "INSERT OR REPLACE INTO ability_effects \
+               (ability_fqn, ordinal, kind, enum_index, enum_member) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+
+        let mut abilities = 0u64;
+        let mut total = 0u64;
+        for (fqn, list) in &effects_per_fqn {
+            if list.is_empty() {
+                continue;
+            }
+            abilities += 1;
+            for (ord, (kind, idx, member)) in list.iter().enumerate() {
+                insert.execute(params![fqn, ord as i64, kind, idx, member])?;
+                total += 1;
+            }
+        }
+        drop(insert);
+        tx.commit()?;
+        Ok((abilities, total))
     }
 
     /// Populate `talent_stat_effects` by walking every talent payload for
