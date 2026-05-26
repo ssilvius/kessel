@@ -18,8 +18,12 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 
 fn main() -> Result<()> {
-    let db = std::env::args().nth(1).unwrap_or("/tmp/spice-178.sqlite".into());
-    let out_path = std::env::args().nth(2).unwrap_or("/tmp/typed-encoding-samples.jsonl".into());
+    let db = std::env::args()
+        .nth(1)
+        .unwrap_or("/tmp/spice-178.sqlite".into());
+    let out_path = std::env::args()
+        .nth(2)
+        .unwrap_or("/tmp/typed-encoding-samples.jsonl".into());
     let conn = Connection::open(&db)?;
 
     let mut stmt = conn.prepare(
