@@ -649,6 +649,17 @@ fn main() -> Result<()> {
     let npc_details_count = db.populate_npc_details_typed()?;
     println!("  NPC details typed: {}", npc_details_count);
 
+    // Item typed details (issue #177). Copies rarity from item_details
+    // (FQN classifier); binding + stack_size_max NULL pending per-property
+    // byte decode.
+    let item_schema_count = db.populate_item_schema_details_typed()?;
+    println!("  Item schema details typed: {}", item_schema_count);
+
+    // Schematic typed details (issue #178). FQN-derived profession via
+    // token scan. tier + training_cost deferred (per-property byte decode).
+    let schem_details_count = db.populate_schematic_details_typed()?;
+    println!("  Schematic details typed: {}", schem_details_count);
+
     // Twelfth-and-fifteen-sixteenths pass: tag dictionary + ability_tags +
     // talent_tags (issue #174). Decodes ~6750 tag.abl.* entries from the
     // tagTablePrototype singleton, then cross-references every abl/tal
