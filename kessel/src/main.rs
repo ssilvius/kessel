@@ -20,6 +20,7 @@ mod pbuk;
 mod prototypes_info;
 mod quest;
 mod schema;
+mod scpt;
 mod stb;
 mod unknowns;
 mod xml_utf16;
@@ -563,6 +564,12 @@ fn main() -> Result<()> {
     // are passive auras with effects on a parent activator or in a hook.
     let gsf_ability_stats_count = db.populate_gsf_ability_stats()?;
     println!("  GSF ability stats: {}", gsf_ability_stats_count);
+
+    // SCPT scripts (#182). Decrypt every .scpt file in
+    // /resources/systemgenerated/compilednative/ and persist the body as a
+    // base64-encoded blob. Per-script semantic interpretation downstream.
+    let scripts_count = db.populate_scripts(&args.input, &hash_dict)?;
+    println!("  Scripts: {}", scripts_count);
 
     // Conversation entities (#175). Wire every cnv.* NODE prototype into
     // the `objects` table (kind = Conversation) so all ~10,735 conversations

@@ -1200,6 +1200,20 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_ability_tags_tag ON ability_tags(tag_hash);
             CREATE INDEX IF NOT EXISTS idx_ability_tags_game_id ON ability_tags(ability_game_id);
 
+            -- SCPT compiled-native script bodies (#182, closes #127's
+            -- consumer gap). One row per .scpt file at
+            -- /resources/systemgenerated/compilednative/<numeric_id>.
+            -- decoded_body is the post-XOR-decrypt body bytes (typically
+            -- x86-64 UI/SFX native code per kessel/src/scpt.rs docs).
+            -- Per-script semantic interpretation is a downstream consumer's
+            -- job; this table provides the raw decrypted bytes.
+            CREATE TABLE IF NOT EXISTS scripts (
+                script_id          INTEGER PRIMARY KEY,
+                decoded_size       INTEGER NOT NULL,
+                decoded_body_b64   TEXT NOT NULL,
+                extracted_at       INTEGER NOT NULL DEFAULT (unixepoch())
+            );
+
             -- Talent ↔ tag edges (#174). Same shape as ability_tags.
             CREATE TABLE IF NOT EXISTS talent_tags (
                 talent_fqn         TEXT NOT NULL,
@@ -2935,6 +2949,75 @@ impl Database {
         }
         self.flush()?;
         Ok(inserted)
+    }
+
+    /// Populate `scripts` with decrypted SCPT bodies (#182).
+    ///
+    /// Walks every `/resources/systemgenerated/compilednative/<numeric_id>`
+    /// file, runs `kessel::scpt::parse_and_decrypt`, and persists the body
+    /// (base64-encoded) plus the numeric_id from the SCPT header.
+    /// Per-script semantic interpretation (combat formulas, GSF physics,
+    /// UI script logic) lives downstream of this row; this populator
+    /// supplies the raw decoded bytes so consumers don't re-decrypt.
+    pub fn populate_scripts(
+        &self,
+        tor_dir: &std::path::Path,
+        hashes: &crate::hash::HashDictionary,
+    ) -> Result<u64> {
+        use crate::myp::Archive;
+        use crate::scpt;
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        use std::collections::HashSet;
+
+        let scpt_hashes: HashSet<u64> = hashes
+            .paths_matching("/resources/systemgenerated/compilednative/")
+            .into_iter()
+            .map(|(h, _)| h)
+            .collect();
+
+        let tor_files: Vec<std::path::PathBuf> = std::fs::read_dir(tor_dir)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|x| x == "tor").unwrap_or(false))
+            .collect();
+
+        let mut written = 0u64;
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction()?;
+        let mut insert = tx.prepare_cached(
+            "INSERT OR REPLACE INTO scripts (script_id, decoded_size, decoded_body_b64) \
+             VALUES (?1, ?2, ?3)",
+        )?;
+
+        for tor_path in &tor_files {
+            let mut archive = match Archive::open(tor_path) {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            let entries: Vec<_> = match archive.entries() {
+                Ok(e) => e.cloned().collect(),
+                Err(_) => continue,
+            };
+            for entry in &entries {
+                if !scpt_hashes.contains(&entry.filename_hash) {
+                    continue;
+                }
+                let data = match archive.read_entry(entry) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                let (header, body) = match scpt::parse_and_decrypt(&data) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let body_b64 = BASE64.encode(&body);
+                insert.execute(params![header.numeric_id as i64, body.len(), body_b64])?;
+                written += 1;
+            }
+        }
+        drop(insert);
+        tx.commit()?;
+        Ok(written)
     }
 
     /// Populate `conversation_quest_refs` by scanning every NODE prototype
