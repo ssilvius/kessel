@@ -580,13 +580,13 @@ fn main() -> Result<()> {
     let scripts_count = db.populate_scripts(&args.input, &hash_dict)?;
     println!("  Scripts: {}", scripts_count);
 
-    // Conversation entities (#175). Wire every cnv.* NODE prototype into
-    // the `objects` table (kind = Conversation) so all ~10,735 conversations
-    // are queryable alongside PBUK objects. Per-node graph structure
-    // (dialog text, branches, conditions, quest-hook type) lives inside each
-    // payload as standard GOM templates and is filed as a follow-on decode.
-    let cnv_objects = db.populate_conversation_objects(&args.input, &hash_dict)?;
-    println!("  Conversation objects: {}", cnv_objects);
+    // NODE-format prototype entities (#175 cnv + #181 non-cnv). Walks every
+    // PROT-magic .node file in /resources/systemgenerated/prototypes/ and
+    // emits one row per file into the `objects` table. The `kind` column
+    // is FQN-derived (Conversation for cnv.*, Creature for creature.*,
+    // etc.). Per-prototype-class typed decoders are follow-ons.
+    let node_objects = db.populate_node_objects(&args.input, &hash_dict)?;
+    println!("  NODE objects: {}", node_objects);
 
     // Conversation refs from NODE files (cnv.* prototypes). One pass through
     // the .tor archives extracts CF GUID refs to quest, npc, achievement,
