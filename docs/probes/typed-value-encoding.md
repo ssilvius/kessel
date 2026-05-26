@@ -331,3 +331,86 @@ are answered to write a correct decoder. The verified subset (0x02,
 in some columns, but the plan's "what comes after the investigation"
 section is intentionally undecided. The next step is more probing on
 0x01, 0x05, 0x07, 0x08 — not code.
+
+## ADDENDUM: Per-property semantic resolution (2026-05-26 follow-up)
+
+Beyond the type-tag table, the dictionary's `property.refs` field
+identifies which enum each property uses. Applying that resolution
+unlocks named-member output for every `enum_ref` property:
+
+### Talent stat effects fully decoded
+
+`hi32=D954FB02` (STAT enum, 517 members) format in talent payloads:
+```
+05 <stat_index_u8> 01 04 <float32_LE_value> CB <metadata> CC <metadata> ...
+```
+
+The byte after `05` is the **STAT enum index**, NOT a count. Real decodes:
+
+| Talent | Stat effects |
+|---|---|
+| `tal.jedi_consular.skill.serenity.force_focus` | STAT[79]=`cbt_threat_generated_modifier_fixed` +0.30; STAT[133]=`cbt_force_critical_damage` +0.50 |
+| `tal.agent.skill.concealment.deadly_toxins` | STAT[122]=`cbt_ranged_critical_damage` +0.15; STAT[123]=`cbt_ranged_glance_chance` +0.30 |
+| `tal.sith_inquisitor.skill.electric_induction` | STAT[68]=`abl_cost_energy` -0.10 |
+| `tal.jedi_consular.skill.seer.serenity` | STAT[21..24]=`damage_reduction_*` +0.03 each; STAT[133] +0.03 |
+
+### Ability action records decoded
+
+Ability effect blocks use property family `E251D1XX`:
+
+| hi32 | enum | members |
+|---|---|---|
+| E251D1CC | effAction | 205 (effAction_Damage, _WeaponDamage, _ModifyStat, _PlayAppearance, _CallEffect, ...) |
+| E251D1CD | effCondition | 97 (effCondition_IsAlive, _IsEnemy, _IfSpellHit, _IfToughness, _NotHasEffect, ...) |
+| E251D1D0 | effInitializer | 34 (SetStackLimit, SetPassive, SetTag, SetHidden, SetIgnoresCover, ...) |
+| E71E2F92 | effLogicOp | 3 (And, Or, Not) |
+| E251D1BB | string | tagged wrapper (visual ref / appearance) |
+| E251D1CE | UNRESOLVED in dict | likely parameter list (damage values, magnitudes) |
+| E251D1CF | UNRESOLVED in dict | likely parameter list |
+
+### Massacre's full action structure (verified)
+
+```
+effInitializer × 5: SetStackLimit, SetPassive, SetTag, SetHidden, SetIgnoresCover
+effCondition × 5:   IsAlive, NotHasEffect, IsEnemy, IfSpellHit, IfToughness
+effAction × 3:      Damage, BallisticImpulse, BallisticImpulse
+effLogicOp × 3:     Or, Or, Or
+appearance_ref:     epp.sith_warrior.massacre.enemy_hit
+base parameters:    6.4690 (×7 occurrences), 0.6750, 0.2325, -2.8282, 0.2387, 0.1710, 57.0990, ...
+```
+
+The parsely-shown "Weapon Damage Coefficient = 1.47" is derived from
+these base parameters + multipliers per channel-tick. The raw
+parameters ARE in the payload; the derivation/aggregation lives in the
+unresolved `E251D1CE`/`CF` parameter-list properties (not yet
+characterized).
+
+### Effect block class (D954FB04) — 5 fixed properties
+
+Per `kessel/resources/gom_classes.json`:
+
+```
+template=40000040D954FB0A -> modStatType enum (9 members:
+  Fixed, PercentOfBase, Coefficient, LimitMin, LimitMax,
+  PercentOfCurrent, None, AmplifierValue, StandardRatingPercent)
+template=40000040F32C46A0 -> int16 (flags?)
+template=4000004C780E5E70 -> bool
+template=40000040D954FB02 -> STAT enum (which stat)
+template=40000040D954FB03 -> int32-labeled (actually float32 — magnitude)
+```
+
+So a single effect block encodes:
+`(modStatType, flags, is_X, STAT, magnitude)` — e.g.
+`(Coefficient, ?, ?, STAT_cbt_force_damage_bonus, 1.47)` would be a
+Massacre-style weapon-damage-coefficient block, IF the bytes followed
+this exact 5-property pattern (verified for talents, deferred for
+abilities pending E251D1CE/CF decode).
+
+### Other enum resolutions discovered
+
+- aiAbility (referenced by E251D1FC family) — AI behavior modes
+- ablAutoAttack — auto-attack flags
+- modStatType — modifier type per effect (Fixed/Coefficient/etc.)
+- cbtDamage (9 members) — Kinetic, Energy, Elemental, Internal, etc.
+- scFFComponent (14 members) — GSF component types
+- scPowerChannel (5 members) — GSF power channels
