@@ -1227,6 +1227,31 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_ability_effects_kind ON ability_effects(kind);
             CREATE INDEX IF NOT EXISTS idx_ability_effects_member ON ability_effects(enum_member);
 
+            -- Ability effect numeric parameters. Decoded from the
+            -- E251D1CE and E251D1CF parameter-list CF40 markers in abl
+            -- payloads. Each row is one (param_flag, float_value) pair
+            -- found inside the parameter-list tail.
+            --
+            -- Format inside the param list: `04 01 01 <flag_u8> <f32_LE>`
+            -- (a typed-value triplet introducing a single float). param_flag
+            -- empirically clusters around 0x10 (~90% of triplets) and 0x20
+            -- (~10%); the semantic meaning of each flag varies per action
+            -- and is not yet enum-resolved.
+            --
+            -- Floats outside the `04 01 01 XX <f32>` pattern (other
+            -- parameter shapes) are NOT yet decoded -- this captures the
+            -- subset that uses the well-formed primitive pattern.
+            CREATE TABLE IF NOT EXISTS ability_effect_params (
+                ability_fqn       TEXT NOT NULL,
+                ordinal           INTEGER NOT NULL,
+                source            TEXT NOT NULL CHECK (source IN ('CE','CF')),
+                param_flag        INTEGER NOT NULL,
+                value_f32         REAL NOT NULL,
+                PRIMARY KEY (ability_fqn, ordinal)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ability_effect_params_flag
+                ON ability_effect_params(param_flag);
+
             -- Talent stat effects (PR: wire-typed-value-decoder).
             -- Decoded from CF40 D954FB02 markers in talent payloads.
             -- Each row: which stat the talent modifies and by how much.
@@ -5218,6 +5243,137 @@ impl Database {
         drop(insert);
         tx.commit()?;
         Ok((written, unresolved))
+    }
+
+    /// Populate `ability_effect_params` by extracting every `04 01 01 <flag>
+    /// <float32_LE>` triplet inside the E251D1CE/CF parameter-list tails of
+    /// every abl.* payload. Aggregates per FQN across canonical and
+    /// non-canonical variants (rich parameter data lives on the longer
+    /// non-canonical variant per the PR #174 tags pattern).
+    ///
+    /// Returns (abilities_with_params, total_param_triplets).
+    pub fn populate_ability_effect_params(&self) -> Result<(u64, u64)> {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        use std::collections::BTreeMap;
+
+        const E251D1CE: [u8; 4] = [0xE2, 0x51, 0xD1, 0xCE];
+        const E251D1CF: [u8; 4] = [0xE2, 0x51, 0xD1, 0xCF];
+
+        self.flush()?;
+        let conn = self.conn.lock().unwrap();
+        let rows: Vec<(String, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT fqn, json_extract(json, '$.payload_b64') \
+                 FROM objects WHERE fqn LIKE 'abl.%'",
+            )?;
+            let collected: Vec<(String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            collected
+        };
+
+        // Aggregate per FQN. Dedup identical (source, flag, value) tuples
+        // since the same parameter may appear in multiple variant payloads.
+        let mut params_per_fqn: BTreeMap<String, Vec<(&'static str, u8, f32)>> = BTreeMap::new();
+
+        for (fqn, b64) in &rows {
+            let Ok(payload) = BASE64.decode(b64) else {
+                continue;
+            };
+            // Walk CF40 markers and inspect E251D1CE / E251D1CF tails.
+            let mut i = 0;
+            while i + 9 <= payload.len() {
+                let is_marker = payload[i] == 0xCF
+                    && payload[i + 1] == 0x40
+                    && payload[i + 2] == 0x00
+                    && payload[i + 3] == 0x00;
+                if !is_marker {
+                    i += 1;
+                    continue;
+                }
+                let target = &payload[i + 5..i + 9];
+                let source: Option<&'static str> = if target == E251D1CE {
+                    Some("CE")
+                } else if target == E251D1CF {
+                    Some("CF")
+                } else {
+                    None
+                };
+                let Some(source) = source else {
+                    i += 9;
+                    continue;
+                };
+                // Tail extends until the next CF40 marker (or EOF).
+                let tail_start = i + 9;
+                let mut tail_end = payload.len();
+                let mut k = tail_start;
+                while k + 4 <= payload.len() {
+                    if payload[k] == 0xCF
+                        && payload[k + 1] == 0x40
+                        && payload[k + 2] == 0x00
+                        && payload[k + 3] == 0x00
+                    {
+                        tail_end = k;
+                        break;
+                    }
+                    k += 1;
+                }
+                let tail = &payload[tail_start..tail_end];
+                // Scan tail for `04 01 01 <flag> <f32_LE>` triplets.
+                let mut t = 0;
+                while t + 8 <= tail.len() {
+                    if tail[t] == 0x04 && tail[t + 1] == 0x01 && tail[t + 2] == 0x01 {
+                        let flag = tail[t + 3];
+                        let bytes: [u8; 4] = tail[t + 4..t + 8].try_into().unwrap();
+                        let val = f32::from_le_bytes(bytes);
+                        if val.is_finite() && (val.abs() < 1e6 || val == 0.0) {
+                            params_per_fqn
+                                .entry(fqn.clone())
+                                .or_default()
+                                .push((source, flag, val));
+                        }
+                        t += 8;
+                    } else {
+                        t += 1;
+                    }
+                }
+                i += 9;
+            }
+        }
+
+        // Dedup per FQN preserving order.
+        for v in params_per_fqn.values_mut() {
+            let mut seen = std::collections::HashSet::new();
+            v.retain(|t| {
+                let key = (t.0, t.1, t.2.to_bits());
+                seen.insert(key)
+            });
+        }
+
+        let tx = conn.unchecked_transaction()?;
+        let mut insert = tx.prepare_cached(
+            "INSERT OR REPLACE INTO ability_effect_params \
+               (ability_fqn, ordinal, source, param_flag, value_f32) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        let mut abilities = 0u64;
+        let mut total = 0u64;
+        for (fqn, list) in &params_per_fqn {
+            if list.is_empty() {
+                continue;
+            }
+            abilities += 1;
+            for (ord, (src, flag, val)) in list.iter().enumerate() {
+                insert.execute(params![fqn, ord as i64, src, *flag as i64, *val as f64])?;
+                total += 1;
+            }
+        }
+        drop(insert);
+        tx.commit()?;
+        Ok((abilities, total))
     }
 
     /// Populate `ability_effects` by walking every abl.* payload (canonical
