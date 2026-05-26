@@ -626,6 +626,13 @@ fn main() -> Result<()> {
     // are preserved with NULL block_game_id so the gap is visible in spice.
     let (effect_block_rows, effect_block_unresolved) = db.populate_ability_effect_blocks()?;
 
+    // Twelfth-and-thirty-one-thirty-secondths pass: NPC typed details
+    // (issue #176). Extracts class_role + ai_template from payload strings;
+    // faction from FQN structure. difficulty + level remain NULL pending
+    // per-property byte-layout decode work (deferred).
+    let npc_details_count = db.populate_npc_details_typed()?;
+    println!("  NPC details typed: {}", npc_details_count);
+
     // Twelfth-and-fifteen-sixteenths pass: tag dictionary + ability_tags +
     // talent_tags (issue #174). Decodes ~6750 tag.abl.* entries from the
     // tagTablePrototype singleton, then cross-references every abl/tal
