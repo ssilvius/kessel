@@ -77,6 +77,27 @@ fn fxspec_fqn_from_path(path: &str) -> Option<String> {
     }
 }
 
+/// Recognize a SWTOR crafting profession from any segment of an FQN.
+/// Returns the lowercased profession name when found, None otherwise. Used
+/// by `populate_schematic_details_typed` (#178).
+fn profession_from_fqn(fqn: &str) -> Option<String> {
+    const PROFESSIONS: &[&str] = &[
+        "artifice",
+        "armormech",
+        "armstech",
+        "biochem",
+        "cybertech",
+        "synthweaving",
+    ];
+    let lower = fqn.to_lowercase();
+    for prof in PROFESSIONS {
+        if lower.contains(prof) {
+            return Some((*prof).to_string());
+        }
+    }
+    None
+}
+
 /// Best-effort faction inference from FQN structure. Returns Some when a
 /// clear faction segment is present, None otherwise. Used by
 /// `populate_npc_details_typed` (#176).
@@ -2989,6 +3010,80 @@ impl Database {
         }
         self.flush()?;
         Ok(inserted)
+    }
+
+    /// Populate `item_schema_details` with the FQN-derived rarity already
+    /// computed in `item_details` (#177).
+    ///
+    /// item_schema_details was scoped to carry authoritative-payload-decoded
+    /// rarity/binding/stack_size_max columns. Without per-property byte
+    /// decode (deferred), the authoritative values can't be extracted. The
+    /// next-best move ships rarity by copying from `item_details` (which
+    /// derives it via FQN classifier). binding and stack_size_max remain
+    /// NULL pending per-property decode.
+    pub fn populate_item_schema_details_typed(&self) -> Result<u64> {
+        self.flush()?;
+        let conn = self.conn.lock().unwrap();
+        let rows: Vec<(String, Option<String>)> = {
+            let mut stmt = conn.prepare("SELECT fqn, rarity FROM item_details")?;
+            let collected: Vec<(String, Option<String>)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            collected
+        };
+        let tx = conn.unchecked_transaction()?;
+        let mut insert = tx.prepare_cached(
+            "INSERT OR REPLACE INTO item_schema_details \
+               (fqn, rarity, binding, stack_size_max) \
+             VALUES (?1, ?2, ?3, ?4)",
+        )?;
+        let mut written = 0u64;
+        for (fqn, rarity) in &rows {
+            insert.execute(params![fqn, rarity, None::<String>, None::<i64>])?;
+            written += 1;
+        }
+        drop(insert);
+        tx.commit()?;
+        Ok(written)
+    }
+
+    /// Populate `schematic_details` with FQN-derived profession (#178).
+    ///
+    /// Walks every `schem.*` canonical object, looks for a recognized
+    /// crafting profession token anywhere in the FQN, and records it.
+    /// `tier` and `training_cost` remain NULL pending the per-property
+    /// byte-layout decode work (the int8/16/32/enum_ref/string decode
+    /// gap documented in CLAUDE.md).
+    pub fn populate_schematic_details_typed(&self) -> Result<u64> {
+        self.flush()?;
+        let conn = self.conn.lock().unwrap();
+        let fqns: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT fqn FROM objects WHERE fqn LIKE 'schem.%' AND is_canonical = 1")?;
+            let collected: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+            collected
+        };
+        let tx = conn.unchecked_transaction()?;
+        let mut insert = tx.prepare_cached(
+            "INSERT OR REPLACE INTO schematic_details \
+               (fqn, profession, tier, training_cost) \
+             VALUES (?1, ?2, ?3, ?4)",
+        )?;
+        let mut written = 0u64;
+        for fqn in &fqns {
+            let profession = profession_from_fqn(fqn);
+            insert.execute(params![fqn, profession, None::<i64>, None::<i64>])?;
+            written += 1;
+        }
+        drop(insert);
+        tx.commit()?;
+        Ok(written)
     }
 
     /// Populate `appearance_specs` from every `.epp` file in the archives
