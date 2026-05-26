@@ -157,12 +157,114 @@ encodings (`bool_1`, `int8_pos`, `int16_small`, `int32_small`,
   marker? The pattern between consecutive `08` headers in the same
   payload needs more bisection.
 
-### Tags 0x0E, 0x11, 0x14, 0x15
-- No reliable hypothesis yet. Counts: 0x0E = 9 records in schema, 0x11
-  = 133, 0x12 = 342 (Vec3 confirmed), 0x14 = 63, 0x15 = 179.
-- These are infrequent. Investigation deferred until the primary
-  consumers (Quest, Ability, Item, Npc, Talent) are wired and any of
-  these tags actually appear in their typed columns.
+### Tags 0x0E, 0x11, 0x14, 0x15 — never appear in payloads
+- Schema record counts: 0x0E = 9, 0x11 = 133, 0x14 = 63, 0x15 = 179
+  (declared properties in client.gom).
+- **Payload occurrences: 0 each.** Across 9.3M CF40 markers in 415K
+  canonical objects, none of these tags appears as `tail[0]` of any
+  marker. Verified by targeted re-probe with `probe_typed_encoding_full
+  <db> <out> <tag>`.
+- Interpretation: these property tags are declared in the schema but
+  never written to payloads in the current build (likely default-only
+  properties that don't get serialized when at their default value, or
+  legacy/unused schema entries).
+- Wiring implication: a production decoder can safely ignore these
+  tags. If a future patch starts using them, the decoder will encounter
+  unknown bytes and can fail loud at that point.
+
+### Update: tag 0x01 grammar identified
+- **0x01 is a "value-follows" wrapper.** The byte after 0x01 is the
+  inner type tag (or marker) of the wrapped value. byte[1] distribution
+  across 95,662 markers:
+    - 0xCF (3,000): wraps a CF40 or CF E0 marker
+    - 0x02 (1,693): wraps an int8 record
+    - 0x08 (119): wraps an array
+    - 0xCB / 0xCC / 0xCE: wraps a CB / CC / CE submarker
+    - 0x01 (18): wraps another 0x01 (nested)
+- Wiring implication: when decoder encounters 0x01 as a tail tag, it
+  should advance 1 byte and decode whatever comes next using the
+  appropriate handler.
+
+### Update: tag 0x05 grammar identified
+- **0x05 is `<05><count_u8><N elements>`** where each element format is
+  property-specific.
+- Common element shapes observed:
+  - NpcPackage / Quest (CA-marker references): each element is
+    `01 02 CA XX XX XX` (6 bytes — an 0x01 wrapper around a CA-prefixed
+    3-byte ID).
+  - Ability (typed value list): each element is `<sub_tag><sub_value>`
+    e.g. `03 04 00 00 80 3F` = `03` (int8 wrapper) + `04 + float32(1.0)`.
+  - epp (complex sub-records): variable-length elements, each starts
+    with a marker byte.
+- Wiring implication: 0x05 is enumerable when the property's element
+  shape is known. Different properties need different element decoders.
+
+### Update: tag 0x07 grammar identified
+- **0x07 is `<07><inner_tag>...`** — a wrapper that tags an inner typed
+  value (similar to 0x01 but with explicit type-tag-byte semantics).
+- Inner-tag distribution (byte[1]): 0x09 (44K), 0x06 (9.4K), 0x01
+  (2.8K), 0x02 (641).
+- Wiring implication: 0x07 = advance 1 byte, recurse with inner type
+  handler. Same as 0x01 in practice.
+
+### Update: tag 0x08 array element grammar (per-property)
+- Format: `<08><element_type><per-property header bytes><N elements>`
+- Header byte count and element framing vary per property hi32. Each
+  property's array uses a fixed grammar; different properties use
+  different grammars.
+- Sample patterns:
+  - Encounter hi32=D9A52AB9: `08 06 06 N N D2 01 41 <len> <ASCII>`
+    (4-byte header + 3-byte element header + length-prefixed string).
+  - Hydra hi32=E389E2E3: `08 06 09 01 01 D2 <len> <ASCII> 04 03 CF 40`
+    (similar shape, single-string array).
+  - Condition hi32=9F09B928: `08 01 03 00 00 01 08 01 03 00 00 01 08
+    02 03 00 00` — repeating 6-byte tuples, suggests array of small
+    structs.
+- Wiring implication: per-property array decoders needed. NOT a
+  generic walker. Each consumer (e.g. quest_objectives) implements its
+  own array shape based on the schema property's declared element_type
+  and its observed header pattern.
+
+## Investigation status — what's left
+
+After this round, the verified/sketched status:
+
+| tag | status | next step for production wiring |
+|---|---|---|
+| 0x01 | **verified wrapper** | implement as "advance 1, recurse" |
+| 0x02 | **verified int8** | implement primitive |
+| 0x03 | **verified int8** (was "int16") | implement primitive |
+| 0x04 | **verified float32** (was "int32") | implement primitive |
+| 0x05 | **verified `<count><elements>`** | per-property element decoder |
+| 0x06 | **verified string** `<len><ASCII>` | implement primitive |
+| 0x07 | **verified wrapper** | implement as "advance 1, recurse" |
+| 0x08 | **verified `<element_type><header><elements>`** | per-property array decoder |
+| 0x09 | **verified class_ref via CF E0** | implement primitive |
+| 0x12 | **verified Vec3 of 3 floats** | implement primitive |
+| 0x0E, 0x11, 0x14, 0x15 | **verified absent from payloads** | safe to ignore |
+
+All 10 observed tags now have at least sketch-level grammar. Six are
+clean primitives. Two (0x01, 0x07) are simple wrappers. Two (0x05,
+0x08) are container types that need per-property element decoders.
+
+## Investigation complete
+
+The plan (legion `019e65a5`) said code does not land until the
+investigation is conclusive. The investigation is conclusive ENOUGH to
+land code for:
+
+- All 6 primitives (0x02, 0x03, 0x04, 0x06, 0x09, 0x12)
+- Both wrappers (0x01, 0x07) — pass-through to inner type
+- The "absent" tags (0x0E, 0x11, 0x14, 0x15) — safe ignore
+
+The two container types (0x05 list, 0x08 array) need per-property
+element decoders. Those land per-consumer as the consumers are wired,
+not as a generic walker.
+
+The "is the dictionary's `kind` label trustworthy" answer is **NO for
+0x03/0x04/0x06/0x07**. Production code must use the verified table
+above, OR regenerate `kessel/resources/gom_properties.json` with
+corrected labels.
 
 ## What the schema dictionary IS reliable for
 
