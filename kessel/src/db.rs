@@ -1315,6 +1315,33 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_ability_action_params_name
                 ON ability_action_params(effparam_name);
 
+            -- Damage-action CC parameter values. Per-effAction_Damage
+            -- record, captures the 6 core CC parameter IDs + 2 optional
+            -- ones, each with a 1-byte int8 value (CC + 4-byte ID + i8).
+            --
+            -- Verified across 1,452 occurrences each for the 6 core IDs:
+            --   0135C0E0, 017459AB, 39285472, 0BB0D06E, 0176E21B, 011A6E3E
+            -- Plus optional 3C0EB23D (342 occ), 0B9BBBDA (318 occ).
+            --
+            -- CC ID names are unknown (separate Bioware hash namespace per
+            -- spike #144). The 1-byte values likely encode damage_type,
+            -- modifier_type, target flag, etc. -- semantic resolution
+            -- requires the hash crack or consumer-side reverse-mapping.
+            --
+            -- NOTE: the float damage coefficient (Massacre 1.47 per
+            -- parsely) is NOT in these CC fields. It lives in a different
+            -- encoding layer not yet characterized.
+            CREATE TABLE IF NOT EXISTS ability_damage_params (
+                ability_fqn       TEXT NOT NULL,
+                effect_ordinal    INTEGER NOT NULL,
+                param_ordinal     INTEGER NOT NULL,
+                cc_id_hex         TEXT NOT NULL,
+                value_i8          INTEGER NOT NULL,
+                PRIMARY KEY (ability_fqn, effect_ordinal, param_ordinal)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ability_damage_params_cc
+                ON ability_damage_params(cc_id_hex);
+
             -- Talent stat effects (PR: wire-typed-value-decoder).
             -- Decoded from CF40 D954FB02 markers in talent payloads.
             -- Each row: which stat the talent modifies and by how much.
@@ -5306,6 +5333,147 @@ impl Database {
         drop(insert);
         tx.commit()?;
         Ok((written, unresolved))
+    }
+
+    /// Populate `ability_damage_params` from effAction_Damage CC parameters.
+    ///
+    /// Damage actions encode 6 core parameters (and 2 optional) via CC
+    /// markers inside the action tail: `CC + 4-byte ID + 1-byte i8`.
+    /// CC ID names are unknown (Bioware hash namespace, #144 spike); values
+    /// are surfaced as raw bytes for downstream consumer use.
+    ///
+    /// Returns (abilities_with_damage_params, total_rows).
+    pub fn populate_ability_damage_params(&self) -> Result<(u64, u64)> {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        use std::collections::{BTreeMap, HashSet};
+
+        const E251D1CC: [u8; 4] = [0xE2, 0x51, 0xD1, 0xCC];
+        // The 8 CC IDs known to live inside Damage action tails (6 core + 2
+        // optional). Filter to these to avoid noise from random 0xCC bytes
+        // in surrounding markers.
+        let damage_cc_ids: HashSet<[u8; 4]> = [
+            [0x01, 0x35, 0xC0, 0xE0],
+            [0x01, 0x74, 0x59, 0xAB],
+            [0x39, 0x28, 0x54, 0x72],
+            [0x0B, 0xB0, 0xD0, 0x6E],
+            [0x01, 0x76, 0xE2, 0x1B],
+            [0x01, 0x1A, 0x6E, 0x3E],
+            [0x3C, 0x0E, 0xB2, 0x3D],
+            [0x0B, 0x9B, 0xBB, 0xDA],
+        ]
+        .into_iter()
+        .collect();
+
+        self.flush()?;
+        let conn = self.conn.lock().unwrap();
+        let rows: Vec<(String, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT fqn, json_extract(json, '$.payload_b64') \
+                 FROM objects WHERE fqn LIKE 'abl.%'",
+            )?;
+            let collected: Vec<(String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            collected
+        };
+
+        // Aggregate per (FQN, effect_ordinal) preserving order; dedup
+        // identical (effect_ordinal, cc_id, value) tuples across variants.
+        let mut params_per_fqn: BTreeMap<String, Vec<(i64, [u8; 4], i8)>> = BTreeMap::new();
+
+        for (fqn, b64) in &rows {
+            let Ok(payload) = BASE64.decode(b64) else {
+                continue;
+            };
+
+            // Find each effAction_Damage marker (E251D1CC tag with enum_index 3).
+            let mut effect_ord: i64 = 0;
+            let mut i = 0;
+            while i + 11 <= payload.len() {
+                let is_marker = payload[i] == 0xCF
+                    && payload[i + 1] == 0x40
+                    && payload[i + 2] == 0x00
+                    && payload[i + 3] == 0x00
+                    && payload[i + 5..i + 9] == E251D1CC
+                    && payload[i + 9] == 0x05
+                    && payload[i + 10] == 0x03; // effAction_Damage = index 3
+                if !is_marker {
+                    i += 1;
+                    continue;
+                }
+                // Tail to next CF40 or end-of-payload
+                let tail_start = i + 11;
+                let mut tail_end = payload.len();
+                let mut k = tail_start;
+                while k + 4 <= payload.len() {
+                    if payload[k] == 0xCF
+                        && payload[k + 1] == 0x40
+                        && payload[k + 2] == 0x00
+                        && payload[k + 3] == 0x00
+                    {
+                        tail_end = k;
+                        break;
+                    }
+                    k += 1;
+                }
+                let tail = &payload[tail_start..tail_end];
+                // Scan tail for CC markers matching known damage CC IDs.
+                let mut t = 0;
+                while t + 6 <= tail.len() {
+                    if tail[t] == 0xCC {
+                        let cc_id: [u8; 4] = tail[t + 1..t + 5].try_into().unwrap();
+                        if damage_cc_ids.contains(&cc_id) {
+                            let val = tail[t + 5] as i8;
+                            params_per_fqn
+                                .entry(fqn.clone())
+                                .or_default()
+                                .push((effect_ord, cc_id, val));
+                            t += 6;
+                            continue;
+                        }
+                    }
+                    t += 1;
+                }
+                effect_ord += 1;
+                i += 11;
+            }
+        }
+
+        // Dedup preserving first-seen order
+        for v in params_per_fqn.values_mut() {
+            let mut seen = HashSet::new();
+            v.retain(|t| seen.insert(*t));
+        }
+
+        let tx = conn.unchecked_transaction()?;
+        let mut insert = tx.prepare_cached(
+            "INSERT OR REPLACE INTO ability_damage_params \
+               (ability_fqn, effect_ordinal, param_ordinal, cc_id_hex, value_i8) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        let mut abilities = 0u64;
+        let mut total = 0u64;
+        for (fqn, list) in &params_per_fqn {
+            if list.is_empty() {
+                continue;
+            }
+            abilities += 1;
+            let mut counters: std::collections::HashMap<i64, i64> =
+                std::collections::HashMap::new();
+            for (eff_ord, cc_id, val) in list {
+                let p_ord = counters.entry(*eff_ord).or_insert(0);
+                let cc_hex = hex::encode_upper(cc_id);
+                insert.execute(params![fqn, eff_ord, *p_ord, cc_hex, *val as i64])?;
+                *p_ord += 1;
+                total += 1;
+            }
+        }
+        drop(insert);
+        tx.commit()?;
+        Ok((abilities, total))
     }
 
     /// Populate `ability_action_params` from effAction parameter arrays.

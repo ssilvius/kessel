@@ -670,6 +670,15 @@ fn main() -> Result<()> {
         abl_with_effects, abl_total_effects
     );
 
+    // effAction_Damage CC parameters: 6 core + 2 optional CC IDs per
+    // Damage action, each value 1-byte int8. CC ID names unknown
+    // (hash namespace #144); values surfaced as raw bytes.
+    let (dmg_abl, dmg_total) = db.populate_ability_damage_params()?;
+    println!(
+        "  Ability damage params: {} abilities, {} rows",
+        dmg_abl, dmg_total
+    );
+
     // effAction parameter values: per-action <effParam_idx><f32> pairs.
     // Massacre's Standard Health Percent (0.1543) and 1.54 coefficient
     // land here. The actual numeric damage data per ability action.
