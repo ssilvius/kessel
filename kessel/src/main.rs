@@ -469,6 +469,13 @@ fn main() -> Result<()> {
     let objectives_count = db.populate_quest_objectives()?;
     println!("  Quest objectives recorded: {}", objectives_count);
 
+    // Per-step flag map (#212): every CF40 2ADEC3C7 occurrence in each
+    // quest payload surfaced as its own row, ordered by byte position.
+    // Drives kessel-warden's per-step matchers via the In-Conversation
+    // flag-flip combat log signal.
+    let flag_rows = db.populate_quest_objective_flags()?;
+    println!("  Quest objective flags: {} rows", flag_rows);
+
     // Expand quest_prerequisites flag-graph (#131, closes #67) -- widens the
     // payload-string prefix whitelist from "has_" only to the full SWTOR
     // flag family (qstrew_, qstv_, cflag_, glob_, cdx_, ach_completed_,
