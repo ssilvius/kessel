@@ -5478,11 +5478,18 @@ impl Database {
 
     /// Populate `ability_action_params` from effAction parameter arrays.
     ///
-    /// Each effAction (CF40 E251D1CC) marker is followed by a parameter
-    /// list whose elements have the format `<effParam_idx_u8><f32_LE>`.
-    /// This populator finds the parameter array opener pattern (`08 05 04
-    /// 08 08 NN`) inside each effAction's tail and walks each `<idx><f32>`
-    /// pair until a non-decodable byte is hit.
+    /// Each effAction (CF40 E251D1CC) marker is followed by a sequence of
+    /// typed property records. Numeric (f32) parameters appear in records
+    /// of the form `[01|07] 08 05 04 <count_a:u8> <count_b:u8>
+    /// <count_a × (key_u8, f32_LE)>` -- a value-tag-04 (float32) array
+    /// keyed by an enum_ref (effParam by convention). This populator scans
+    /// each effAction's tail (up to the next CF40 marker), collects every
+    /// such f32 record found, and inserts each (key, value) pair.
+    ///
+    /// Captures float parameters across many action types
+    /// (BallisticImpulse, Heal, WeaponDamage, Stun, EnvironmentalDamage,
+    /// etc.). Int8/int16 parameter shapes have additional framing
+    /// variance and are deferred to a future populator.
     ///
     /// Returns (abilities_with_params, total_param_rows).
     pub fn populate_ability_action_params(&self) -> Result<(u64, u64)> {
@@ -5545,48 +5552,57 @@ impl Database {
                     k += 1;
                 }
                 let tail = &payload[tail_start..tail_end];
-                // Locate the param-list opener `08 05 04 08 08 <N>` and decode
-                // the <idx><f32> pairs that follow until a non-decodable byte.
+
+                // Scan tail for `[01|07] 08 05 04 <c1> <c2> <c1 × (u8,f32)>`
+                // records. Multiple records may appear per effAction; capture
+                // every one. The `[01|07] 08 05` prefix is the typed-property
+                // wrapper, 04 is the f32 value-tag, and c1 is the item count.
                 let mut p = 0;
                 while p + 6 <= tail.len() {
-                    if tail[p] == 0x08
-                        && tail[p + 1] == 0x05
-                        && tail[p + 2] == 0x04
-                        && tail[p + 3] == 0x08
-                        && tail[p + 4] == 0x08
+                    let wrapper_ok = tail[p] == 0x01 || tail[p] == 0x07;
+                    if !wrapper_ok
+                        || tail[p + 1] != 0x08
+                        || tail[p + 2] != 0x05
+                        || tail[p + 3] != 0x04
                     {
-                        // Skip the 5-byte opener + 1 count byte
-                        let mut q = p + 6;
-                        // 4-byte zero padding observed before first pair on
-                        // verified samples
-                        if q + 4 <= tail.len() && tail[q..q + 4] == [0, 0, 0, 0] {
-                            q += 4;
-                        }
-                        // Walk <idx_u8><f32_LE> pairs
-                        while q + 5 <= tail.len() {
-                            let idx = tail[q];
-                            // Heuristic: param indices are 1..200 (660 effParam
-                            // members but very few > 200 used). If byte is out
-                            // of range or looks like a marker, stop.
-                            // Stop if byte is out of plausible param-id range OR
-                            // if it looks like a layer marker (CB-CF) that opens
-                            // a new record.
-                            if !(0x01..=0xC8).contains(&idx) {
-                                break;
-                            }
-                            let f = f32::from_le_bytes(tail[q + 1..q + 5].try_into().unwrap());
-                            if !f.is_finite() || f.abs() > 1e8 {
-                                break;
-                            }
-                            params_per_fqn
-                                .entry(fqn.clone())
-                                .or_default()
-                                .push((effect_ord, idx, f));
-                            q += 5;
-                        }
-                        break; // one param array per effAction
+                        p += 1;
+                        continue;
                     }
-                    p += 1;
+                    let count = tail[p + 4] as usize;
+                    // Sanity: count_b must equal count_a in every verified
+                    // sample. Skip mismatches rather than misframe the array.
+                    if count == 0 || count > 32 || tail[p + 5] != tail[p + 4] {
+                        p += 1;
+                        continue;
+                    }
+                    let items_start = p + 6;
+                    let items_end = items_start + count * 5;
+                    if items_end > tail.len() {
+                        p += 1;
+                        continue;
+                    }
+                    let mut q = items_start;
+                    let mut all_good = true;
+                    let mut pairs: Vec<(u8, f32)> = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        let idx = tail[q];
+                        let f = f32::from_le_bytes(tail[q + 1..q + 5].try_into().unwrap());
+                        if !f.is_finite() || f.abs() > 1e9 {
+                            all_good = false;
+                            break;
+                        }
+                        pairs.push((idx, f));
+                        q += 5;
+                    }
+                    if all_good {
+                        let entry = params_per_fqn.entry(fqn.clone()).or_default();
+                        for (idx, f) in pairs {
+                            entry.push((effect_ord, idx, f));
+                        }
+                        p = items_end;
+                    } else {
+                        p += 1;
+                    }
                 }
                 effect_ord += 1;
                 i += 9;
