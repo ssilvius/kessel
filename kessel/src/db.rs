@@ -2262,23 +2262,37 @@ impl Database {
         Ok(inserted)
     }
 
-    /// Populate `quest_objectives` from each Quest payload (#130, closes #15).
+    /// Populate `quest_objectives` from each Quest payload (#216, supersedes
+    /// the #130 MARKER_PRESENT foundation pass).
     ///
-    /// Foundation pass: for each Quest payload, run the schema-aware walker
-    /// (#125) and look for class_ref markers that the dict identifies as the
-    /// QuestObjective struct. When found, record one placeholder row per
-    /// quest with ordinal 0 + `kind = "MARKER_PRESENT"`. Per-objective field
-    /// decode (target_fqn, real kind enum, count, name_string_id) lands in a
-    /// follow-on PR once class_ref array element byte-layout is verified.
+    /// Each quest payload encodes per-objective target references at CF40
+    /// markers for property hash `5B20EAAA`. The value tail of each marker
+    /// contains a class_ref to the target object (typically an `enc.*`
+    /// encounter, `spn.*` spawn point, or `npc.*` NPC). The embedded
+    /// reference uses one of three forms:
+    ///
+    ///   1. CF E0 content GUID -> resolves to objects.guid -> target FQN
+    ///      (the form this populator extracts; ~38% of markers per quest)
+    ///   2. CF 40 inline class ref -> points at an inline struct, no
+    ///      separate GameObject; skipped
+    ///   3. CC metadata reference -> bytes encode a CC-namespace ID, not
+    ///      a content GUID; skipped
+    ///
+    /// One row per resolved 5B20EAAA marker. ordinal is the byte-position
+    /// rank of the marker in the payload. kind is set to "target_ref" for
+    /// resolved rows. count and name_string_id remain NULL pending decode
+    /// of those per-objective fields (separate investigation).
     pub fn populate_quest_objectives(&self) -> Result<u64> {
         self.flush()?;
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
-        let rows: Vec<(String, String, String)> = {
+        const TARGET_HASH: [u8; 4] = [0x5B, 0x20, 0xEA, 0xAA];
+
+        let payloads: Vec<(String, String, String)> = {
             let conn = self.conn.lock().unwrap();
             let mut stmt = conn.prepare(
-                "SELECT game_id, fqn, json FROM objects \
-                 WHERE kind = 'Quest' AND is_canonical = 1",
+                "SELECT game_id, fqn, json_extract(json, '$.payload_b64') \
+                 FROM objects WHERE kind = 'Quest' AND is_canonical = 1",
             )?;
             let collected: Vec<(String, String, String)> = stmt
                 .query_map([], |row| {
@@ -2292,6 +2306,19 @@ impl Database {
             collected
         };
 
+        // Pre-load guid -> fqn lookup once for resolution.
+        let guid_to_fqn: std::collections::HashMap<String, String> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare("SELECT guid, fqn FROM objects WHERE guid != ''")?;
+            let collected: std::collections::HashMap<String, String> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            collected
+        };
+
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let mut inserted = 0u64;
@@ -2299,32 +2326,44 @@ impl Database {
             let mut stmt = tx.prepare_cached(
                 "INSERT OR REPLACE INTO quest_objectives \
                     (quest_game_id, quest_fqn, ordinal, target_fqn, kind, count, name_string_id, raw_props) \
-                 VALUES (?1, ?2, ?3, NULL, ?4, NULL, NULL, NULL)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, NULL)",
             )?;
-            for (game_id, fqn, json_str) in &rows {
-                let payload = match serde_json::from_str::<serde_json::Value>(json_str)
-                    .ok()
-                    .and_then(|v| {
-                        v.get("payload_b64")
-                            .and_then(|p| p.as_str())
-                            .map(String::from)
-                    })
-                    .and_then(|b64| BASE64.decode(b64).ok())
-                {
-                    Some(bytes) => bytes,
-                    None => continue,
+            for (game_id, fqn, b64) in &payloads {
+                let Ok(payload) = BASE64.decode(b64) else {
+                    continue;
                 };
-                let decoded = match decode_payload_schema_aware(&payload, QUEST_CLASS_TYPE_HI32) {
-                    Ok(d) => d,
-                    Err(_) => continue,
-                };
-                let named = decoded.named_props.as_object();
-                let has_class_ref = named
-                    .map(|m| m.keys().any(|k| k.starts_with("class_ref")))
-                    .unwrap_or(false);
-                if has_class_ref {
-                    stmt.execute(params![game_id, fqn, 0i64, "MARKER_PRESENT"])?;
-                    inserted += 1;
+                let mut ordinal: i64 = 0;
+                let mut i = 0;
+                while i + 9 <= payload.len() {
+                    let is_target = payload[i] == 0xCF
+                        && payload[i + 1] == 0x40
+                        && payload[i + 2] == 0x00
+                        && payload[i + 3] == 0x00
+                        && payload[i + 5..i + 9] == TARGET_HASH;
+                    if !is_target {
+                        i += 1;
+                        continue;
+                    }
+                    // Decode the value tail looking for an embedded CF E0
+                    // (content GUID reference). Format: `09 02 ?? CF E0 00
+                    // <6-byte tail>` produces guid = "E000" + hex(tail).
+                    let tail_end = (i + 9 + 30).min(payload.len());
+                    let tail = &payload[i + 9..tail_end];
+                    let mut target_fqn: Option<&str> = None;
+                    if let Some(cfe0_off) = tail.windows(3).position(|w| w == [0xCF, 0xE0, 0x00]) {
+                        let guid_tail_start = cfe0_off + 3;
+                        if guid_tail_start + 6 <= tail.len() {
+                            let guid_tail = &tail[guid_tail_start..guid_tail_start + 6];
+                            let guid = format!("E000{}", hex::encode_upper(guid_tail));
+                            target_fqn = guid_to_fqn.get(&guid).map(String::as_str);
+                        }
+                    }
+                    if let Some(t) = target_fqn {
+                        stmt.execute(params![game_id, fqn, ordinal, t, "target_ref"])?;
+                        inserted += 1;
+                    }
+                    ordinal += 1;
+                    i += 9;
                 }
             }
         }
