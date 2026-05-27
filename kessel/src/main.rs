@@ -476,6 +476,11 @@ fn main() -> Result<()> {
     let flag_rows = db.populate_quest_objective_flags()?;
     println!("  Quest objective flags: {} rows", flag_rows);
 
+    // Hydra script FQN refs (#214): every counter/track/jrn/qm flag +
+    // target NPC/cnv/abl ref pulled from hyd.* payload ASCII strings.
+    let hydra_ref_rows = db.populate_hydra_refs()?;
+    println!("  Hydra refs: {} rows", hydra_ref_rows);
+
     // Expand quest_prerequisites flag-graph (#131, closes #67) -- widens the
     // payload-string prefix whitelist from "has_" only to the full SWTOR
     // flag family (qstrew_, qstv_, cflag_, glob_, cdx_, ach_completed_,
