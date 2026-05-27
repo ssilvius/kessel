@@ -1545,6 +1545,22 @@ impl Database {
             // string_id reference like "track_*", "jrn_*", "glb_*", "cnv_*",
             // "complex_*" identifying the quest's main progress flag.
             ("primary_tracking_flag", "TEXT"),
+            // Raw int8 codes extracted by hi32 hash. The GOM schema labels
+            // these as kind=int8 with no enum_ref linkage, but their value
+            // distributions are enum-like (small distinct-value sets across
+            // 1500+ quests). Issue #210. Distributions verified empirically
+            // via quest_hash_stats discovery binary:
+            //
+            //   308A97A4: 17 distinct, top 1(1056), 3(184), 4(98), 6(38), 2(38)
+            //   308A9B02: 26 distinct, top 2(517), 3(266), 4(139), 5(110)
+            //   4C85BFC6:  9 distinct, top 1(1413), 4(28), 5(19), 3(15)
+            //
+            // Column names are honest-but-tentative; likely correspond to
+            // qstActivityType / qstDifficulty / qstRewardsVisibility but
+            // enum-name resolution is a separate investigation.
+            ("mission_type_code", "INTEGER"),
+            ("category_code", "INTEGER"),
+            ("visibility_code", "INTEGER"),
         ];
         for (name, ty) in additions {
             if !existing.contains(name) {
@@ -2044,8 +2060,11 @@ impl Database {
                         rewards_visibility = ?3,
                         episode_season = ?4,
                         level = ?5,
-                        primary_tracking_flag = ?6
-                  WHERE fqn = ?7",
+                        primary_tracking_flag = ?6,
+                        mission_type_code = ?7,
+                        category_code = ?8,
+                        visibility_code = ?9
+                  WHERE fqn = ?10",
             )?;
             for (fqn, json_str) in &rows {
                 let payload = match serde_json::from_str::<serde_json::Value>(json_str)
@@ -2079,15 +2098,31 @@ impl Database {
                     let (_k, v) = m.iter().find(|(k, _)| k.contains(needle))?;
                     v.as_i64()
                 };
-                // Extract by hi32 hash directly. The walker labels these as
-                // kind "float32" but the payload is a length-prefixed string
-                // (schema's per-property kind labels are unreliable for some
-                // hashes). Hash 2ADEC3C7 is the primary tracking flag, one
-                // per quest, verified across 1500+ samples.
-                let string_for_hash = |hi32: &str| -> Option<String> {
+                // Extract a typed property by its hi32 hash suffix. The
+                // walker mislabels the kind of some properties (5 of 10
+                // kinds wrong in the GOM dictionary), so name lookup is
+                // unreliable; suffix lookup on `__<HI32>` is canonical.
+                let prop_by_hash = |hi32: &str| -> Option<&serde_json::Value> {
                     let m = named?;
-                    let (_k, v) = m.iter().find(|(k, _)| k.ends_with(&format!("__{hi32}")))?;
-                    v.as_str().map(String::from)
+                    let suffix = format!("__{hi32}");
+                    m.iter().find(|(k, _)| k.ends_with(&suffix)).map(|(_, v)| v)
+                };
+                // 0xCE is a metadata-layer marker byte that the walker
+                // sometimes misreads as a property int8 value. Filtered
+                // out of raw-int extractions; legitimate enum values for
+                // the three quest hashes used here are small positive
+                // integers (1-26 range).
+                const CE_MARKER_AS_INT8: i64 = -50;
+                let int_for_hash = |hi32: &str| -> Option<i64> {
+                    let n = prop_by_hash(hi32)?.as_i64()?;
+                    if n == CE_MARKER_AS_INT8 {
+                        None
+                    } else {
+                        Some(n)
+                    }
+                };
+                let string_for_hash = |hi32: &str| -> Option<String> {
+                    prop_by_hash(hi32)?.as_str().map(String::from)
                 };
                 let activity = enum_member("qstActivityType");
                 let difficulty = enum_member("qstDifficulty");
@@ -2097,6 +2132,9 @@ impl Database {
                 // an int value (not a wrapped struct). Try direct decode.
                 let level = int_value("Level").or_else(|| int_value("level"));
                 let tracking_flag = string_for_hash("2ADEC3C7");
+                let mission_type_code = int_for_hash("308A97A4");
+                let category_code = int_for_hash("308A9B02");
+                let visibility_code = int_for_hash("4C85BFC6");
                 let affected = stmt.execute(params![
                     activity,
                     difficulty,
@@ -2104,6 +2142,9 @@ impl Database {
                     episode,
                     level,
                     tracking_flag,
+                    mission_type_code,
+                    category_code,
+                    visibility_code,
                     fqn,
                 ])?;
                 if affected > 0 {
