@@ -418,6 +418,30 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_quest_objectives_kind ON quest_objectives(kind);
             CREATE INDEX IF NOT EXISTS idx_quest_objectives_quest_fqn ON quest_objectives(quest_fqn);
 
+            -- Per-step flag map (#212). Each quest payload encodes ALL its
+            -- internal tracking flags inline as repeated CF40 markers at
+            -- property hash 2ADEC3C7 (the same hash whose first occurrence
+            -- populates quest_details.primary_tracking_flag). One row here
+            -- per flag occurrence, ordered by byte position in the payload.
+            --
+            -- Drives kessel-warden's per-step quest matchers: combat-log
+            -- events like RemoveEffect:InConversation, kill events, looting
+            -- events fire named flags that match these strings. Categorize
+            -- by prefix: jrn (journal display), track (progress tracker),
+            -- hook (script trigger), qm (quest manager state), counter
+            -- (kill-count), hyd (hydra event), branch_step (_bN_sN_tN game
+            -- coordinate), quest_reward, spoke (action-specific), other.
+            CREATE TABLE IF NOT EXISTS quest_objective_flags (
+                quest_fqn       TEXT NOT NULL,
+                ordinal         INTEGER NOT NULL,
+                flag_name       TEXT NOT NULL,
+                flag_category   TEXT NOT NULL,
+                PRIMARY KEY (quest_fqn, ordinal)
+            );
+            CREATE INDEX IF NOT EXISTS idx_qof_flag ON quest_objective_flags(flag_name);
+            CREATE INDEX IF NOT EXISTS idx_qof_quest ON quest_objective_flags(quest_fqn);
+            CREATE INDEX IF NOT EXISTS idx_qof_category ON quest_objective_flags(flag_category);
+
             -- Item details (classified from FQN patterns; #59).
             -- Set name and set bonus require GOM payload parsing and are
             -- deferred to a follow-up issue.
@@ -2154,6 +2178,88 @@ impl Database {
         }
         tx.commit()?;
         Ok(updated)
+    }
+
+    /// Populate `quest_objective_flags` (#212) by walking every CF40 marker
+    /// for property hash 2ADEC3C7 in each canonical Quest payload. Each
+    /// occurrence carries a wrapped length-prefixed string identifying one
+    /// of the quest's internal progression flags.
+    ///
+    /// The schema-aware walker collapses repeated property markers into a
+    /// single `named_props` entry (last-write-wins); this populator scans
+    /// the raw payload bytes directly to preserve every occurrence in
+    /// byte-position order.
+    ///
+    /// Categorizes each flag by its leading underscore-delimited segment:
+    /// `jrn`, `track`, `hook`, `qm`, `counter`, `hyd`, `quest_reward`,
+    /// `spoke`, plus `branch_step` for the `_bN_sN_tN` form, else `other`.
+    ///
+    /// Returns total rows inserted.
+    pub fn populate_quest_objective_flags(&self) -> Result<u64> {
+        self.flush()?;
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
+        const TARGET_HI32: [u8; 4] = [0x2A, 0xDE, 0xC3, 0xC7];
+
+        let rows: Vec<(String, String)> = {
+            let conn = self.conn.lock().unwrap();
+            fetch_fqn_payloads(&conn, "Quest")?
+        };
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut inserted = 0u64;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR REPLACE INTO quest_objective_flags \
+                    (quest_fqn, ordinal, flag_name, flag_category) \
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for (fqn, b64) in &rows {
+                let Ok(payload) = BASE64.decode(b64) else {
+                    continue;
+                };
+                let mut ordinal: i64 = 0;
+                let mut i = 0;
+                while i + 12 <= payload.len() {
+                    let is_target = payload[i] == 0xCF
+                        && payload[i + 1] == 0x40
+                        && payload[i + 2] == 0x00
+                        && payload[i + 3] == 0x00
+                        && payload[i + 5..i + 9] == TARGET_HI32;
+                    if !is_target {
+                        i += 1;
+                        continue;
+                    }
+                    // Value starts at i+9. Real payloads use a wrapper
+                    // (0x01 or 0x07) followed by inner string tag (0x06)
+                    // and length byte. Bare 0x06 also accepted for safety.
+                    let value_offset = match payload[i + 9] {
+                        0x01 | 0x07 if i + 12 < payload.len() && payload[i + 10] == 0x06 => {
+                            Some(i + 11)
+                        }
+                        0x06 => Some(i + 10),
+                        _ => None,
+                    };
+                    if let Some(len_off) = value_offset {
+                        let ln = payload[len_off] as usize;
+                        let str_start = len_off + 1;
+                        let str_end = str_start + ln;
+                        if ln > 0 && str_end <= payload.len() {
+                            if let Ok(s) = std::str::from_utf8(&payload[str_start..str_end]) {
+                                let cat = classify_quest_flag(s);
+                                stmt.execute(params![fqn, ordinal, s, cat])?;
+                                inserted += 1;
+                                ordinal += 1;
+                            }
+                        }
+                    }
+                    i += 9;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(inserted)
     }
 
     /// Populate `quest_objectives` from each Quest payload (#130, closes #15).
@@ -4181,6 +4287,50 @@ fn parse_conquest_fqn(fqn: &str) -> (String, Option<String>, Option<String>) {
 
 /// Pull `(fqn, payload_b64)` tuples for every object of `kind`. Used by
 /// the populate_* passes that need to walk binary payloads.
+/// Categorize a SWTOR quest progression-flag string by its leading
+/// underscore-delimited segment.
+///
+/// Categories mirror the conventions seen across the quest corpus:
+/// - `jrn`: journal-display trigger (e.g. `jrn_start_speak_to_unaw_aharo`)
+/// - `track`: explicit progress tracker (`track_defeat_callef`)
+/// - `hook`: hydra script event (`hook_holo_triggered_temple`)
+/// - `qm`: quest-manager state (`qm_flesh_raiders_killed`)
+/// - `counter`: kill/gather counter (`counter_flesh_raiders`)
+/// - `hyd`: hydra runtime event (`hyd_raider_wave_1`)
+/// - `branch_step`: the `_bN_sN_tN` per-step coordinate
+/// - `quest_reward`: reward variable (`quest_reward_01`)
+/// - `spoke`: action-specific completion (`spoke_to_satele_via_holo`)
+/// - `cnv`: conversation-set flag
+/// - `glb`: global story flag
+/// - `complex`: multi-condition flag
+/// - `other`: anything else
+fn classify_quest_flag(name: &str) -> &'static str {
+    // Branch/step/tier form: leading underscore then b<N>_s<N>_t<N>
+    if let Some(rest) = name.strip_prefix("_b") {
+        if let Some(rest) = rest.split_once('_').and_then(|(_, r)| r.strip_prefix('s')) {
+            if let Some((_, r)) = rest.split_once('_') {
+                if r.starts_with('t') {
+                    return "branch_step";
+                }
+            }
+        }
+    }
+    match name.split_once('_').map(|(p, _)| p).unwrap_or(name) {
+        "jrn" => "jrn",
+        "track" => "track",
+        "hook" => "hook",
+        "qm" => "qm",
+        "counter" => "counter",
+        "hyd" => "hyd",
+        "quest" if name.starts_with("quest_reward") => "quest_reward",
+        "spoke" => "spoke",
+        "cnv" => "cnv",
+        "glb" => "glb",
+        "complex" => "complex",
+        _ => "other",
+    }
+}
+
 fn fetch_fqn_payloads(conn: &Connection, kind: &str) -> Result<Vec<(String, String)>> {
     let mut stmt = conn
         .prepare("SELECT fqn, json_extract(json, '$.payload_b64') FROM objects WHERE kind = ?1 AND is_canonical = 1")?;
