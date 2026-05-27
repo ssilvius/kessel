@@ -1252,6 +1252,42 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_ability_effect_params_flag
                 ON ability_effect_params(param_flag);
 
+            -- Object CC marker references. CC is the second-layer marker
+            -- family per docs/probes/dis-payload-format.md: every CC byte
+            -- is followed by a 4-byte property-name hash + a variable-
+            -- length value. CC markers are 4-10x more common than CF40
+            -- markers per object (Quest: 474 CC vs 83 CF40; NPC: 11 CC
+            -- vs 3 CF40). They're the alternative storage layer for the
+            -- per-object typed data the CF40 walker doesn't catch.
+            --
+            -- The 4-byte CC ID is stored LE in payloads; the MAPPINGS.md
+            -- known IDs are BE strings, so they're byte-reversed here.
+            -- Known names (per MAPPINGS.md + legion 019e4e2a):
+            --   37AE6F6F = stringRef        (BE: 6F6FAE37)
+            --   0B84E217 = abilityRef       (BE: 17E2840B)
+            --   03DDAFE4 = ?                (BE: E4AFDD03)
+            --   2D31CD0C = ?                (BE: 0CCD312D)
+            --   19D74B9D = ?                (BE: 9D4BD719)
+            --   19D74B96 = ?                (BE: 964BD719)
+            -- The full CC-hash-to-name dictionary is in a proprietary
+            -- Bioware namespace; spike #144 to crack it (6 known names
+            -- so far; ~700+ distinct IDs observed corpus-wide).
+            --
+            -- value_bytes_hex captures up to 16 bytes from the CC marker's
+            -- value tail (limited because per-ID length grammar is unknown);
+            -- a future PR per-ID grammar will extract typed values cleanly.
+            CREATE TABLE IF NOT EXISTS object_cc_refs (
+                object_game_id     TEXT NOT NULL,
+                ordinal            INTEGER NOT NULL,
+                cc_id_hex          TEXT NOT NULL,
+                cc_known_name      TEXT,
+                value_bytes_hex    TEXT NOT NULL,
+                PRIMARY KEY (object_game_id, ordinal),
+                FOREIGN KEY (object_game_id) REFERENCES objects(game_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_object_cc_refs_id ON object_cc_refs(cc_id_hex);
+            CREATE INDEX IF NOT EXISTS idx_object_cc_refs_name ON object_cc_refs(cc_known_name);
+
             -- Talent stat effects (PR: wire-typed-value-decoder).
             -- Decoded from CF40 D954FB02 markers in talent payloads.
             -- Each row: which stat the talent modifies and by how much.
@@ -5243,6 +5279,107 @@ impl Database {
         drop(insert);
         tx.commit()?;
         Ok((written, unresolved))
+    }
+
+    /// Populate `object_cc_refs` by walking every canonical PBUK object
+    /// payload for CC marker bytes whose 4-byte ID matches a KNOWN CC ID.
+    /// Filters to known IDs only because a naive "any 0xCC byte" scan
+    /// produces 19.5M rows with ~96% false positives (0xCC appears
+    /// frequently inside GUID payloads + value bytes that don't open a
+    /// marker). Restricting to known IDs gives ~827K real records.
+    ///
+    /// Per-CC-ID grammar (value length, value type) is not yet decoded
+    /// across the corpus; this captures up to 16 sample value bytes per
+    /// occurrence so the data is at least visible in spice. As new CC
+    /// IDs are identified (#144 hash crack or per-byte-search work),
+    /// expand the `known` table below.
+    ///
+    /// Returns (objects_with_cc_refs, total_cc_records).
+    pub fn populate_object_cc_refs(&self) -> Result<(u64, u64)> {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        use std::collections::HashMap;
+
+        // Known CC IDs (LE order, as stored in payloads).
+        let known: HashMap<&[u8; 4], &str> = [
+            (b"\x37\xAE\x6F\x6F" as &[u8; 4], "stringRef"),
+            (b"\x0B\x84\xE2\x17", "abilityRef"),
+            (b"\x03\xDD\xAF\xE4", "unknown_E4AFDD03"),
+            (b"\x2D\x31\xCD\x0C", "unknown_0CCD312D"),
+            (b"\x19\xD7\x4B\x9D", "unknown_9D4BD719"),
+            (b"\x19\xD7\x4B\x96", "unknown_964BD719"),
+        ]
+        .into_iter()
+        .collect();
+
+        self.flush()?;
+        let conn = self.conn.lock().unwrap();
+        let rows: Vec<(String, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT game_id, json_extract(json, '$.payload_b64') \
+                 FROM objects WHERE is_canonical = 1",
+            )?;
+            let collected: Vec<(String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            collected
+        };
+
+        let tx = conn.unchecked_transaction()?;
+        let mut insert = tx.prepare_cached(
+            "INSERT OR REPLACE INTO object_cc_refs \
+               (object_game_id, ordinal, cc_id_hex, cc_known_name, value_bytes_hex) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        let mut objects = 0u64;
+        let mut total = 0u64;
+        for (game_id, b64) in &rows {
+            let Ok(payload) = BASE64.decode(b64) else {
+                continue;
+            };
+            let mut ordinal: i64 = 0;
+            let mut i = 0;
+            while i + 5 <= payload.len() {
+                if payload[i] != 0xCC {
+                    i += 1;
+                    continue;
+                }
+                let cc_id_bytes: [u8; 4] = payload[i + 1..i + 5].try_into().unwrap();
+                let Some(known_name) = known.get(&cc_id_bytes).map(|s| s.to_string()) else {
+                    i += 1;
+                    continue;
+                };
+                let cc_id_hex = hex::encode_upper(cc_id_bytes);
+                // Capture up to 16 sample value bytes, stopping at the next
+                // recognized marker family byte (CB/CC/CD/CE/CF) to avoid
+                // spilling into the next record.
+                let value_start = i + 5;
+                let mut value_end = (value_start + 16).min(payload.len());
+                for (offset, &byte) in payload[value_start..value_end].iter().enumerate() {
+                    if (0xCB..=0xCF).contains(&byte) {
+                        value_end = value_start + offset;
+                        break;
+                    }
+                }
+                let value_hex = hex::encode_upper(&payload[value_start..value_end]);
+                insert.execute(params![game_id, ordinal, cc_id_hex, &known_name, value_hex])?;
+                ordinal += 1;
+                total += 1;
+                // Advance past the marker only; per-ID length grammar would
+                // let us skip the full value cleanly, but for now stepping
+                // by 5 (CC + 4-byte ID) is safe since the next CC byte
+                // inside this value would be re-detected as a new marker.
+                i += 5;
+            }
+            if ordinal > 0 {
+                objects += 1;
+            }
+        }
+        drop(insert);
+        tx.commit()?;
+        Ok((objects, total))
     }
 
     /// Populate `ability_effect_params` by extracting every `04 01 01 <flag>
