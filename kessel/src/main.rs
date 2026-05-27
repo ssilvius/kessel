@@ -670,6 +670,17 @@ fn main() -> Result<()> {
         abl_with_effects, abl_total_effects
     );
 
+    // Object CC marker references (alternative storage layer survey).
+    // Every CC byte in canonical PBUK payloads is followed by a 4-byte
+    // namespaced ID + value. Only 6 CC IDs have known names; ~700 distinct
+    // IDs observed corpus-wide. Captures up to 16 sample value bytes
+    // per occurrence so consumers can decode specific IDs they need.
+    let (cc_objects, cc_total) = db.populate_object_cc_refs()?;
+    println!(
+        "  Object CC refs: {} objects, {} total records",
+        cc_objects, cc_total
+    );
+
     // Ability effect numeric parameters (E251D1CE/CF inline floats).
     // Extracts `04 01 01 <flag> <f32_LE>` triplets from the parameter-list
     // tails. Captures ~90% of well-formed float params; other parameter
