@@ -670,6 +670,15 @@ fn main() -> Result<()> {
         abl_with_effects, abl_total_effects
     );
 
+    // effAction parameter values: per-action <effParam_idx><f32> pairs.
+    // Massacre's Standard Health Percent (0.1543) and 1.54 coefficient
+    // land here. The actual numeric damage data per ability action.
+    let (action_params_abl, action_params_total) = db.populate_ability_action_params()?;
+    println!(
+        "  Ability action params: {} abilities, {} param rows",
+        action_params_abl, action_params_total
+    );
+
     // Object CC marker references (alternative storage layer survey).
     // Every CC byte in canonical PBUK payloads is followed by a 4-byte
     // namespaced ID + value. Only 6 CC IDs have known names; ~700 distinct
