@@ -1541,6 +1541,10 @@ impl Database {
             ("rewards_visibility", "TEXT"),
             ("episode_season", "TEXT"),
             ("level", "INTEGER"),
+            // Primary tracking flag string (hash 2ADEC3C7). One per quest;
+            // string_id reference like "track_*", "jrn_*", "glb_*", "cnv_*",
+            // "complex_*" identifying the quest's main progress flag.
+            ("primary_tracking_flag", "TEXT"),
         ];
         for (name, ty) in additions {
             if !existing.contains(name) {
@@ -2039,8 +2043,9 @@ impl Database {
                         difficulty = ?2,
                         rewards_visibility = ?3,
                         episode_season = ?4,
-                        level = ?5
-                  WHERE fqn = ?6",
+                        level = ?5,
+                        primary_tracking_flag = ?6
+                  WHERE fqn = ?7",
             )?;
             for (fqn, json_str) in &rows {
                 let payload = match serde_json::from_str::<serde_json::Value>(json_str)
@@ -2074,6 +2079,16 @@ impl Database {
                     let (_k, v) = m.iter().find(|(k, _)| k.contains(needle))?;
                     v.as_i64()
                 };
+                // Extract by hi32 hash directly. The walker labels these as
+                // kind "float32" but the payload is a length-prefixed string
+                // (schema's per-property kind labels are unreliable for some
+                // hashes). Hash 2ADEC3C7 is the primary tracking flag, one
+                // per quest, verified across 1500+ samples.
+                let string_for_hash = |hi32: &str| -> Option<String> {
+                    let m = named?;
+                    let (_k, v) = m.iter().find(|(k, _)| k.ends_with(&format!("__{hi32}")))?;
+                    v.as_str().map(String::from)
+                };
                 let activity = enum_member("qstActivityType");
                 let difficulty = enum_member("qstDifficulty");
                 let rewards = enum_member("qstRewardsVisibility");
@@ -2081,8 +2096,16 @@ impl Database {
                 // Level: per-property level field may be int8 stored as
                 // an int value (not a wrapped struct). Try direct decode.
                 let level = int_value("Level").or_else(|| int_value("level"));
-                let affected =
-                    stmt.execute(params![activity, difficulty, rewards, episode, level, fqn,])?;
+                let tracking_flag = string_for_hash("2ADEC3C7");
+                let affected = stmt.execute(params![
+                    activity,
+                    difficulty,
+                    rewards,
+                    episode,
+                    level,
+                    tracking_flag,
+                    fqn,
+                ])?;
                 if affected > 0 {
                     updated += 1;
                 }
