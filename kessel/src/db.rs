@@ -1288,6 +1288,33 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_object_cc_refs_id ON object_cc_refs(cc_id_hex);
             CREATE INDEX IF NOT EXISTS idx_object_cc_refs_name ON object_cc_refs(cc_known_name);
 
+            -- effAction parameter values. Within each effAction's parameter
+            -- array, parameters are encoded as `<effParam_idx_u8><f32_LE>`.
+            -- This is the per-action numeric data: damage coefficients,
+            -- modifier amounts, condition values.
+            --
+            -- Verified for Massacre (effAction_BallisticImpulse):
+            --   effParam_StandardHealthPercentMin = 0.1543
+            --   effParam_IgnoreDualWieldModifier  = 1.54
+            -- The 1.54 is the coefficient parsely displays as ~1.47.
+            --
+            -- Detection heuristic: inside the bytes after an effAction
+            -- marker (until the next CF40 marker), scan for the pattern
+            -- `<5-byte segment header><param_id_u8><f32_LE>` repeating.
+            -- The segment header has the form `14 ED 0D 1E 3E ...` (more
+            -- complex param shapes are not yet decoded).
+            CREATE TABLE IF NOT EXISTS ability_action_params (
+                ability_fqn       TEXT NOT NULL,
+                effect_ordinal    INTEGER NOT NULL,
+                param_ordinal     INTEGER NOT NULL,
+                effparam_index    INTEGER NOT NULL,
+                effparam_name     TEXT,
+                value_f32         REAL NOT NULL,
+                PRIMARY KEY (ability_fqn, effect_ordinal, param_ordinal)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ability_action_params_name
+                ON ability_action_params(effparam_name);
+
             -- Talent stat effects (PR: wire-typed-value-decoder).
             -- Decoded from CF40 D954FB02 markers in talent payloads.
             -- Each row: which stat the talent modifies and by how much.
@@ -5279,6 +5306,168 @@ impl Database {
         drop(insert);
         tx.commit()?;
         Ok((written, unresolved))
+    }
+
+    /// Populate `ability_action_params` from effAction parameter arrays.
+    ///
+    /// Each effAction (CF40 E251D1CC) marker is followed by a parameter
+    /// list whose elements have the format `<effParam_idx_u8><f32_LE>`.
+    /// This populator finds the parameter array opener pattern (`08 05 04
+    /// 08 08 NN`) inside each effAction's tail and walks each `<idx><f32>`
+    /// pair until a non-decodable byte is hit.
+    ///
+    /// Returns (abilities_with_params, total_param_rows).
+    pub fn populate_ability_action_params(&self) -> Result<(u64, u64)> {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        use std::collections::BTreeMap;
+
+        const E251D1CC: [u8; 4] = [0xE2, 0x51, 0xD1, 0xCC];
+        let effparam_enum = crate::gom_schema::enum_for_name("effParam");
+
+        self.flush()?;
+        let conn = self.conn.lock().unwrap();
+        let rows: Vec<(String, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT fqn, json_extract(json, '$.payload_b64') \
+                 FROM objects WHERE fqn LIKE 'abl.%'",
+            )?;
+            let collected: Vec<(String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            collected
+        };
+
+        // Aggregate params per (FQN, effect_ordinal) preserving discovery order
+        // and dedup across variants by exact (effect_ordinal, effparam_idx, value).
+        let mut params_per_fqn: BTreeMap<String, Vec<(i64, u8, f32)>> = BTreeMap::new();
+
+        for (fqn, b64) in &rows {
+            let Ok(payload) = BASE64.decode(b64) else {
+                continue;
+            };
+
+            // Find each E251D1CC effAction marker, ordinal = index of action.
+            let mut effect_ord: i64 = 0;
+            let mut i = 0;
+            while i + 9 <= payload.len() {
+                let is_marker = payload[i] == 0xCF
+                    && payload[i + 1] == 0x40
+                    && payload[i + 2] == 0x00
+                    && payload[i + 3] == 0x00;
+                if !is_marker || payload[i + 5..i + 9] != E251D1CC {
+                    i += 1;
+                    continue;
+                }
+                // Tail to next CF40 marker (the next typed property record).
+                let tail_start = i + 9;
+                let mut tail_end = payload.len();
+                let mut k = tail_start + 9;
+                while k + 4 <= payload.len() {
+                    if payload[k] == 0xCF
+                        && payload[k + 1] == 0x40
+                        && payload[k + 2] == 0x00
+                        && payload[k + 3] == 0x00
+                    {
+                        tail_end = k;
+                        break;
+                    }
+                    k += 1;
+                }
+                let tail = &payload[tail_start..tail_end];
+                // Locate the param-list opener `08 05 04 08 08 <N>` and decode
+                // the <idx><f32> pairs that follow until a non-decodable byte.
+                let mut p = 0;
+                while p + 6 <= tail.len() {
+                    if tail[p] == 0x08
+                        && tail[p + 1] == 0x05
+                        && tail[p + 2] == 0x04
+                        && tail[p + 3] == 0x08
+                        && tail[p + 4] == 0x08
+                    {
+                        // Skip the 5-byte opener + 1 count byte
+                        let mut q = p + 6;
+                        // 4-byte zero padding observed before first pair on
+                        // verified samples
+                        if q + 4 <= tail.len() && tail[q..q + 4] == [0, 0, 0, 0] {
+                            q += 4;
+                        }
+                        // Walk <idx_u8><f32_LE> pairs
+                        while q + 5 <= tail.len() {
+                            let idx = tail[q];
+                            // Heuristic: param indices are 1..200 (660 effParam
+                            // members but very few > 200 used). If byte is out
+                            // of range or looks like a marker, stop.
+                            // Stop if byte is out of plausible param-id range OR
+                            // if it looks like a layer marker (CB-CF) that opens
+                            // a new record.
+                            if !(0x01..=0xC8).contains(&idx) {
+                                break;
+                            }
+                            let f = f32::from_le_bytes(tail[q + 1..q + 5].try_into().unwrap());
+                            if !f.is_finite() || f.abs() > 1e8 {
+                                break;
+                            }
+                            params_per_fqn
+                                .entry(fqn.clone())
+                                .or_default()
+                                .push((effect_ord, idx, f));
+                            q += 5;
+                        }
+                        break; // one param array per effAction
+                    }
+                    p += 1;
+                }
+                effect_ord += 1;
+                i += 9;
+            }
+        }
+
+        // Dedup per FQN (since variants overlap) preserving first-seen order.
+        for v in params_per_fqn.values_mut() {
+            let mut seen = std::collections::HashSet::new();
+            v.retain(|t| {
+                let key = (t.0, t.1, t.2.to_bits());
+                seen.insert(key)
+            });
+        }
+
+        let tx = conn.unchecked_transaction()?;
+        let mut insert = tx.prepare_cached(
+            "INSERT OR REPLACE INTO ability_action_params \
+               (ability_fqn, effect_ordinal, param_ordinal, effparam_index, effparam_name, value_f32) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
+        let mut abilities = 0u64;
+        let mut total = 0u64;
+        for (fqn, params) in &params_per_fqn {
+            if params.is_empty() {
+                continue;
+            }
+            abilities += 1;
+            // Group by effect_ordinal to assign per-effect param_ordinal
+            let mut counters: std::collections::HashMap<i64, i64> =
+                std::collections::HashMap::new();
+            for (eff_ord, idx, val) in params {
+                let p_ord = counters.entry(*eff_ord).or_insert(0);
+                let name = effparam_enum.and_then(|e| e.members.get(*idx as usize).cloned());
+                insert.execute(params![
+                    fqn,
+                    eff_ord,
+                    *p_ord,
+                    *idx as i64,
+                    name,
+                    *val as f64
+                ])?;
+                *p_ord += 1;
+                total += 1;
+            }
+        }
+        drop(insert);
+        tx.commit()?;
+        Ok((abilities, total))
     }
 
     /// Populate `object_cc_refs` by walking every canonical PBUK object
