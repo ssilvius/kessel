@@ -648,6 +648,12 @@ fn main() -> Result<()> {
     // decoder on top of the #171 singleton pipeline.
     let (gsf_component_costs, gsf_tier_costs) = db.populate_gsf_requisition_costs()?;
 
+    // Resolve gsf_requisition_costs.target_guid to art_path + component_kind
+    // via the `data` singleton (#217). Bridges the cost-prototype's internal
+    // ID namespace to a human-readable component identifier.
+    let gsf_cost_targets = db.populate_gsf_cost_targets()?;
+    println!("  GSF cost targets resolved: {} rows", gsf_cost_targets);
+
     // Twelfth-and-seven-eighths pass: ability/talent → effect block linkage
     // (issue #173). One row per indexed CF E0 sub-record in each abl.*/tal.*
     // payload. Unresolved block GUIDs (versioned-only ability category, #179)
