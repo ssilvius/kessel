@@ -1120,6 +1120,39 @@ impl Database {
                 combat_mode       TEXT
             );
 
+            -- Hydra script references (#214). Each hyd.* payload is a runtime
+            -- trigger script encoded as plain GOM with FQN refs and command
+            -- names stored inline as length-prefixed ASCII strings. No
+            -- bytecode decryption needed — the names are right there.
+            --
+            -- One row per (hyd_fqn, ref_fqn) edge. ref_kind discriminates:
+            --   - 'counter'     : qst.*.counter_* flag (kill/gather counter)
+            --   - 'tracking'    : qst.*.track_* flag (step tracker)
+            --   - 'journal'     : qst.*.jrn_* flag (journal entry trigger)
+            --   - 'qm_state'    : qst.*.qm_* flag (quest manager state)
+            --   - 'cnv_flag'    : qst.*.cnv_* flag (conversation-set flag)
+            --   - 'glb_flag'    : qst.*.glb_* flag (global story flag)
+            --   - 'hook'        : qst.*.hook_* flag (hydra script trigger)
+            --   - 'target_npc'  : npc.* / enc.* / spn.* / plc.* target ref
+            --   - 'conversation': cnv.* dialog ref
+            --   - 'ability'     : abl.* ability spawn ref
+            --   - 'quest_self'  : qst.* root ref (no trailing flag)
+            --   - 'other_flag'  : qst.* with unrecognized suffix family
+            --
+            -- For warden Kill/Gather matchers: join counter rows to
+            -- target_npc rows by hyd_fqn to find "this hyd's kill watch
+            -- increments this counter when this NPC dies".
+            CREATE TABLE IF NOT EXISTS hydra_refs (
+                hyd_fqn      TEXT NOT NULL,
+                ordinal      INTEGER NOT NULL,
+                ref_kind     TEXT NOT NULL,
+                ref_fqn      TEXT NOT NULL,
+                PRIMARY KEY (hyd_fqn, ordinal)
+            );
+            CREATE INDEX IF NOT EXISTS idx_hydra_refs_kind ON hydra_refs(ref_kind);
+            CREATE INDEX IF NOT EXISTS idx_hydra_refs_ref  ON hydra_refs(ref_fqn);
+            CREATE INDEX IF NOT EXISTS idx_hydra_refs_hyd  ON hydra_refs(hyd_fqn);
+
             -- NPC typed columns (#139) -- 32 props, 5 named enums from
             -- client.gom Npc schema.
             CREATE TABLE IF NOT EXISTS npc_details (
@@ -2255,6 +2288,68 @@ impl Database {
                         }
                     }
                     i += 9;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(inserted)
+    }
+
+    /// Populate `hydra_refs` (#214) by scanning hyd.* payloads for inline
+    /// ASCII FQN references. Hydra scripts encode their references (counter
+    /// flags, target NPCs, conversations, etc.) as length-prefixed ASCII
+    /// strings inside the GOM payload — no bytecode decode required.
+    ///
+    /// Each extracted FQN is classified by prefix and suffix family:
+    ///   - qst.*.counter_*    -> 'counter'  (kill/gather counter)
+    ///   - qst.*.track_*      -> 'tracking'
+    ///   - qst.*.jrn_*        -> 'journal'
+    ///   - qst.*.qm_*         -> 'qm_state'
+    ///   - qst.*.cnv_*        -> 'cnv_flag'
+    ///   - qst.*.glb_*        -> 'glb_flag'
+    ///   - qst.*.hook_*       -> 'hook'
+    ///   - qst.* root         -> 'quest_self'
+    ///   - qst.* other suffix -> 'other_flag'
+    ///   - cnv.*              -> 'conversation'
+    ///   - abl.*              -> 'ability'
+    ///   - npc.*/enc.*/spn.*/plc.* -> 'target_npc'
+    ///
+    /// One row per FQN occurrence in byte-position order. Dedup is by
+    /// (hyd_fqn, ordinal) primary key. Returns total rows inserted.
+    pub fn populate_hydra_refs(&self) -> Result<u64> {
+        self.flush()?;
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
+        let rows: Vec<(String, String)> = {
+            let conn = self.conn.lock().unwrap();
+            fetch_fqn_payloads(&conn, "Hydra")?
+        };
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut inserted = 0u64;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR REPLACE INTO hydra_refs (hyd_fqn, ordinal, ref_kind, ref_fqn) \
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for (fqn, b64) in &rows {
+                let Ok(payload) = BASE64.decode(b64) else {
+                    continue;
+                };
+                let mut ordinal: i64 = 0;
+                let mut seen_keys: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                for ref_fqn in extract_hydra_fqn_refs(&payload) {
+                    // Per-hyd dedup on the full ref_fqn — many hyd.* payloads
+                    // carry each ref twice (length-prefix duplication artifact).
+                    if !seen_keys.insert(ref_fqn.clone()) {
+                        continue;
+                    }
+                    let kind = classify_hydra_ref(&ref_fqn);
+                    stmt.execute(params![fqn, ordinal, kind, &ref_fqn])?;
+                    inserted += 1;
+                    ordinal += 1;
                 }
             }
         }
@@ -4326,6 +4421,108 @@ fn parse_conquest_fqn(fqn: &str) -> (String, Option<String>, Option<String>) {
 
 /// Pull `(fqn, payload_b64)` tuples for every object of `kind`. Used by
 /// the populate_* passes that need to walk binary payloads.
+/// Extract FQN-shaped ASCII strings from a Hydra payload's bytes.
+/// Hydra scripts encode their references as length-prefixed ASCII
+/// strings (each preceded by a single length byte). This scanner finds
+/// runs of printable ASCII >= 8 chars that match a SWTOR FQN prefix.
+///
+/// Returns refs in byte-position order. Per-payload caller deduplicates.
+fn extract_hydra_fqn_refs(payload: &[u8]) -> Vec<String> {
+    const FQN_PREFIXES: &[&str] = &[
+        "qst.", "cnv.", "abl.", "npc.", "enc.", "spn.", "plc.", "hyd.", "mpn.",
+    ];
+    let mut out: Vec<String> = Vec::new();
+    let mut emit_from = |buf: &[u8]| {
+        if buf.len() < 8 {
+            return;
+        }
+        let Ok(s) = std::str::from_utf8(buf) else {
+            return;
+        };
+        for prefix in FQN_PREFIXES {
+            let Some(idx) = s.find(prefix) else { continue };
+            // Filter out garbage where the prefix appears mid-token
+            // (e.g. previous char is alphanumeric/underscore/dot).
+            if idx > 0 && is_fqn_char(s.as_bytes()[idx - 1]) {
+                return;
+            }
+            out.push(s[idx..].to_string());
+            return;
+        }
+    };
+    let mut buf: Vec<u8> = Vec::new();
+    for &b in payload {
+        if (0x20..0x7F).contains(&b) {
+            buf.push(b);
+        } else {
+            emit_from(&buf);
+            buf.clear();
+        }
+    }
+    emit_from(&buf);
+    out
+}
+
+fn is_fqn_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'.'
+}
+
+/// Classify a Hydra-referenced FQN by its prefix and suffix family.
+fn classify_hydra_ref(fqn: &str) -> &'static str {
+    if let Some(rest) = fqn.strip_prefix("qst.") {
+        // qst.<path>.<final_segment> -- inspect final segment family
+        let final_seg = rest.rsplit('.').next().unwrap_or(rest);
+        if final_seg.starts_with("counter_") {
+            return "counter";
+        }
+        if final_seg.starts_with("track_") {
+            return "tracking";
+        }
+        if final_seg.starts_with("jrn_") {
+            return "journal";
+        }
+        if final_seg.starts_with("qm_") {
+            return "qm_state";
+        }
+        if final_seg.starts_with("cnv_") {
+            return "cnv_flag";
+        }
+        if final_seg.starts_with("glb_") {
+            return "glb_flag";
+        }
+        if final_seg.starts_with("hook_") {
+            return "hook";
+        }
+        // A bare qst.<path>.<name> with no recognized flag prefix and many
+        // segments is the quest root reference. Heuristic: short suffix
+        // (no underscore) tends to be a quest name segment.
+        if !rest.contains('.') {
+            return "quest_self";
+        }
+        return "other_flag";
+    }
+    if fqn.starts_with("cnv.") {
+        return "conversation";
+    }
+    if fqn.starts_with("abl.") {
+        return "ability";
+    }
+    if fqn.starts_with("npc.")
+        || fqn.starts_with("enc.")
+        || fqn.starts_with("spn.")
+        || fqn.starts_with("plc.")
+    {
+        return "target_npc";
+    }
+    if fqn.starts_with("hyd.") {
+        return "hydra";
+    }
+    if fqn.starts_with("mpn.") {
+        return "mission_point";
+    }
+    "other"
+}
+
 /// Categorize a SWTOR quest progression-flag string by its leading
 /// underscore-delimited segment.
 ///
