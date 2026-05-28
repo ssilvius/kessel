@@ -1219,9 +1219,12 @@ impl Database {
                 cost              INTEGER NOT NULL,
                 target_game_id    TEXT,
                 target_fqn        TEXT,
+                art_path          TEXT,
+                component_kind    TEXT,
                 PRIMARY KEY (target_guid, cost_kind, tier)
             );
             CREATE INDEX IF NOT EXISTS idx_gsf_req_costs_target ON gsf_requisition_costs(target_game_id);
+            CREATE INDEX IF NOT EXISTS idx_gsf_req_costs_kind ON gsf_requisition_costs(component_kind);
 
             -- PBUK singleton prototypes (#171): one row per zero-dot PBUK
             -- object. These are master tables / config blobs the game references
@@ -4419,8 +4422,53 @@ fn parse_conquest_fqn(fqn: &str) -> (String, Option<String>, Option<String>) {
     (category, subcategory, cadence)
 }
 
-/// Pull `(fqn, payload_b64)` tuples for every object of `kind`. Used by
-/// the populate_* passes that need to walk binary payloads.
+/// Derive a structured GSF component identifier from an art file path
+/// like `art/dynamic/space_pvp/ships/imp_scout/sweapon/imp_scout_a_sweapon_03.gr2`.
+///
+/// Returns a slash-separated identifier `<faction>/<class>/<slot>/<variant>/<tier>`
+/// like `imp/scout/sweapon/a/03`. Returns None if the path doesn't match the
+/// expected GSF asset shape.
+fn derive_gsf_component_kind(path: &str) -> Option<String> {
+    // Strip directory prefix and .gr2/.fxspec suffix to get the basename.
+    let basename = path.rsplit('/').next()?;
+    let stem = basename
+        .rsplit_once('.')
+        .map(|(s, _)| s)
+        .unwrap_or(basename);
+    // Stem shape: <faction>_<class>_<variant>_<slot>_<tier>
+    // - faction: imp | rep | spvp (3+ char)
+    // - class: scout | strike | gunship | bomber | starship_<name> (1+ segs)
+    // - variant: a | b | c
+    // - slot: sweapon | pweapon | engine | shield | reactor | sensors | armor |
+    //         magazine | capacitor | thrusters | copilot
+    // - tier: 01..09
+    let parts: Vec<&str> = stem.split('_').collect();
+    if parts.len() < 4 {
+        return None;
+    }
+    // Find the trailing 2-digit tier
+    let last = parts.last()?;
+    if last.len() != 2 || !last.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let tier = *last;
+    // Slot is the segment before the tier
+    let slot = parts.get(parts.len() - 2)?;
+    // Variant is the segment before the slot (single char a/b/c)
+    let variant = parts.get(parts.len() - 3)?;
+    if variant.len() != 1 {
+        return None;
+    }
+    // Faction is the first segment; class is everything between
+    let faction = parts.first()?;
+    let class_parts = &parts[1..parts.len() - 3];
+    if class_parts.is_empty() {
+        return None;
+    }
+    let class = class_parts.join("_");
+    Some(format!("{faction}/{class}/{slot}/{variant}/{tier}"))
+}
+
 /// Extract FQN-shaped ASCII strings from a Hydra payload's bytes.
 /// Hydra scripts encode their references as length-prefixed ASCII
 /// strings (each preceded by a single length byte). This scanner finds
@@ -4567,6 +4615,8 @@ fn classify_quest_flag(name: &str) -> &'static str {
     }
 }
 
+/// Pull `(fqn, payload_b64)` tuples for every object of `kind`. Used by
+/// the populate_* passes that need to walk binary payloads.
 fn fetch_fqn_payloads(conn: &Connection, kind: &str) -> Result<Vec<(String, String)>> {
     let mut stmt = conn
         .prepare("SELECT fqn, json_extract(json, '$.payload_b64') FROM objects WHERE kind = ?1 AND is_canonical = 1")?;
@@ -5708,6 +5758,123 @@ impl Database {
         }
         tx.commit()?;
         Ok((component_rows, tier_rows))
+    }
+
+    /// Resolve `gsf_requisition_costs.target_guid` to art_path + component_kind
+    /// via the `data` singleton (#217). Each cost target_guid (8 bytes) is
+    /// `<6-byte content_guid_tail><0x04><0x03>`. The 6-byte tail appears in
+    /// the `data` singleton next to a length-prefixed ASCII art path like
+    /// `art/dynamic/space_pvp/ships/imp_scout/sweapon/imp_scout_a_sweapon_03.gr2`.
+    ///
+    /// component_kind is derived from the art path: ship faction prefix
+    /// (imp_/rep_/spvp_neu_), ship class, slot (sweapon/pweapon/engine/
+    /// shield/reactor/sensors/etc.), variant letter, and tier number.
+    ///
+    /// Returns rows updated.
+    pub fn populate_gsf_cost_targets(&self) -> Result<u64> {
+        self.flush()?;
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
+        let data_payload: Option<Vec<u8>> = {
+            let conn = self.conn.lock().unwrap();
+            let row: Option<String> = conn
+                .query_row(
+                    "SELECT payload_b64 FROM singletons WHERE fqn = 'data'",
+                    [],
+                    |r| r.get(0),
+                )
+                .ok();
+            row.and_then(|b64| BASE64.decode(b64).ok())
+        };
+        let Some(data_payload) = data_payload else {
+            return Ok(0);
+        };
+
+        // Walk the data singleton: for each CF E0 00 marker, take the next
+        // 6 bytes as the content_guid_tail and the nearest following ASCII
+        // string (>=8 chars containing an art-path hint) as the art_path.
+        let mut guid_to_path: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        let mut i = 0;
+        while i + 9 <= data_payload.len() {
+            if data_payload[i] == 0xCF && data_payload[i + 1] == 0xE0 && data_payload[i + 2] == 0x00
+            {
+                let tail = hex::encode_upper(&data_payload[i + 3..i + 9]);
+                // Scan up to 300 bytes ahead for an art-path-shaped ASCII run.
+                let scan_end = (i + 300).min(data_payload.len());
+                let mut buf: Vec<u8> = Vec::new();
+                let mut found_path: Option<String> = None;
+                for &b in &data_payload[(i + 9)..scan_end] {
+                    if (0x20..0x7F).contains(&b) {
+                        buf.push(b);
+                    } else {
+                        if buf.len() >= 8 {
+                            if let Ok(s) = std::str::from_utf8(&buf) {
+                                if s.contains("art/")
+                                    || s.contains(".gr2")
+                                    || s.contains("space_pvp")
+                                    || s.contains(".fxspec")
+                                {
+                                    // Strip leading non-art length-prefix byte
+                                    let clean = s
+                                        .find("art/")
+                                        .or_else(|| s.find("space_pvp"))
+                                        .map(|idx| &s[idx..])
+                                        .unwrap_or(s)
+                                        .to_string();
+                                    found_path = Some(clean);
+                                    break;
+                                }
+                            }
+                        }
+                        buf.clear();
+                    }
+                }
+                if let Some(p) = found_path {
+                    guid_to_path.entry(tail).or_insert(p);
+                }
+                i += 9;
+            } else {
+                i += 1;
+            }
+        }
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut updated = 0u64;
+        {
+            let rows: Vec<(String, String, i64)> = {
+                let mut stmt =
+                    tx.prepare("SELECT target_guid, cost_kind, tier FROM gsf_requisition_costs")?;
+                let collected: Vec<(String, String, i64)> = stmt
+                    .query_map([], |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, i64>(2)?,
+                        ))
+                    })?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                collected
+            };
+            let mut update = tx.prepare_cached(
+                "UPDATE gsf_requisition_costs \
+                    SET art_path = ?1, component_kind = ?2 \
+                  WHERE target_guid = ?3 AND cost_kind = ?4 AND tier = ?5",
+            )?;
+            for (target_guid, kind, tier) in &rows {
+                // target_guid is 16 hex chars; tail = first 12 chars (6 bytes)
+                let tail = &target_guid[..12.min(target_guid.len())];
+                if let Some(path) = guid_to_path.get(tail) {
+                    let component_kind = derive_gsf_component_kind(path);
+                    update.execute(params![path, component_kind, target_guid, kind, tier])?;
+                    updated += 1;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(updated)
     }
 
     /// Populate `ability_effect_blocks` from abl.* + tal.* payloads (#173).
