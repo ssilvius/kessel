@@ -5554,6 +5554,29 @@ impl Database {
             rows
         };
 
+        // Build fqn -> game_id lookup for combat-style `base` apc objects.
+        // Used as fallback when a discipline's icon_apc GUID doesn't resolve
+        // (verified gap: 3 disciplines reference apc objects absent from the
+        // game's .tor archives -- shadow.combat icon, shadow.serenity_mods,
+        // commando.gunnery_mods. scan_missing_apc found 0 archive hits for
+        // those specific FQNs.). The combat-style's base apc is a workable
+        // placeholder icon for huttspawn rendering; the mod_tree case has no
+        // sensible fallback and stays NULL.
+        let base_apc_lookup: std::collections::HashMap<String, String> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT fqn, game_id FROM objects \
+                 WHERE fqn LIKE 'apc.%.base' AND is_canonical = 1",
+            )?;
+            let rows: std::collections::HashMap<String, String> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        };
+
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
 
@@ -5620,7 +5643,20 @@ impl Database {
                     continue;
                 };
 
-                let icon_game_id = guid_to_game_id.get(&record.icon_apc_guid);
+                // Resolve icon and mod_tree GUIDs. When the icon GUID is
+                // unresolved (source-data gap), fall back to the combat
+                // style's `apc.<origin>.<style>.base` placeholder so
+                // downstream renderers always have something to display.
+                // fqn_prefix is `abl.<origin>.skill.<disc>`; segment 1 is
+                // the origin.
+                let icon_game_id: Option<String> = guid_to_game_id
+                    .get(&record.icon_apc_guid)
+                    .cloned()
+                    .or_else(|| {
+                        let origin = fqn_prefix.split('.').nth(1)?;
+                        let fallback_fqn = format!("apc.{origin}.{combat_style}.base");
+                        base_apc_lookup.get(&fallback_fqn).cloned()
+                    });
                 let mod_tree_game_id = guid_to_game_id.get(&record.mod_tree_apc_guid);
                 let signature_game_id = guid_to_game_id.get(&record.signature_ability_guid);
 
