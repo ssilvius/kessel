@@ -755,6 +755,26 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_gsf_crew_name ON gsf_crew(crew_name);
 
+            -- Companion roster from npc.companion.* objects. The canonical
+            -- list of companions with display names resolved from the strings
+            -- table (id2 = string_id, id1 = 0, en-us). category is the FQN
+            -- segment after `npc.companion.` -- a class name (smuggler,
+            -- jedi_knight, sith_warrior, bounty_hunter, spy, sith_sorcerer,
+            -- ...) for origin-class companions, or a content source (alliance,
+            -- mtx, kotet, kotfe, galactic_seasons, ...) otherwise.
+            -- Informational source for downstream guides; supersedes the
+            -- scattered companion references in other tables.
+            CREATE TABLE IF NOT EXISTS companions (
+                fqn           TEXT PRIMARY KEY,
+                companion_key TEXT NOT NULL,
+                name          TEXT,
+                category      TEXT NOT NULL,
+                string_id     INTEGER,
+                guid          TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_companions_category ON companions(category);
+            CREATE INDEX IF NOT EXISTS idx_companions_name ON companions(name);
+
             -- Mission NPCs: NPC references aggregated across a mission's
             -- entire phase tree. For qst-source missions this is the quest's
             -- own NPCs (same as quest_npcs). For mpn-prefix missions (alliance
@@ -5467,6 +5487,58 @@ impl Database {
         Ok(inserted)
     }
 
+    /// Populate `companions` from `npc.companion.*` objects. The display name
+    /// is resolved from the strings table (id2 = string_id, id1 = 0, en-us).
+    /// `category` is the FQN segment after `npc.companion.` (a class name for
+    /// origin-class companions, or a content source otherwise); `companion_key`
+    /// is the final FQN segment. Returns rows inserted.
+    pub fn populate_companions(&self) -> Result<u64> {
+        self.flush()?;
+        const PREFIX: &str = "npc.companion.";
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut inserted = 0u64;
+        {
+            // One row per canonical npc.companion.* object, with the en-us
+            // display name left-joined so unnamed companions still appear.
+            let mut select = tx.prepare(
+                "SELECT o.fqn, o.string_id, o.guid, s.text \
+                 FROM objects o \
+                 LEFT JOIN strings s \
+                   ON s.id2 = o.string_id AND s.id1 = 0 AND s.locale = 'en-us' \
+                 WHERE o.fqn LIKE 'npc.companion.%' AND o.is_canonical = 1",
+            )?;
+            let rows = select
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, Option<i64>>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+
+            let mut insert = tx.prepare_cached(
+                "INSERT OR REPLACE INTO companions \
+                    (fqn, companion_key, name, category, string_id, guid) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for (fqn, string_id, guid, name) in rows {
+                let Some(tail) = fqn.strip_prefix(PREFIX) else {
+                    continue;
+                };
+                let category = tail.split('.').next().unwrap_or(tail).to_string();
+                let companion_key = tail.rsplit('.').next().unwrap_or(tail).to_string();
+                insert.execute(params![fqn, companion_key, name, category, string_id, guid])?;
+                inserted += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(inserted)
+    }
+
     /// Populate `mission_npcs` and `mission_rewards` by walking each mission's
     /// phase tree and aggregating extractions across every payload.
     ///
@@ -9753,5 +9825,70 @@ mod tests {
                 None
             )
         );
+    }
+
+    #[test]
+    fn populate_companions_resolves_name_and_category() {
+        let path = temp_db_path("companions");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+
+        {
+            let conn = db.conn.lock().unwrap();
+            // A class companion with a name, an mtx companion without a name,
+            // and a non-companion object that must be ignored.
+            conn.execute(
+                "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, string_id, json, is_canonical) \
+                 VALUES ('c1','s1','p1','g1','npc.companion.smuggler.corso_riggs','Npc',5001,'{}',1)",
+                [],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, string_id, json, is_canonical) \
+                 VALUES ('c2','s2','p2','g2','npc.companion.mtx.creature.akk_dog','Npc',NULL,'{}',1)",
+                [],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, string_id, json, is_canonical) \
+                 VALUES ('n1','s3','p3','g3','npc.coruscant.guard','Npc',5001,'{}',1)",
+                [],
+            ).unwrap();
+            // Name string: id2 = string_id, id1 = 0, en-us.
+            conn.execute(
+                "INSERT INTO strings (fqn, locale, id1, id2, text, version) \
+                 VALUES ('str.npc','en-us',0,5001,'Corso Riggs',1)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let n = db.populate_companions().unwrap();
+        assert_eq!(n, 2, "only the two npc.companion.* objects, not the guard");
+
+        let conn = db.conn.lock().unwrap();
+        let (key, name, category): (String, Option<String>, String) = conn
+            .query_row(
+                "SELECT companion_key, name, category FROM companions \
+                 WHERE fqn = 'npc.companion.smuggler.corso_riggs'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(key, "corso_riggs");
+        assert_eq!(name.as_deref(), Some("Corso Riggs"));
+        assert_eq!(category, "smuggler");
+
+        // Unnamed mtx companion: category from the segment after the prefix,
+        // key from the final segment, name NULL.
+        let (key2, name2, cat2): (String, Option<String>, String) = conn
+            .query_row(
+                "SELECT companion_key, name, category FROM companions \
+                 WHERE fqn = 'npc.companion.mtx.creature.akk_dog'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(key2, "akk_dog");
+        assert_eq!(name2, None);
+        assert_eq!(cat2, "mtx");
     }
 }
