@@ -534,6 +534,10 @@ fn main() -> Result<()> {
     let stat_curve_count = db.populate_stat_curve_values()?;
     println!("  Stat curve values: {} rows", stat_curve_count);
 
+    // GSF crew roster from scffCrewPrototype singleton.
+    let gsf_crew_count = db.populate_gsf_crew()?;
+    println!("  GSF crew: {} rows", gsf_crew_count);
+
     // Eighth pass: aggregate NPCs and rewards across each mission's phase tree
     db.populate_mission_data()?;
 
