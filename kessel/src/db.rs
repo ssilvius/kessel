@@ -742,19 +742,6 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_stat_curve_values_proto
                 ON stat_curve_values(prototype, curve_hash, ordinal);
 
-            -- GSF crew roster from the scffCrewPrototype singleton. One row
-            -- per crew member: the icon resource name (spvp_Crew_icon_<name>),
-            -- the bare crew_name (icon prefix stripped), and the idle
-            -- animation reference that follows it. Self-validating via the
-            -- companion names (risha, treek, zenith, dr_eckard_lokin, ...).
-            CREATE TABLE IF NOT EXISTS gsf_crew (
-                ordinal        INTEGER PRIMARY KEY,
-                icon_name      TEXT NOT NULL,
-                crew_name      TEXT NOT NULL,
-                idle_animation TEXT
-            );
-            CREATE INDEX IF NOT EXISTS idx_gsf_crew_name ON gsf_crew(crew_name);
-
             -- Mission NPCs: NPC references aggregated across a mission's
             -- entire phase tree. For qst-source missions this is the quest's
             -- own NPCs (same as quest_npcs). For mpn-prefix missions (alliance
@@ -5426,47 +5413,6 @@ impl Database {
         Ok(inserted)
     }
 
-    /// Populate `gsf_crew` from the `scffCrewPrototype` singleton. Each crew
-    /// member is an `spvp_Crew_icon_<name>` resource string followed by its
-    /// idle-animation reference. The bare `crew_name` is the icon string with
-    /// the `spvp_Crew_icon_` prefix stripped. Returns rows inserted.
-    pub fn populate_gsf_crew(&self) -> Result<u64> {
-        self.flush()?;
-        const ICON_PREFIX: &str = "spvp_Crew_icon_";
-        let Some(payload) = self.load_singleton_payload("scffCrewPrototype") else {
-            return Ok(0);
-        };
-
-        // Strings in payload order. A crew record is an icon string; its idle
-        // animation is the next string, unless that next string is itself the
-        // start of another crew record.
-        let strings = extract_ascii_strings(&payload, 4);
-
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-        let mut inserted = 0u64;
-        {
-            let mut insert = tx.prepare_cached(
-                "INSERT OR REPLACE INTO gsf_crew (ordinal, icon_name, crew_name, idle_animation) \
-                 VALUES (?1, ?2, ?3, ?4)",
-            )?;
-            let mut ordinal = 0i64;
-            for (i, s) in strings.iter().enumerate() {
-                let Some(crew_name) = s.strip_prefix(ICON_PREFIX) else {
-                    continue;
-                };
-                let idle_animation = strings
-                    .get(i + 1)
-                    .filter(|next| !next.starts_with(ICON_PREFIX));
-                insert.execute(params![ordinal, s, crew_name, idle_animation])?;
-                ordinal += 1;
-                inserted += 1;
-            }
-        }
-        tx.commit()?;
-        Ok(inserted)
-    }
-
     /// Populate `mission_npcs` and `mission_rewards` by walking each mission's
     /// phase tree and aggregating extractions across every payload.
     ///
@@ -9691,67 +9637,5 @@ mod tests {
             )
             .unwrap();
         assert_eq!((ord, val), (0, 100.0));
-    }
-
-    #[test]
-    fn populate_gsf_crew_pairs_icon_with_animation() {
-        let path = temp_db_path("gsf_crew");
-        let db = Database::with_grammar(&path, None).unwrap();
-        db.init_schema().unwrap();
-
-        // Strings separated by non-printable bytes. risha is followed by an
-        // animation; treek is followed by another icon (no animation); zenith
-        // is the last string (no animation).
-        let mut payload = Vec::new();
-        for s in [
-            "spvp_Crew_icon_risha",
-            "dl_ponder_07",
-            "spvp_Crew_icon_treek",
-            "spvp_Crew_icon_zenith",
-        ] {
-            payload.push(0x00);
-            payload.extend_from_slice(s.as_bytes());
-        }
-        payload.push(0x00);
-
-        seed_singleton(&db, "scffCrewPrototype", &payload);
-        let n = db.populate_gsf_crew().unwrap();
-        assert_eq!(n, 3);
-
-        let conn = db.conn.lock().unwrap();
-        let row = |ord: i64| -> (String, String, Option<String>) {
-            conn.query_row(
-                "SELECT icon_name, crew_name, idle_animation FROM gsf_crew WHERE ordinal = ?1",
-                params![ord],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .unwrap()
-        };
-        assert_eq!(
-            row(0),
-            (
-                "spvp_Crew_icon_risha".to_string(),
-                "risha".to_string(),
-                Some("dl_ponder_07".to_string())
-            )
-        );
-        // treek's next string is another icon -> no animation.
-        assert_eq!(
-            row(1),
-            (
-                "spvp_Crew_icon_treek".to_string(),
-                "treek".to_string(),
-                None
-            )
-        );
-        // zenith is last -> no animation.
-        assert_eq!(
-            row(2),
-            (
-                "spvp_Crew_icon_zenith".to_string(),
-                "zenith".to_string(),
-                None
-            )
-        );
     }
 }
