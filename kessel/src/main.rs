@@ -511,9 +511,6 @@ fn main() -> Result<()> {
     let direct_npc_count = db.populate_quest_npcs_direct()?;
     println!("  Direct quest->npc edges: {}", direct_npc_count);
 
-    // Fourth pass: extract quest_reward_* variable names from quest payloads
-    db.populate_quest_rewards()?;
-
     // Fifth pass: extract spawn runtime IDs from SPN triples (combat-log bridge)
     db.populate_spawn_runtime_ids()?;
 
@@ -689,12 +686,6 @@ fn main() -> Result<()> {
     // per-property byte-layout decode work (deferred).
     let npc_details_count = db.populate_npc_details_typed()?;
     println!("  NPC details typed: {}", npc_details_count);
-
-    // Item typed details (issue #177). Copies rarity from item_details
-    // (FQN classifier); binding + stack_size_max NULL pending per-property
-    // byte decode.
-    let item_schema_count = db.populate_item_schema_details_typed()?;
-    println!("  Item schema details typed: {}", item_schema_count);
 
     // Schematic typed details (issue #178). FQN-derived profession via
     // token scan. tier + training_cost deferred (per-property byte decode).
