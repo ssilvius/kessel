@@ -523,6 +523,11 @@ fn main() -> Result<()> {
     // Seventh pass: structure conquest objectives by category and cadence
     db.populate_conquest_objectives()?;
 
+    // Conquest event roster from cnqConquestInfoPrototype singleton (90
+    // events with names + planet codes).
+    let conquest_event_count = db.populate_conquest_events()?;
+    println!("  Conquest events: {} rows", conquest_event_count);
+
     // Eighth pass: aggregate NPCs and rewards across each mission's phase tree
     db.populate_mission_data()?;
 

@@ -674,6 +674,38 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_conquest_objectives_subcategory ON conquest_objectives(subcategory);
             CREATE INDEX IF NOT EXISTS idx_conquest_objectives_cadence ON conquest_objectives(cadence);
 
+            -- Conquest events from cnqConquestInfoPrototype singleton. One
+            -- row per CF40 8C7DAFE5 record (90 events total). Each record:
+            --   event_name (length-prefixed ASCII at marker tail)
+            --   planet_code (CC 0BAC73FD + "_pla_<planet>" ASCII)
+            --   record_size (bytes from this 8C7DAFE5 to the next one)
+            --
+            -- record_size is bimodal: single-planet invasion records cluster
+            -- at 68-80 bytes; themed/special events (Yavin, Onderon, Iokath,
+            -- Rishi, Ossus, CZ198, Ruhnuk, Meksha) cluster at 7700-8400 bytes
+            -- with many inner sub-bonuses and CFE0 references. The two
+            -- clusters are separated by a ~7400-byte empty gap. Observed
+            -- split: 74 invasion / 16 themed.
+            --
+            -- CAVEAT: the FINAL record has no following marker, so its
+            -- record_size is measured to end-of-payload and therefore absorbs
+            -- the singleton's trailing top-level CFE0 reference array (~250
+            -- extra bytes). event_kind is classified by a threshold placed
+            -- inside the bimodal gap so this inflation cannot mis-tag the
+            -- last event (see THEMED_SIZE_THRESHOLD).
+            --
+            -- Complements conquest_objectives (806 weekly tasks) by giving
+            -- the actual event roster the tasks group under.
+            CREATE TABLE IF NOT EXISTS conquest_events (
+                ordinal      INTEGER PRIMARY KEY,
+                event_name   TEXT NOT NULL,
+                planet_code  TEXT,
+                event_kind   TEXT NOT NULL,    -- 'invasion' | 'themed'
+                record_size  INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_conquest_events_name ON conquest_events(event_name);
+            CREATE INDEX IF NOT EXISTS idx_conquest_events_planet ON conquest_events(planet_code);
+
             -- Mission NPCs: NPC references aggregated across a mission's
             -- entire phase tree. For qst-source missions this is the quest's
             -- own NPCs (same as quest_npcs). For mpn-prefix missions (alliance
@@ -4422,6 +4454,35 @@ fn parse_conquest_fqn(fqn: &str) -> (String, Option<String>, Option<String>) {
     (category, subcategory, cadence)
 }
 
+/// Search a record's bytes for the CC <cc_id> marker, then extract the
+/// trailing length-prefixed `_pla_<planet>` ASCII string. Used by the
+/// conquest events populator.
+fn find_planet_code_after_cc(record: &[u8], cc_id: &[u8; 4]) -> Option<String> {
+    let mut i = 0;
+    while i + 5 <= record.len() {
+        if record[i] == 0xCC && record[i + 1..i + 5] == *cc_id {
+            // Scan ahead for the `_pla_<planet>` ASCII run.
+            let tail = &record[i + 5..];
+            for j in 0..tail.len().saturating_sub(5) {
+                if &tail[j..j + 5] == b"_pla_" {
+                    let mut end = j + 5;
+                    while end < tail.len() {
+                        let b = tail[end];
+                        if !(b.is_ascii_alphanumeric() || b == b'_') {
+                            break;
+                        }
+                        end += 1;
+                    }
+                    return std::str::from_utf8(&tail[j..end]).ok().map(String::from);
+                }
+            }
+            return None;
+        }
+        i += 1;
+    }
+    None
+}
+
 /// Derive a structured GSF component identifier from an art file path
 /// like `art/dynamic/space_pvp/ships/imp_scout/sweapon/imp_scout_a_sweapon_03.gr2`.
 ///
@@ -5029,6 +5090,106 @@ impl Database {
         drop(stmt);
         tx.commit()?;
         Ok(count)
+    }
+
+    /// Populate `conquest_events` from the `cnqConquestInfoPrototype` singleton.
+    /// Each event is a CF40 8C7DAFE5 record: marker + length-prefixed ASCII
+    /// event name + inner sub-properties + a CC 0BAC73FD entry whose tail is
+    /// a length-prefixed `_pla_<planet>` string.
+    ///
+    /// 90 records total. record_size is bimodal: single-planet invasions
+    /// cluster at 68-80 bytes; themed/special events (Yavin, Onderon, Iokath,
+    /// Rishi, etc.) cluster at 7700-8400 bytes with many sub-bonuses. A
+    /// ~7400-byte empty gap separates the clusters, so any threshold inside
+    /// the gap classifies cleanly. Observed split: 74 invasion / 16 themed.
+    ///
+    /// The threshold sits in that gap (not just above invasion sizes) on
+    /// purpose: the final record has no following marker, so its measured
+    /// size runs to end-of-payload and absorbs the singleton's trailing CFE0
+    /// reference array. A tight threshold (e.g. 200) would mis-tag that one
+    /// inflated invasion record as themed; a gap-centered threshold cannot.
+    ///
+    /// Returns rows inserted.
+    pub fn populate_conquest_events(&self) -> Result<u64> {
+        self.flush()?;
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
+        const EVENT_MARKER: [u8; 4] = [0x8C, 0x7D, 0xAF, 0xE5];
+        const PLANET_CC: [u8; 4] = [0x0B, 0xAC, 0x73, 0xFD];
+        // Centered in the ~7400-byte gap between the invasion cluster (<=80B)
+        // and the themed cluster (>=7700B). Robust to last-record inflation.
+        const THEMED_SIZE_THRESHOLD: usize = 1000;
+
+        let payload: Option<Vec<u8>> = {
+            let conn = self.conn.lock().unwrap();
+            let row: Option<String> = conn
+                .query_row(
+                    "SELECT payload_b64 FROM singletons WHERE fqn = 'cnqConquestInfoPrototype'",
+                    [],
+                    |r| r.get(0),
+                )
+                .ok();
+            row.and_then(|b64| BASE64.decode(b64).ok())
+        };
+        let Some(payload) = payload else {
+            return Ok(0);
+        };
+
+        // Find every 8C7DAFE5 marker position.
+        let mut positions: Vec<usize> = Vec::new();
+        let mut i = 0;
+        while i + 9 <= payload.len() {
+            if payload[i] == 0xCF
+                && payload[i + 1] == 0x40
+                && payload[i + 2] == 0x00
+                && payload[i + 3] == 0x00
+                && payload[i + 5..i + 9] == EVENT_MARKER
+            {
+                positions.push(i);
+                i += 9;
+            } else {
+                i += 1;
+            }
+        }
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut inserted = 0u64;
+        {
+            let mut insert = tx.prepare_cached(
+                "INSERT OR REPLACE INTO conquest_events \
+                    (ordinal, event_name, planet_code, event_kind, record_size) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for (ord, &pos) in positions.iter().enumerate() {
+                let end = positions.get(ord + 1).copied().unwrap_or(payload.len());
+                let record = &payload[pos..end];
+
+                // Event name: the first printable ASCII run of >= 4 chars
+                // after the 9-byte CF40 marker. The name is preceded by a
+                // `06 <len>` string tag, but we take the first qualifying run
+                // rather than trust the length prefix -- robust against the
+                // tag bytes themselves being non-printable separators.
+                let name = extract_ascii_strings(&record[9..], 4).into_iter().next();
+
+                // Planet code: find CC 0BAC73FD then the trailing
+                // length-prefixed `_pla_<planet>` ASCII string.
+                let planet = find_planet_code_after_cc(record, &PLANET_CC);
+
+                if let Some(name) = name {
+                    let kind = if record.len() >= THEMED_SIZE_THRESHOLD {
+                        "themed"
+                    } else {
+                        "invasion"
+                    };
+                    insert
+                        .execute(params![ord as i64, name, planet, kind, record.len() as i64,])?;
+                    inserted += 1;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(inserted)
     }
 
     /// Populate `mission_npcs` and `mission_rewards` by walking each mission's
@@ -8961,5 +9122,124 @@ mod tests {
         ] {
             assert!(names.contains(t), "missing typed-details table: {t}");
         }
+    }
+
+    #[test]
+    fn find_planet_code_after_cc_reads_pla_suffix() {
+        // CC marker + cc_id, then a `_pla_<planet>` run terminated by a
+        // non-[alnum|underscore] byte.
+        let cc = [0x0B, 0xAC, 0x73, 0xFD];
+        let mut record = vec![0xCC, 0x0B, 0xAC, 0x73, 0xFD];
+        record.extend_from_slice(b"\x05x_pla_alderaan\x00more");
+        assert_eq!(
+            find_planet_code_after_cc(&record, &cc),
+            Some("_pla_alderaan".to_string())
+        );
+    }
+
+    #[test]
+    fn find_planet_code_after_cc_returns_none_without_marker() {
+        let cc = [0x0B, 0xAC, 0x73, 0xFD];
+        // CC byte present but the following four bytes are not the cc_id.
+        let record = vec![0xCC, 0x00, 0x00, 0x00, 0x00, b'_', b'p', b'l', b'a', b'_'];
+        assert_eq!(find_planet_code_after_cc(&record, &cc), None);
+    }
+
+    #[test]
+    fn find_planet_code_after_cc_returns_none_when_no_pla_run() {
+        let cc = [0x0B, 0xAC, 0x73, 0xFD];
+        let mut record = vec![0xCC, 0x0B, 0xAC, 0x73, 0xFD];
+        record.extend_from_slice(b"no planet here");
+        assert_eq!(find_planet_code_after_cc(&record, &cc), None);
+    }
+
+    #[test]
+    fn populate_conquest_events_classifies_and_resists_last_record_inflation() {
+        let path = temp_db_path("conquest_events");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+
+        // One synthetic event record: 9-byte CF40 8C7DAFE5 marker, then a
+        // `06 <len> <name>` string, then a CC 0BAC73FD planet block ending in
+        // a length-prefixed `_pla_<planet>` run with a non-printable
+        // terminator. Mirrors the real cnqConquestInfoPrototype layout.
+        fn event_record(name: &str, planet: &str) -> Vec<u8> {
+            let mut r = vec![0xCF, 0x40, 0x00, 0x00, 0x00, 0x8C, 0x7D, 0xAF, 0xE5];
+            r.push(0x06);
+            r.push(name.len() as u8);
+            r.extend_from_slice(name.as_bytes());
+            r.extend_from_slice(&[0xCC, 0x0B, 0xAC, 0x73, 0xFD]);
+            let pla = format!("_pla_{planet}");
+            r.push(0x06);
+            r.push(pla.len() as u8);
+            r.extend_from_slice(pla.as_bytes());
+            r.push(0x00);
+            r
+        }
+
+        let mut payload = Vec::new();
+        // Record A: small single-planet invasion.
+        payload.extend_from_slice(&event_record("Alpha", "alpha"));
+        // Record B: themed -- padded past the 1000-byte gap threshold.
+        let b_start = payload.len();
+        payload.extend_from_slice(&event_record("Beta", "beta"));
+        payload.resize(b_start + 1200, 0x00);
+        // Record C: small invasion, but it is the LAST record and is trailed
+        // by ~280 bytes mimicking the singleton's top-level CFE0 array. Its
+        // measured size (~320) exceeds the old 200 threshold yet stays well
+        // inside the bimodal gap -- so it must still classify as invasion.
+        payload.extend_from_slice(&event_record("Gamma", "gamma"));
+        payload.resize(payload.len() + 280, 0x00);
+
+        {
+            use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO singletons \
+                    (fqn, payload_size, payload_b64, string_count, cf_e0_count, cf_40_count, header_hex) \
+                 VALUES ('cnqConquestInfoPrototype', ?1, ?2, 0, 0, 3, '')",
+                params![payload.len() as i64, BASE64.encode(&payload)],
+            )
+            .unwrap();
+        }
+
+        let inserted = db.populate_conquest_events().unwrap();
+        assert_eq!(inserted, 3);
+
+        let conn = db.conn.lock().unwrap();
+        let row = |ord: i64| -> (String, String, Option<String>, i64) {
+            conn.query_row(
+                "SELECT event_name, event_kind, planet_code, record_size \
+                 FROM conquest_events WHERE ordinal = ?1",
+                params![ord],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap()
+        };
+
+        let a = row(0);
+        assert_eq!(a.0, "Alpha");
+        assert_eq!(a.1, "invasion");
+        assert_eq!(a.2.as_deref(), Some("_pla_alpha"));
+
+        let b = row(1);
+        assert_eq!(b.0, "Beta");
+        assert_eq!(b.1, "themed");
+
+        // The crux: an inflated final invasion record must not become themed.
+        let c = row(2);
+        assert_eq!(c.0, "Gamma");
+        assert_eq!(c.1, "invasion");
+        assert_eq!(c.2.as_deref(), Some("_pla_gamma"));
+        assert!(
+            c.3 > 200,
+            "last record size {} must exceed the old 200 threshold to guard the fix",
+            c.3
+        );
+        assert!(
+            c.3 < 1000,
+            "last record size {} must stay within the gap",
+            c.3
+        );
     }
 }
