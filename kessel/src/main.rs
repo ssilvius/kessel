@@ -528,6 +528,12 @@ fn main() -> Result<()> {
     let conquest_event_count = db.populate_conquest_events()?;
     println!("  Conquest events: {} rows", conquest_event_count);
 
+    // Armor-class taxonomy + raw combat stat curves from the cbt* singletons.
+    let armor_class_count = db.populate_armor_classes()?;
+    println!("  Armor classes: {} rows", armor_class_count);
+    let stat_curve_count = db.populate_stat_curve_values()?;
+    println!("  Stat curve values: {} rows", stat_curve_count);
+
     // Eighth pass: aggregate NPCs and rewards across each mission's phase tree
     db.populate_mission_data()?;
 

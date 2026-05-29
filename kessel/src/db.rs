@@ -706,6 +706,42 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_conquest_events_name ON conquest_events(event_name);
             CREATE INDEX IF NOT EXISTS idx_conquest_events_planet ON conquest_events(planet_code);
 
+            -- Armor-class taxonomy from the cbtArmorTablePrototype singleton.
+            -- One row per CF40 record: a small code byte and the class name.
+            -- The canonical list of armor/equipment classes (medium,
+            -- heavy_droid, focus, light, generator, heavy, shield_force,
+            -- shield, adaptive). Self-validating via the names. The CFE0 refs
+            -- in each record are short indexed refs, not 8-byte GUIDs, so they
+            -- are intentionally not surfaced here.
+            CREATE TABLE IF NOT EXISTS armor_classes (
+                ordinal  INTEGER PRIMARY KEY,
+                code     INTEGER NOT NULL,
+                name     TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_armor_classes_name ON armor_classes(name);
+
+            -- Raw combat stat-curve values from the cbtShieldPerLevel
+            -- singleton. One row per typed float (0x04 tag + f32 LE) found
+            -- inside the prototype's CF40 records, in payload order, grouped
+            -- by the enclosing CF40 field-hash.
+            --
+            -- These are LITERAL stored values with NO semantic claim about
+            -- level or stat: the curve is 2D (an undecoded segment key x
+            -- level), so this table intentionally records (prototype,
+            -- curve_hash, ordinal, value) only. Downstream (huttspawn) renders
+            -- them as prose/charts; series separation is by curve_hash. The
+            -- prototype column is retained so sibling per-level curves can be
+            -- added later without a schema change.
+            CREATE TABLE IF NOT EXISTS stat_curve_values (
+                id          INTEGER PRIMARY KEY,
+                prototype   TEXT NOT NULL,
+                curve_hash  TEXT,
+                ordinal     INTEGER NOT NULL,
+                value       REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_stat_curve_values_proto
+                ON stat_curve_values(prototype, curve_hash, ordinal);
+
             -- Mission NPCs: NPC references aggregated across a mission's
             -- entire phase tree. For qst-source missions this is the quest's
             -- own NPCs (same as quest_npcs). For mpn-prefix missions (alliance
@@ -4483,6 +4519,70 @@ fn find_planet_code_after_cc(record: &[u8], cc_id: &[u8; 4]) -> Option<String> {
     None
 }
 
+/// Find every `cf 40 00 00` GOM record-marker offset in a payload. Advances
+/// past each 4-byte hit so overlapping matches are not double-counted.
+fn cf40_marker_positions(payload: &[u8]) -> Vec<usize> {
+    let mut positions = Vec::new();
+    let mut i = 0;
+    while i + 4 <= payload.len() {
+        if payload[i] == 0xCF
+            && payload[i + 1] == 0x40
+            && payload[i + 2] == 0
+            && payload[i + 3] == 0
+        {
+            positions.push(i);
+            i += 4;
+        } else {
+            i += 1;
+        }
+    }
+    positions
+}
+
+/// Find the byte sequence `prefix` in `record`, then read the length-prefixed
+/// ASCII string that follows it (`<prefix><len: u8><len bytes>`). Returns None
+/// if the prefix is absent, the length runs past the slice, or the bytes are
+/// not valid UTF-8.
+fn find_length_prefixed_string(record: &[u8], prefix: &[u8]) -> Option<String> {
+    if prefix.is_empty() || record.len() < prefix.len() {
+        return None;
+    }
+    let limit = record.len() - prefix.len();
+    for i in 0..=limit {
+        if &record[i..i + prefix.len()] == prefix {
+            let len_pos = i + prefix.len();
+            let len = *record.get(len_pos)? as usize;
+            let start = len_pos + 1;
+            let end = start + len;
+            if end <= record.len() {
+                return std::str::from_utf8(&record[start..end])
+                    .ok()
+                    .map(String::from);
+            }
+            return None;
+        }
+    }
+    None
+}
+
+/// Extract every typed float (`04` tag immediately followed by an f32 LE) from
+/// a GOM record body, in order. Skips past each consumed float so bytes inside
+/// a float value are not re-scanned as a new tag.
+fn typed_floats_in(body: &[u8]) -> Vec<f32> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 5 <= body.len() {
+        if body[i] == 0x04 {
+            let bytes: [u8; 4] = body[i + 1..i + 5].try_into().unwrap();
+            out.push(f32::from_le_bytes(bytes));
+            i += 5;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Derive a structured GSF component identifier from an art file path
 /// like `art/dynamic/space_pvp/ships/imp_scout/sweapon/imp_scout_a_sweapon_03.gr2`.
 ///
@@ -5184,6 +5284,127 @@ impl Database {
                     };
                     insert
                         .execute(params![ord as i64, name, planet, kind, record.len() as i64,])?;
+                    inserted += 1;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(inserted)
+    }
+
+    /// Load and base64-decode a singleton payload by FQN. Returns None when
+    /// the singleton is absent or its base64 fails to decode. Shared by the
+    /// per-singleton prototype decoders.
+    fn load_singleton_payload(&self, fqn: &str) -> Option<Vec<u8>> {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        let conn = self.conn.lock().unwrap();
+        let b64: Option<String> = conn
+            .query_row(
+                "SELECT payload_b64 FROM singletons WHERE fqn = ?1",
+                [fqn],
+                |r| r.get(0),
+            )
+            .ok();
+        drop(conn);
+        b64.and_then(|b| BASE64.decode(b).ok())
+    }
+
+    /// Populate `armor_classes` from the `cbtArmorTablePrototype` singleton.
+    /// Each CF40 record carries a `02 <code>` byte and a `03 06 <len> <name>`
+    /// length-prefixed class name. Returns rows inserted.
+    pub fn populate_armor_classes(&self) -> Result<u64> {
+        self.flush()?;
+        let Some(payload) = self.load_singleton_payload("cbtArmorTablePrototype") else {
+            return Ok(0);
+        };
+
+        // CF40 record positions.
+        let positions = cf40_marker_positions(&payload);
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut inserted = 0u64;
+        {
+            let mut insert = tx.prepare_cached(
+                "INSERT OR REPLACE INTO armor_classes (ordinal, code, name) VALUES (?1, ?2, ?3)",
+            )?;
+            for (ord, &pos) in positions.iter().enumerate() {
+                let end = positions.get(ord + 1).copied().unwrap_or(payload.len());
+                let record = &payload[pos..end];
+
+                // Name: the length-prefixed string after the `03 06` tag.
+                let name = find_length_prefixed_string(record, &[0x03, 0x06]);
+                // Code: the byte after the leading `02` tag (record[10]).
+                let code = record.get(10).copied();
+
+                if let (Some(name), Some(code)) = (name, code) {
+                    insert.execute(params![ord as i64, code as i64, name])?;
+                    inserted += 1;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(inserted)
+    }
+
+    /// Populate `stat_curve_values` from the `cbtShieldPerLevel` singleton.
+    /// It is a multi-record, float-dense table: each CF40 record carries one
+    /// or more typed floats (`04` tag + f32 LE). Every float is recorded in
+    /// payload order, grouped by the enclosing CF40 field-hash.
+    ///
+    /// These are LITERAL stored values with no level/stat semantics: the
+    /// curve is 2D (an undecoded segment key x level), so this is an honest
+    /// raw dump for downstream prose/chart rendering, separated by curve_hash.
+    ///
+    /// The other per-level singletons (cbtArmorPerLevel, cbtStandardRatingInfo,
+    /// chrGearScorePrototype) are single-record nested structures whose typed
+    /// stream is not cleanly float-only; they need dedicated grammar work and
+    /// are intentionally deferred so this table stays noise-free.
+    ///
+    /// Returns rows inserted.
+    pub fn populate_stat_curve_values(&self) -> Result<u64> {
+        self.flush()?;
+
+        const PROTOTYPE: &str = "cbtShieldPerLevel";
+        let Some(payload) = self.load_singleton_payload(PROTOTYPE) else {
+            return Ok(0);
+        };
+
+        let positions = cf40_marker_positions(&payload);
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut inserted = 0u64;
+        {
+            // Idempotent on re-run: clear this prototype's rows first. The
+            // table has a surrogate PK with no natural-key collision, so a
+            // plain re-insert would otherwise accumulate duplicates when
+            // kessel runs against an existing output DB.
+            tx.execute(
+                "DELETE FROM stat_curve_values WHERE prototype = ?1",
+                params![PROTOTYPE],
+            )?;
+            let mut insert = tx.prepare_cached(
+                "INSERT INTO stat_curve_values (prototype, curve_hash, ordinal, value) \
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            // Running ordinal per curve_hash.
+            let mut ordinals: std::collections::HashMap<String, i64> =
+                std::collections::HashMap::new();
+            for (idx, &pos) in positions.iter().enumerate() {
+                let end = positions.get(idx + 1).copied().unwrap_or(payload.len());
+                let record = &payload[pos..end];
+                // Field-hash: the 5 bytes after the `cf 40 00 00` marker.
+                let curve_hash = record
+                    .get(4..9)
+                    .map(|h| h.iter().map(|b| format!("{b:02x}")).collect::<String>());
+                // Every `04 <f32>` typed float in the record body (after the
+                // 9-byte marker+hash).
+                for value in typed_floats_in(&record[9.min(record.len())..]) {
+                    let key = curve_hash.clone().unwrap_or_default();
+                    let ord = ordinals.entry(key).or_insert(0);
+                    insert.execute(params![PROTOTYPE, curve_hash, *ord, value as f64])?;
+                    *ord += 1;
                     inserted += 1;
                 }
             }
@@ -8017,6 +8238,20 @@ mod tests {
         std::env::temp_dir().join(format!("kessel_test_{}_{}_{}.sqlite", label, pid, nanos))
     }
 
+    /// Seed a `singletons` row with a raw payload (base64-encoded) for the
+    /// per-singleton decoder tests.
+    fn seed_singleton(db: &Database, fqn: &str, payload: &[u8]) {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO singletons \
+                (fqn, payload_size, payload_b64, string_count, cf_e0_count, cf_40_count, header_hex) \
+             VALUES (?1, ?2, ?3, 0, 0, 0, '')",
+            params![fqn, payload.len() as i64, BASE64.encode(payload)],
+        )
+        .unwrap();
+    }
+
     #[test]
     fn populate_origins_inserts_eight_canonical_rows() {
         let path = temp_db_path("origins");
@@ -9241,5 +9476,166 @@ mod tests {
             "last record size {} must stay within the gap",
             c.3
         );
+    }
+
+    #[test]
+    fn cf40_marker_positions_finds_all_markers() {
+        let mut p = vec![0x00, 0x00];
+        p.extend_from_slice(&[0xCF, 0x40, 0x00, 0x00, 0xAA]); // marker at 2
+        p.extend_from_slice(&[0x11, 0x22]);
+        p.extend_from_slice(&[0xCF, 0x40, 0x00, 0x00, 0xBB]); // marker at 9
+        assert_eq!(cf40_marker_positions(&p), vec![2, 9]);
+    }
+
+    #[test]
+    fn find_length_prefixed_string_reads_after_prefix() {
+        // ... 03 06 06 "medium" ...
+        let mut r = vec![0x01, 0x02];
+        r.extend_from_slice(&[0x03, 0x06, 0x06]);
+        r.extend_from_slice(b"medium");
+        r.push(0xCF);
+        assert_eq!(
+            find_length_prefixed_string(&r, &[0x03, 0x06]),
+            Some("medium".to_string())
+        );
+    }
+
+    #[test]
+    fn find_length_prefixed_string_none_when_length_overruns() {
+        let r = vec![0x03, 0x06, 0x40, b'x', b'y']; // len 0x40 but only 2 bytes follow
+        assert_eq!(find_length_prefixed_string(&r, &[0x03, 0x06]), None);
+        assert_eq!(find_length_prefixed_string(&r, &[0x09, 0x09]), None);
+    }
+
+    #[test]
+    fn find_length_prefixed_string_none_when_record_shorter_than_prefix() {
+        // Must not panic when the record is shorter than the prefix.
+        assert_eq!(find_length_prefixed_string(&[0x03], &[0x03, 0x06]), None);
+        assert_eq!(find_length_prefixed_string(&[], &[0x03, 0x06]), None);
+    }
+
+    #[test]
+    fn typed_floats_in_extracts_and_skips_consumed_bytes() {
+        // 04 <1.0> 01  04 <2.0> 0a
+        let mut b = vec![0x04];
+        b.extend_from_slice(&1.0f32.to_le_bytes());
+        b.push(0x01);
+        b.push(0x04);
+        b.extend_from_slice(&2.0f32.to_le_bytes());
+        b.push(0x0a);
+        assert_eq!(typed_floats_in(&b), vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn populate_armor_classes_decodes_code_and_name() {
+        let path = temp_db_path("armor_classes");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+
+        // Two records: marker(9) + 02 <code> 01 01 + 03 06 <len> <name>.
+        fn armor_record(hash5: &[u8; 5], code: u8, name: &str) -> Vec<u8> {
+            let mut r = vec![0xCF, 0x40, 0x00, 0x00];
+            r.extend_from_slice(hash5);
+            r.extend_from_slice(&[0x02, code, 0x01, 0x01]);
+            r.extend_from_slice(&[0x03, 0x06, name.len() as u8]);
+            r.extend_from_slice(name.as_bytes());
+            r
+        }
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&armor_record(
+            &[0x48, 0xa2, 0xf9, 0x99, 0xa3],
+            0x5b,
+            "medium",
+        ));
+        payload.extend_from_slice(&armor_record(
+            &[0x48, 0xa2, 0xf9, 0x99, 0xa3],
+            0x5a,
+            "light",
+        ));
+
+        seed_singleton(&db, "cbtArmorTablePrototype", &payload);
+        let n = db.populate_armor_classes().unwrap();
+        assert_eq!(n, 2);
+
+        let conn = db.conn.lock().unwrap();
+        let (code, name): (i64, String) = conn
+            .query_row(
+                "SELECT code, name FROM armor_classes WHERE ordinal = 0",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(code, 0x5b);
+        assert_eq!(name, "medium");
+        let light: String = conn
+            .query_row(
+                "SELECT name FROM armor_classes WHERE ordinal = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(light, "light");
+    }
+
+    #[test]
+    fn populate_stat_curve_values_groups_floats_by_curve_hash() {
+        let path = temp_db_path("stat_curves");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+
+        // Two 17-byte shield records sharing one hash, then one with another.
+        fn shield_record(hash5: &[u8; 5], value: f32, idx: u8) -> Vec<u8> {
+            let mut r = vec![0xCF, 0x40, 0x00, 0x00];
+            r.extend_from_slice(hash5);
+            r.push(0x04);
+            r.extend_from_slice(&value.to_le_bytes());
+            r.extend_from_slice(&[idx, 0x0a, 0x01]);
+            r
+        }
+        let h1 = [0x27, 0x9b, 0x23, 0xb1, 0x2e];
+        let h2 = [0x27, 0x9b, 0x23, 0xb1, 0x2f];
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&shield_record(&h1, 42.0, 0x02));
+        payload.extend_from_slice(&shield_record(&h1, 45.0, 0x03));
+        payload.extend_from_slice(&shield_record(&h2, 100.0, 0x02));
+
+        seed_singleton(&db, "cbtShieldPerLevel", &payload);
+        let n = db.populate_stat_curve_values().unwrap();
+        assert_eq!(n, 3);
+
+        // Idempotent on re-run: a second populate must not duplicate rows.
+        db.populate_stat_curve_values().unwrap();
+        {
+            let conn = db.conn.lock().unwrap();
+            let total: i64 = conn
+                .query_row("SELECT COUNT(*) FROM stat_curve_values", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(total, 3, "re-run must not duplicate stat_curve_values rows");
+        }
+
+        let conn = db.conn.lock().unwrap();
+        // First hash: ordinals 0,1 with values 42,45.
+        let vals: Vec<(i64, f64)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT ordinal, value FROM stat_curve_values \
+                     WHERE curve_hash = '279b23b12e' ORDER BY ordinal",
+                )
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        assert_eq!(vals, vec![(0, 42.0), (1, 45.0)]);
+        // Second hash restarts ordinal at 0.
+        let (ord, val): (i64, f64) = conn
+            .query_row(
+                "SELECT ordinal, value FROM stat_curve_values WHERE curve_hash = '279b23b12f'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((ord, val), (0, 100.0));
     }
 }
