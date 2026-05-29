@@ -538,6 +538,10 @@ fn main() -> Result<()> {
     let gsf_crew_count = db.populate_gsf_crew()?;
     println!("  GSF crew: {} rows", gsf_crew_count);
 
+    // Companion roster from npc.companion.* objects (name + category).
+    let companion_count = db.populate_companions()?;
+    println!("  Companions: {} rows", companion_count);
+
     // Eighth pass: aggregate NPCs and rewards across each mission's phase tree
     db.populate_mission_data()?;
 
