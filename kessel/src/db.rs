@@ -706,6 +706,27 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_conquest_events_name ON conquest_events(event_name);
             CREATE INDEX IF NOT EXISTS idx_conquest_events_planet ON conquest_events(planet_code);
 
+            -- Weekly conquest rotation from the cnqSchedulePrototype singleton.
+            -- 496 consecutive weekly entries: each maps a week_ordinal to the
+            -- conquest event scheduled that week, resolved by matching the
+            -- schedule's event GUID against the conquest event records in
+            -- cnqConquestInfoPrototype (event_ordinal aligns with
+            -- conquest_events.ordinal; event_name denormalized for convenience).
+            --
+            -- week_ordinal is a RELATIVE index (1001..1496), not a calendar
+            -- date: the schedule carries no epoch anchor, so this is the
+            -- rotation order. Absolute dates require pinning one known week
+            -- downstream. event_ordinal/event_name are NULL when the
+            -- scheduled GUID does not resolve to an event record.
+            CREATE TABLE IF NOT EXISTS conquest_schedule (
+                week_ordinal  INTEGER PRIMARY KEY,
+                event_guid    TEXT NOT NULL,
+                event_ordinal INTEGER,
+                event_name    TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_conquest_schedule_event
+                ON conquest_schedule(event_ordinal);
+
             -- Armor-class taxonomy from the cbtArmorTablePrototype singleton.
             -- One row per CF40 record: a small code byte and the class name.
             -- The canonical list of armor/equipment classes (medium,
@@ -5325,6 +5346,120 @@ impl Database {
         Ok(inserted)
     }
 
+    /// Populate `conquest_schedule` from the `cnqSchedulePrototype` singleton:
+    /// the weekly conquest rotation. Each CF40 record (after the header)
+    /// carries an event reference (`cf`/`c7` tag + 8-byte GUID) and a week
+    /// ordinal encoded as a big-endian u16 immediately after the constant
+    /// `cb 01 ee fe bd 02 c9` anchor.
+    ///
+    /// The event GUID is resolved to a conquest event by locating those bytes
+    /// inside `cnqConquestInfoPrototype` and mapping the offset to the
+    /// enclosing CF40 8C7DAFE5 event record -- the same enumeration as
+    /// `populate_conquest_events`, so `event_ordinal` aligns with
+    /// `conquest_events.ordinal`. Returns rows inserted.
+    pub fn populate_conquest_schedule(&self) -> Result<u64> {
+        self.flush()?;
+        const EVENT_MARKER: [u8; 4] = [0x8C, 0x7D, 0xAF, 0xE5];
+        // Constant preamble in each schedule record, followed by the BE u16 week.
+        const WEEK_ANCHOR: [u8; 7] = [0xCB, 0x01, 0xEE, 0xFE, 0xBD, 0x02, 0xC9];
+
+        let Some(info) = self.load_singleton_payload("cnqConquestInfoPrototype") else {
+            return Ok(0);
+        };
+        let Some(sched) = self.load_singleton_payload("cnqSchedulePrototype") else {
+            return Ok(0);
+        };
+
+        // Event record start offsets, in order (ordinal == index, matching
+        // conquest_events). Each runs until the next start or end-of-payload.
+        let mut ev_starts: Vec<usize> = Vec::new();
+        {
+            let mut i = 0;
+            while i + 9 <= info.len() {
+                if info[i] == 0xCF
+                    && info[i + 1] == 0x40
+                    && info[i + 2] == 0
+                    && info[i + 3] == 0
+                    && info[i + 5..i + 9] == EVENT_MARKER
+                {
+                    ev_starts.push(i);
+                    i += 9;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        let event_name = |idx: usize| -> Option<String> {
+            let start = ev_starts[idx];
+            let end = ev_starts.get(idx + 1).copied().unwrap_or(info.len());
+            extract_ascii_strings(&info[start + 9..end], 4)
+                .into_iter()
+                .next()
+        };
+        // Map an 8-byte event GUID to the enclosing event record's ordinal.
+        let event_for_guid = |guid: &[u8]| -> Option<usize> {
+            let pos = info.windows(8).position(|w| w == guid)?;
+            match ev_starts.binary_search(&pos) {
+                Ok(i) => Some(i),
+                Err(0) => None,
+                Err(i) => Some(i - 1),
+            }
+        };
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut inserted = 0u64;
+        {
+            let mut insert = tx.prepare_cached(
+                "INSERT OR REPLACE INTO conquest_schedule \
+                    (week_ordinal, event_guid, event_ordinal, event_name) \
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            let positions = cf40_marker_positions(&sched);
+            for (idx, &pos) in positions.iter().enumerate() {
+                let end = positions.get(idx + 1).copied().unwrap_or(sched.len());
+                let record = &sched[pos..end];
+
+                // Event ref: first `cf` (non-marker) or `c7` after the 8-byte
+                // marker+hash, followed by an 8-byte GUID.
+                let mut guid: Option<&[u8]> = None;
+                let mut j = 8;
+                while j + 9 <= record.len() {
+                    let is_ref = (record[j] == 0xCF
+                        && !(record[j + 1] == 0x40 && record[j + 2] == 0 && record[j + 3] == 0))
+                        || record[j] == 0xC7;
+                    if is_ref {
+                        guid = Some(&record[j + 1..j + 9]);
+                        break;
+                    }
+                    j += 1;
+                }
+                let Some(guid) = guid else { continue };
+
+                // Week: BE u16 immediately after the constant anchor.
+                let Some(a) = record
+                    .windows(WEEK_ANCHOR.len())
+                    .position(|w| w == WEEK_ANCHOR)
+                else {
+                    continue;
+                };
+                let wk_pos = a + WEEK_ANCHOR.len();
+                if wk_pos + 2 > record.len() {
+                    continue;
+                }
+                let week = ((record[wk_pos] as i64) << 8) | record[wk_pos + 1] as i64;
+
+                let guid_hex: String = guid.iter().map(|b| format!("{b:02x}")).collect();
+                let ordinal = event_for_guid(guid);
+                let name = ordinal.and_then(event_name);
+                insert.execute(params![week, guid_hex, ordinal.map(|o| o as i64), name])?;
+                inserted += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(inserted)
+    }
+
     /// Load and base64-decode a singleton payload by FQN. Returns None when
     /// the singleton is absent or its base64 fails to decode. Shared by the
     /// per-singleton prototype decoders.
@@ -9602,6 +9737,82 @@ mod tests {
             "last record size {} must stay within the gap",
             c.3
         );
+    }
+
+    #[test]
+    fn populate_conquest_schedule_resolves_weeks_to_events() {
+        let path = temp_db_path("conquest_schedule");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+
+        let guid_a: [u8; 8] = [0x07, 0x1d, 0x4c, 0xff, 0x6c, 0x65, 0xff, 0xfe];
+        let guid_b: [u8; 8] = [0x7c, 0x32, 0xfd, 0x18, 0x78, 0x30, 0x33, 0xab];
+        let guid_x: [u8; 8] = [0xde, 0xad, 0xbe, 0xef, 0x00, 0x11, 0x22, 0x33];
+
+        // Each conquest event record: CF40 8C7DAFE5 marker, 06 <len> <name>,
+        // then its identifying GUID embedded in the body.
+        fn event_record(name: &str, guid: &[u8; 8]) -> Vec<u8> {
+            let mut r = vec![0xCF, 0x40, 0x00, 0x00, 0x43, 0x8C, 0x7D, 0xAF, 0xE5];
+            r.push(0x06);
+            r.push(name.len() as u8);
+            r.extend_from_slice(name.as_bytes());
+            r.extend_from_slice(&[0x01, 0x01]);
+            r.extend_from_slice(guid);
+            r
+        }
+        let mut info = Vec::new();
+        info.extend_from_slice(&event_record("Alpha", &guid_a));
+        info.extend_from_slice(&event_record("Beta", &guid_b));
+        seed_singleton(&db, "cnqConquestInfoPrototype", &info);
+
+        // Each schedule record: marker + hash, 03 02, cf <guid>, then the
+        // week anchor `cb 01 ee fe bd 02 c9` + BE u16 week, then trailer.
+        fn sched_record(guid: &[u8; 8], week: u16) -> Vec<u8> {
+            let mut r = vec![0xCF, 0x40, 0x00, 0x00, 0x43, 0x8D, 0xCC, 0x77];
+            r.extend_from_slice(&[0x03, 0x02, 0xCF]);
+            r.extend_from_slice(guid);
+            r.extend_from_slice(&[0xCB, 0x01, 0xEE, 0xFE, 0xBD, 0x02, 0xC9]);
+            r.extend_from_slice(&week.to_be_bytes());
+            r.extend_from_slice(&[0x02, 0x02]);
+            r
+        }
+        let mut sched = Vec::new();
+        sched.extend_from_slice(&sched_record(&guid_a, 1001)); // -> Alpha
+        sched.extend_from_slice(&sched_record(&guid_b, 1002)); // -> Beta
+        sched.extend_from_slice(&sched_record(&guid_x, 1003)); // unresolved GUID
+        seed_singleton(&db, "cnqSchedulePrototype", &sched);
+
+        let n = db.populate_conquest_schedule().unwrap();
+        assert_eq!(n, 3);
+
+        let conn = db.conn.lock().unwrap();
+        let row = |wk: i64| -> (String, Option<i64>, Option<String>) {
+            conn.query_row(
+                "SELECT event_guid, event_ordinal, event_name FROM conquest_schedule \
+                 WHERE week_ordinal = ?1",
+                params![wk],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            row(1001),
+            (
+                "071d4cff6c65fffe".to_string(),
+                Some(0),
+                Some("Alpha".to_string())
+            )
+        );
+        assert_eq!(
+            row(1002),
+            (
+                "7c32fd18783033ab".to_string(),
+                Some(1),
+                Some("Beta".to_string())
+            )
+        );
+        // Unresolved GUID: row exists, event_ordinal/name NULL.
+        assert_eq!(row(1003), ("deadbeef00112233".to_string(), None, None));
     }
 
     #[test]

@@ -528,6 +528,10 @@ fn main() -> Result<()> {
     let conquest_event_count = db.populate_conquest_events()?;
     println!("  Conquest events: {} rows", conquest_event_count);
 
+    // Weekly conquest rotation from cnqSchedulePrototype (week -> event).
+    let conquest_schedule_count = db.populate_conquest_schedule()?;
+    println!("  Conquest schedule: {} rows", conquest_schedule_count);
+
     // Armor-class taxonomy + raw combat stat curves from the cbt* singletons.
     let armor_class_count = db.populate_armor_classes()?;
     println!("  Armor classes: {} rows", armor_class_count);
