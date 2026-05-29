@@ -835,18 +835,6 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_spawn_runtime_ids_target ON spawn_runtime_ids(target_fqn);
             CREATE INDEX IF NOT EXISTS idx_spawn_runtime_ids_runtime ON spawn_runtime_ids(runtime_id);
 
-            -- Quest rewards (variable names extracted from payloads, e.g.
-            -- 'quest_reward_adrenal'). Variable names are categories
-            -- (adrenal, medpac, alignment) -- specific items are engine-
-            -- resolved at runtime and not in payload data.
-            CREATE TABLE IF NOT EXISTS quest_rewards (
-                quest_fqn       TEXT NOT NULL,
-                reward_variable TEXT NOT NULL,
-                PRIMARY KEY (quest_fqn, reward_variable)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_quest_rewards_variable ON quest_rewards(reward_variable);
-
             -- Quest descriptions: first journal entry per quest, surfaced as
             -- a view over the strings table. Mirrors the CSV's "Mission
             -- Description" column. Per the design doc, journal text is at
@@ -1179,69 +1167,6 @@ impl Database {
 
             CREATE INDEX IF NOT EXISTS idx_item_set_members_set ON item_set_members(set_fqn);
 
-            -- Creatures (#133) extracted from .node PROT prototypes whose
-            -- FQN starts with `creature.*`. PROT format unlock from #126.
-            -- Population requires NodeRecord input; foundation pass ships
-            -- the schema so downstream tooling can target it.
-            CREATE TABLE IF NOT EXISTS creatures (
-                game_id          TEXT PRIMARY KEY,
-                fqn              TEXT NOT NULL,
-                template_guid    TEXT NOT NULL,
-                string_id        INTEGER,
-                species          TEXT,
-                difficulty       TEXT,
-                raw_props        TEXT
-            );
-            CREATE INDEX IF NOT EXISTS idx_creatures_fqn ON creatures(fqn);
-            CREATE INDEX IF NOT EXISTS idx_creatures_species ON creatures(species);
-
-            -- Appearances (#136) extracted from .epp UTF-16 XML files at
-            -- /resources/gamedata/epp/<id>.epp. Parser lands in #128
-            -- (kessel::schema::appearance). 20,515 entries per sub-agent E
-            -- catalog. Foundation pass ships the schema; populator deferred.
-            CREATE TABLE IF NOT EXISTS appearances (
-                game_id              TEXT PRIMARY KEY,
-                fqn                  TEXT NOT NULL,
-                guid                 TEXT NOT NULL,
-                asset_version        INTEGER,
-                creation_time_stamp  TEXT,
-                fx_actions_json      TEXT
-            );
-            CREATE INDEX IF NOT EXISTS idx_appearances_fqn ON appearances(fqn);
-            CREATE INDEX IF NOT EXISTS idx_appearances_guid ON appearances(guid);
-
-            -- Class specs (#137) extracted from chrspec.tbl UTF-16 XML.
-            -- Holds the per-class spec definitions referenced by the existing
-            -- `disciplines` table; foundation pass ships the schema so
-            -- downstream extractors can target it.
-            CREATE TABLE IF NOT EXISTS class_specs (
-                spec_id          TEXT PRIMARY KEY,
-                spec_name        TEXT,
-                origin_code      TEXT,
-                discipline_code  TEXT,
-                role             TEXT,
-                primary_stat     TEXT,
-                raw_xml          TEXT
-            );
-            CREATE INDEX IF NOT EXISTS idx_class_specs_origin ON class_specs(origin_code);
-            CREATE INDEX IF NOT EXISTS idx_class_specs_role ON class_specs(role);
-
-            -- Ability typed columns (#138) -- mirrors `quest_details` pattern
-            -- since `abilities` is a VIEW over objects, not a base table.
-            -- Foundation pass ships the schema; populator deferred to
-            -- follow-on once per-property post-CF40 value decode is verified.
-            -- Columns drawn from client.gom Ability schema (46 props, 5
-            -- named enums: aiAbility, ablAutoAttack, ablUIDisplayType,
-            -- tgtRule, staCombatMode).
-            CREATE TABLE IF NOT EXISTS ability_details (
-                fqn               TEXT PRIMARY KEY,
-                ai_ability        TEXT,
-                auto_attack       TEXT,
-                ui_display_type   TEXT,
-                target_rule       TEXT,
-                combat_mode       TEXT
-            );
-
             -- Hydra script references (#214). Each hyd.* payload is a runtime
             -- trigger script encoded as plain GOM with FQN refs and command
             -- names stored inline as length-prefixed ASCII strings. No
@@ -1286,15 +1211,6 @@ impl Database {
                 level             INTEGER
             );
 
-            -- Item typed columns (#140) -- complements existing item_details.
-            -- Adds schema-derived columns separate from the FQN-classified ones.
-            CREATE TABLE IF NOT EXISTS item_schema_details (
-                fqn               TEXT PRIMARY KEY,
-                rarity            TEXT,
-                binding           TEXT,
-                stack_size_max    INTEGER
-            );
-
             -- Schematic typed columns (#140) -- 35 props from Schematic schema.
             CREATE TABLE IF NOT EXISTS schematic_details (
                 fqn               TEXT PRIMARY KEY,
@@ -1310,21 +1226,6 @@ impl Database {
                 tree_position     INTEGER,
                 tier              INTEGER
             );
-
-            -- Talent effects (#143) -- structured CF40 D954FB02 STAT enum +
-            -- effAction enum decode of talent effect blocks. Foundation pass
-            -- ships the schema; populator requires per-property post-CF40
-            -- byte-layout decode (deferred).
-            CREATE TABLE IF NOT EXISTS talent_effects (
-                fqn               TEXT NOT NULL,
-                ordinal           INTEGER NOT NULL,
-                stat              TEXT,
-                action            TEXT,
-                value_float       REAL,
-                value_int         INTEGER,
-                PRIMARY KEY (fqn, ordinal)
-            );
-            CREATE INDEX IF NOT EXISTS idx_talent_effects_stat ON talent_effects(stat);
 
             -- GSF requisition costs (#115 / #172). Decoded from the
             -- scFFComponentsCostPrototype + scFFComponentUpgradesCostPrototype
@@ -1623,12 +1524,6 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_talent_tags_tag ON talent_tags(tag_hash);
             CREATE INDEX IF NOT EXISTS idx_talent_tags_game_id ON talent_tags(talent_game_id);
-
-            -- Extraction metadata
-            CREATE TABLE IF NOT EXISTS meta (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
             "#,
         )?;
         drop(conn);
@@ -3634,44 +3529,6 @@ impl Database {
         Ok(inserted)
     }
 
-    /// Populate `item_schema_details` with the FQN-derived rarity already
-    /// computed in `item_details` (#177).
-    ///
-    /// item_schema_details was scoped to carry authoritative-payload-decoded
-    /// rarity/binding/stack_size_max columns. Without per-property byte
-    /// decode (deferred), the authoritative values can't be extracted. The
-    /// next-best move ships rarity by copying from `item_details` (which
-    /// derives it via FQN classifier). binding and stack_size_max remain
-    /// NULL pending per-property decode.
-    pub fn populate_item_schema_details_typed(&self) -> Result<u64> {
-        self.flush()?;
-        let conn = self.conn.lock().unwrap();
-        let rows: Vec<(String, Option<String>)> = {
-            let mut stmt = conn.prepare("SELECT fqn, rarity FROM item_details")?;
-            let collected: Vec<(String, Option<String>)> = stmt
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
-                })?
-                .filter_map(|r| r.ok())
-                .collect();
-            collected
-        };
-        let tx = conn.unchecked_transaction()?;
-        let mut insert = tx.prepare_cached(
-            "INSERT OR REPLACE INTO item_schema_details \
-               (fqn, rarity, binding, stack_size_max) \
-             VALUES (?1, ?2, ?3, ?4)",
-        )?;
-        let mut written = 0u64;
-        for (fqn, rarity) in &rows {
-            insert.execute(params![fqn, rarity, None::<String>, None::<i64>])?;
-            written += 1;
-        }
-        drop(insert);
-        tx.commit()?;
-        Ok(written)
-    }
-
     /// Populate `schematic_details` with FQN-derived profession (#178).
     ///
     /// Walks every `schem.*` canonical object, looks for a recognized
@@ -5038,43 +4895,6 @@ impl Database {
             for s in extract_strings_from_payload(&payload) {
                 if let Some((spn_fqn, target_fqn, runtime_id)) = parse_spn_triple(&s) {
                     stmt.execute(rusqlite::params![spn_fqn, target_fqn, runtime_id as i64,])?;
-                    count += 1;
-                }
-            }
-        }
-
-        drop(stmt);
-        tx.commit()?;
-        Ok(count)
-    }
-
-    /// Extract `quest_reward_*` variable names from each quest payload and
-    /// write rows into `quest_rewards`. Variable names are categories
-    /// (adrenal, medpac, alignment, gift); specific items are runtime-resolved
-    /// by the engine and not in payload data.
-    pub fn populate_quest_rewards(&self) -> Result<u64> {
-        use crate::pbuk::extract_strings_from_payload;
-        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-
-        let quest_rows: Vec<(String, String)> = {
-            let conn = self.conn.lock().unwrap();
-            fetch_fqn_payloads(&conn, "Quest")?
-        };
-
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-        let mut stmt = tx.prepare_cached(
-            "INSERT OR IGNORE INTO quest_rewards (quest_fqn, reward_variable) VALUES (?1, ?2)",
-        )?;
-
-        let mut count = 0u64;
-        for (quest_fqn, payload_b64) in &quest_rows {
-            let Ok(payload) = BASE64.decode(payload_b64) else {
-                continue;
-            };
-            for s in extract_strings_from_payload(&payload) {
-                if s.starts_with("quest_reward_") {
-                    stmt.execute(rusqlite::params![quest_fqn, s])?;
                     count += 1;
                 }
             }
@@ -7899,8 +7719,14 @@ impl Database {
             conn.query_row("SELECT COUNT(*) FROM quest_chain", [], |row| row.get(0))?;
         let npc_links: u64 =
             conn.query_row("SELECT COUNT(*) FROM quest_npcs", [], |row| row.get(0))?;
-        let reward_links: u64 =
-            conn.query_row("SELECT COUNT(*) FROM quest_rewards", [], |row| row.get(0))?;
+        // Quest reward links only (the summary groups this under "Quests").
+        // mission_rewards is the superset; filter to qst.* for the same count
+        // the dropped quest_rewards table reported.
+        let reward_links: u64 = conn.query_row(
+            "SELECT COUNT(*) FROM mission_rewards WHERE mission_fqn LIKE 'qst.%'",
+            [],
+            |row| row.get(0),
+        )?;
         let runtime_ids: u64 =
             conn.query_row("SELECT COUNT(*) FROM spawn_runtime_ids", [], |row| {
                 row.get(0)
@@ -9547,54 +9373,6 @@ mod tests {
     }
 
     #[test]
-    fn creatures_table_exists_after_init() {
-        let path = temp_db_path("creatures_table");
-        let db = Database::with_grammar(&path, None).unwrap();
-        db.init_schema().unwrap();
-        let conn = db.conn.lock().unwrap();
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='creatures'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn appearances_table_exists_after_init() {
-        let path = temp_db_path("appearances_table");
-        let db = Database::with_grammar(&path, None).unwrap();
-        db.init_schema().unwrap();
-        let conn = db.conn.lock().unwrap();
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='appearances'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn class_specs_table_exists_after_init() {
-        let path = temp_db_path("class_specs_table");
-        let db = Database::with_grammar(&path, None).unwrap();
-        db.init_schema().unwrap();
-        let conn = db.conn.lock().unwrap();
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='class_specs'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 1);
-    }
-
-    #[test]
     fn typed_detail_tables_exist_after_init() {
         let path = temp_db_path("typed_details");
         let db = Database::with_grammar(&path, None).unwrap();
@@ -9608,14 +9386,7 @@ mod tests {
             .unwrap()
             .map(Result::unwrap)
             .collect();
-        for t in [
-            "ability_details",
-            "npc_details",
-            "item_schema_details",
-            "schematic_details",
-            "talent_details",
-            "talent_effects",
-        ] {
+        for t in ["npc_details", "schematic_details", "talent_details"] {
             assert!(names.contains(t), "missing typed-details table: {t}");
         }
     }

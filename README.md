@@ -55,13 +55,15 @@ flowchart LR
 
 Core: `objects`, `strings`
 
-Quest graph: `quest_details`, `quest_chain`, `quest_npcs`, `quest_phases`, `quest_prerequisites`, `quest_rewards`
+Quest graph: `quest_details`, `quest_chain`, `quest_npcs`, `quest_phases`, `quest_prerequisites`
 
 Missions: `missions`, `mission_npcs`, `mission_rewards`
 
 Disciplines: `disciplines`, `discipline_abilities`, `talent_abilities`
 
-Other: `conquest_objectives`, `spawn_runtime_ids`, `meta`
+Conquest: `conquest_objectives`, `conquest_events`, `conquest_schedule`
+
+Reference: `companions`, `armor_classes`, `stat_curve_values`, `gsf_crew`, `spawn_runtime_ids`
 
 Views: `abilities`, `items`, `npcs`, `quests`, `phases`, `quest_descriptions`, `bonus_missions`, `conquest_invasion_bonuses`, `conquest_theme_strings`
 

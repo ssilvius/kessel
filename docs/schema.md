@@ -55,10 +55,6 @@ erDiagram
         TEXT fqn PK
         TEXT variable PK
     }
-    quest_rewards {
-        TEXT quest_fqn PK
-        TEXT reward_variable PK
-    }
     missions {
         TEXT mission_fqn PK
         TEXT source
@@ -136,12 +132,49 @@ erDiagram
         TEXT cadence
         INTEGER string_id
     }
-    meta {
-        TEXT key PK
-        TEXT value
+    conquest_events {
+        INTEGER ordinal PK
+        TEXT event_name
+        TEXT planet_code
+        TEXT event_kind
+        INTEGER record_size
+    }
+    conquest_schedule {
+        INTEGER week_ordinal PK
+        TEXT event_guid
+        INTEGER event_ordinal
+        TEXT event_name
+    }
+    companions {
+        TEXT fqn PK
+        TEXT companion_key
+        TEXT name
+        TEXT category
+        INTEGER string_id
+        TEXT guid
+    }
+    armor_classes {
+        INTEGER ordinal PK
+        INTEGER code
+        TEXT name
+    }
+    stat_curve_values {
+        INTEGER id PK
+        TEXT prototype
+        TEXT curve_hash
+        INTEGER ordinal
+        REAL value
+    }
+    gsf_crew {
+        INTEGER ordinal PK
+        TEXT icon_name
+        TEXT crew_name
+        TEXT idle_animation
     }
 
     objects ||--o{ strings : "string_id = id2"
+    objects ||--o{ companions : "fqn"
+    conquest_events ||--o{ conquest_schedule : "ordinal = event_ordinal"
     objects ||--o| quest_details : "fqn"
     objects ||--o{ quest_npcs : "quest_fqn"
     objects ||--o{ quest_phases : "quest_fqn"
@@ -265,7 +298,7 @@ Directed edges connecting quests in sequence. Multiple extraction passes contrib
 
 Filter `WHERE link_type = 'guid_ref'` for canonical edges only; combine `guid_ref` and `fqn_arc_order` for full story-arc coverage.
 
-### quest_npcs / quest_phases / quest_prerequisites / quest_rewards
+### quest_npcs / quest_phases / quest_prerequisites
 
 Junction tables linking quests to related objects.
 
@@ -274,7 +307,10 @@ Junction tables linking quests to related objects.
 | `quest_npcs` | quest → NPCs involved (via encounter/spawn intermediaries) |
 | `quest_phases` | quest → `mpn.*` phase objects |
 | `quest_prerequisites` | quest → prerequisite variable strings |
-| `quest_rewards` | quest → reward variable strings |
+
+Quest rewards are not a separate table: they are covered by `mission_rewards`
+(the missions union is a superset of quests), keyed `mission_fqn`. Filter
+`WHERE mission_fqn LIKE 'qst.%'` for quest-only rewards.
 
 **Views:**
 - `quest_descriptions` — joins quests to their first description string (id1 200–600)
@@ -337,7 +373,9 @@ Missions are the union of `qst.*` and `mpn.*` objects.
 
 ### mission_npcs / mission_rewards
 
-Same shape as quest_npcs / quest_rewards but scoped to the missions union.
+Same shape as `quest_npcs` but scoped to the missions union (`qst.*` + `mpn.*`).
+`mission_rewards` is the canonical reward-variable table; it is a superset of
+quest rewards (every `qst.*` reward appears here under its `mission_fqn`).
 
 ---
 
@@ -616,13 +654,86 @@ ORDER BY event_count DESC;
 
 **Views:** `conquest_invasion_bonuses`, `conquest_theme_strings`
 
+### conquest_events
+
+The conquest event roster, decoded from the `cnqConquestInfoPrototype` singleton. One row per event (90).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `ordinal` | INTEGER PK | Event index in the singleton (also the FK target for `conquest_schedule.event_ordinal`). |
+| `event_name` | TEXT | e.g. `Yavin`, `Onderon`, `Corellia`. |
+| `planet_code` | TEXT | `_pla_<planet>` code, NULL if absent. |
+| `event_kind` | TEXT | `invasion` (single-planet, ~68-80B record) or `themed` (multi-bonus special, ~7700-8400B). |
+| `record_size` | INTEGER | Raw record byte size. For the final record this is an upper bound (absorbs the singleton's trailing array); `event_kind` uses a gap-centered threshold so it is not mis-tagged. |
+
+### conquest_schedule
+
+The weekly conquest rotation, decoded from the `cnqSchedulePrototype` singleton. 496 consecutive weekly entries.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `week_ordinal` | INTEGER PK | Relative week index (1001..1496, consecutive). **Not a calendar date** — the schedule carries no epoch anchor; this is rotation order. Pin one known week to derive the calendar. |
+| `event_guid` | TEXT | 8-byte event GUID the schedule references (hex). |
+| `event_ordinal` | INTEGER | FK to `conquest_events.ordinal`; NULL when the GUID does not resolve. |
+| `event_name` | TEXT | Denormalized event name (join convenience); NULL when unresolved. |
+
+```sql
+SELECT cs.week_ordinal, ce.event_name, ce.planet_code
+FROM conquest_schedule cs JOIN conquest_events ce ON ce.ordinal = cs.event_ordinal
+ORDER BY cs.week_ordinal;
+```
+
 ### spawn_runtime_ids
 
 Maps spawn objects to their runtime NPC IDs. Used to resolve NPC links in quest payloads.
 
-### meta
+### companions
 
-Key/value store for extraction metadata (schema version, extraction timestamp, game version).
+The companion roster, from `npc.companion.*` objects with display names resolved from `strings` (`id2 = string_id`, `id1 = 0`, en-us). ~287 rows.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `fqn` | TEXT PK | e.g. `npc.companion.smuggler.corso_riggs`. |
+| `companion_key` | TEXT | Final FQN segment, e.g. `corso_riggs`. |
+| `name` | TEXT | Display name, e.g. `Corso Riggs`. NULL if unresolved. |
+| `category` | TEXT | FQN segment after `npc.companion.` — a class (`smuggler`, `jedi_knight`, `sith_warrior`, `bounty_hunter`, `spy`, `sith_sorcerer`, `jedi_wizard`, `trooper`) for origin-class companions, or a content source (`alliance`, `mtx`, `kotet`, `kotfe`, `galactic_seasons`, ...). |
+| `string_id` | INTEGER | Links to `strings.id2`. |
+| `guid` | TEXT | Object GUID. |
+
+Story-state variants (e.g. `corso_riggs` / `corso_riggs_combat`) are distinct objects and each gets a row; dedupe by `name` or filter key suffixes downstream.
+
+### armor_classes
+
+Armor/equipment class taxonomy from the `cbtArmorTablePrototype` singleton. 9 rows.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `ordinal` | INTEGER PK | Record index. |
+| `code` | INTEGER | Internal class code byte. |
+| `name` | TEXT | `medium`, `heavy_droid`, `focus`, `light`, `generator`, `heavy`, `shield_force`, `shield`, `adaptive`. |
+
+### stat_curve_values
+
+Raw per-level shield curve values from the `cbtShieldPerLevel` singleton — literal stored floats, no level/stat semantics (the curve is 2D over an undecoded segment key). Series-separate by `curve_hash`. For prose/chart rendering.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER PK | Surrogate. |
+| `prototype` | TEXT | Source singleton (`cbtShieldPerLevel`). |
+| `curve_hash` | TEXT | Enclosing CF40 field-hash (the series discriminator). |
+| `ordinal` | INTEGER | Position within `(prototype, curve_hash)`. |
+| `value` | REAL | Literal f32 value. |
+
+### gsf_crew
+
+Galactic Starfighter crew roster from the `scffCrewPrototype` singleton. 51 rows. (Asset/animation-derived; see `companions` for the canonical roster.)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `ordinal` | INTEGER PK | Record index. |
+| `icon_name` | TEXT | `spvp_Crew_icon_<name>` resource string. |
+| `crew_name` | TEXT | Icon-prefix-stripped name. |
+| `idle_animation` | TEXT | Following idle-animation ref, or NULL. |
 
 ---
 
