@@ -1,6 +1,6 @@
 [package]
 name = "kessel"
-version = "0.0.5"
+version = "0.0.6"
 edition.workspace = true
 license.workspace = true
 description = "SWTOR data miner - extracts game objects from .tor archives"

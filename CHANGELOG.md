@@ -7,6 +7,8 @@ Versions follow [Cargo semver](https://doc.rust-lang.org/cargo/reference/semver.
 
 ## [Unreleased]
 
+## [0.0.6] - 2026-05-29
+
 ### Added
 
 - **Prototype-decode data tables** -- `conquest_events` (event roster: names + planets + invasion/themed kind), `conquest_schedule` (496-week conquest rotation, `week_ordinal` -> `event_ordinal` joining `conquest_events`; relative weeks, no calendar anchor), `companions` (full `npc.companion.*` roster, ~287 rows, display names + class/source category), `armor_classes` (9-class taxonomy from `cbtArmorTablePrototype`), `stat_curve_values` (raw per-level shield curve floats from `cbtShieldPerLevel`, grouped by `curve_hash`), and `gsf_crew` (Galactic Starfighter crew from `scffCrewPrototype`).
