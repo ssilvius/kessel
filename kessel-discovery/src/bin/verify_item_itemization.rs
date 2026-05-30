@@ -28,7 +28,11 @@ fn singleton(conn: &Connection, fqn: &str) -> Result<Vec<u8>> {
 fn quality_name(idx: i64) -> Option<String> {
     let e = kessel::gom_schema::enum_for_name("itmQuality")?;
     let m = e.members.get(usize::try_from(idx).ok()?)?;
-    Some(m.strip_prefix("itmQuality").unwrap_or(m).to_ascii_lowercase())
+    Some(
+        m.strip_prefix("itmQuality")
+            .unwrap_or(m)
+            .to_ascii_lowercase(),
+    )
 }
 
 fn stat_name(idx: i64) -> Option<String> {
