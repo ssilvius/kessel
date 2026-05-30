@@ -796,6 +796,47 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_companions_category ON companions(category);
             CREATE INDEX IF NOT EXISTS idx_companions_name ON companions(name);
 
+            -- Item itemization tables. SWTOR item stats are computed, not
+            -- stored per item: an item carries only (base level, quality,
+            -- modifier set id), and these three tables turn that into numbers.
+            -- Decoded from the itmRatingTablePrototype /
+            -- itmBudgetedAttributesPrototype / itmModifierPackageTablePrototype
+            -- singletons via the typed-value GOM grammar (gom_reader).
+            --
+            --   rating = item_rating_table[item_level][quality]
+            --   stat   = item_budget_table[quality][item_level][permille]
+            -- where the item's modifier package (item_modifier_packages, keyed
+            -- by itmModifierSetID) supplies the per-stat permille index into
+            -- the budget curve. Oracle: budget[artifact][89] holds 484 and 167.
+            CREATE TABLE IF NOT EXISTS item_rating_table (
+                item_level INTEGER NOT NULL,
+                quality    TEXT NOT NULL,
+                rating     INTEGER NOT NULL,
+                PRIMARY KEY (item_level, quality)
+            );
+
+            -- Per-quality, per-level budget curve. permille is the 0..999 slot
+            -- index (0.1% steps); a modifier package picks which permille feeds
+            -- each stat. ~796k rows (4 qualities x ~199 levels x 1000 slots).
+            CREATE TABLE IF NOT EXISTS item_budget_table (
+                quality    TEXT NOT NULL,
+                item_level INTEGER NOT NULL,
+                permille   INTEGER NOT NULL,
+                value      INTEGER NOT NULL,
+                PRIMARY KEY (quality, item_level, permille)
+            );
+
+            -- Modifier package stat split. One row per (mod_id, stat): the
+            -- permille of the slot budget that stat receives (single-stat mods
+            -- = 1000; a 70/30 DPS armoring = strength 700 + endurance 300).
+            CREATE TABLE IF NOT EXISTS item_modifier_packages (
+                mod_id     INTEGER NOT NULL,
+                stat_index INTEGER NOT NULL,
+                stat_name  TEXT NOT NULL,
+                permille   INTEGER NOT NULL,
+                PRIMARY KEY (mod_id, stat_index)
+            );
+
             -- Mission NPCs: NPC references aggregated across a mission's
             -- entire phase tree. For qst-source missions this is the quest's
             -- own NPCs (same as quest_npcs). For mpn-prefix missions (alliance
@@ -5492,6 +5533,146 @@ impl Database {
         }
         tx.commit()?;
         Ok(inserted)
+    }
+
+    /// Populate the three item itemization tables from the rating, budget, and
+    /// modifier-package prototype singletons. SWTOR item stats are computed
+    /// from these (see the schema comment): rating from item_rating_table,
+    /// the stat budget pool from item_budget_table, and the per-stat split
+    /// from item_modifier_packages. Returns (rating, budget, modpkg) counts.
+    ///
+    /// Shapes (decoded with the typed-value GOM grammar):
+    ///   itmRatings              = Map<level, Map<quality, rating>>
+    ///   itmBudgetedAttributes   = Map<quality, List[level]<List[permille]<i64>>>
+    ///   itmModifierPackagesList = Map<mod_id, List<{..., itmModPkgAttributePercentages: Map<stat, permille>}>>
+    pub fn populate_item_itemization(&self) -> Result<(u64, u64, u64)> {
+        self.flush()?;
+        use crate::gom_reader::{read_first_field, GomValue};
+
+        // itmQuality enum index -> short quality key ("artifact", ...).
+        let quality_name = |idx: i64| -> Option<String> {
+            let e = crate::gom_schema::enum_for_name("itmQuality")?;
+            let m = e.members.get(usize::try_from(idx).ok()?)?;
+            Some(
+                m.strip_prefix("itmQuality")
+                    .unwrap_or(m)
+                    .to_ascii_lowercase(),
+            )
+        };
+        // STAT enum index -> full STAT_* member name.
+        let stat_name = |idx: i64| -> Option<String> {
+            let e = crate::gom_schema::enum_for_name("STAT")?;
+            e.members.get(usize::try_from(idx).ok()?).cloned()
+        };
+
+        // Load all payloads before taking the connection lock
+        // (load_singleton_payload locks internally).
+        let rating_payload = self.load_singleton_payload("itmRatingTablePrototype");
+        let budget_payload = self.load_singleton_payload("itmBudgetedAttributesPrototype");
+        let modpkg_payload = self.load_singleton_payload("itmModifierPackageTablePrototype");
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let (mut n_rating, mut n_budget, mut n_modpkg) = (0u64, 0u64, 0u64);
+
+        // -- Rating: Map<level, Map<quality, rating>> --
+        if let Some(payload) = &rating_payload {
+            let table = read_first_field(payload)?;
+            tx.execute("DELETE FROM item_rating_table", [])?;
+            let mut insert = tx.prepare_cached(
+                "INSERT OR REPLACE INTO item_rating_table (item_level, quality, rating) \
+                 VALUES (?1, ?2, ?3)",
+            )?;
+            for (level_key, inner) in table.as_map().unwrap_or(&[]) {
+                let (Some(level), Some(qmap)) = (level_key.as_i64(), inner.as_map()) else {
+                    continue;
+                };
+                for (q_key, r_val) in qmap {
+                    let (Some(q), Some(rating)) = (q_key.as_i64(), r_val.as_i64()) else {
+                        continue;
+                    };
+                    let Some(qname) = quality_name(q) else {
+                        continue;
+                    };
+                    insert.execute(params![level, qname, rating])?;
+                    n_rating += 1;
+                }
+            }
+        }
+
+        // -- Budget: Map<quality, List[level]<List[permille]<i64>>> --
+        if let Some(payload) = &budget_payload {
+            let table = read_first_field(payload)?;
+            tx.execute("DELETE FROM item_budget_table", [])?;
+            let mut insert = tx.prepare_cached(
+                "INSERT OR REPLACE INTO item_budget_table \
+                    (quality, item_level, permille, value) \
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for (q_key, levels) in table.as_map().unwrap_or(&[]) {
+                let (Some(q), Some(level_list)) = (q_key.as_i64(), levels.as_list()) else {
+                    continue;
+                };
+                let Some(qname) = quality_name(q) else {
+                    continue;
+                };
+                for (level, slots) in level_list.iter().enumerate() {
+                    let Some(slot_list) = slots.as_list() else {
+                        continue;
+                    };
+                    for (permille, val) in slot_list.iter().enumerate() {
+                        let Some(value) = val.as_i64() else { continue };
+                        insert.execute(params![qname, level as i64, permille as i64, value])?;
+                        n_budget += 1;
+                    }
+                }
+            }
+        }
+
+        // -- Modifier packages: Map<mod_id, List<{..., percentages: Map<stat, permille>}>> --
+        if let Some(payload) = &modpkg_payload {
+            let table = read_first_field(payload)?;
+            tx.execute("DELETE FROM item_modifier_packages", [])?;
+            let mut insert = tx.prepare_cached(
+                "INSERT OR REPLACE INTO item_modifier_packages \
+                    (mod_id, stat_index, stat_name, permille) \
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for (mod_key, pkg_val) in table.as_map().unwrap_or(&[]) {
+                let Some(mod_id) = mod_key.as_i64() else {
+                    continue;
+                };
+                // The package value is a single-element list wrapping the
+                // package object; accept a bare object too for robustness. The
+                // stat split (itmModPkgAttributePercentages) is the package
+                // object's sole map field.
+                let pkg = match pkg_val {
+                    GomValue::List(items) => items.first(),
+                    other @ GomValue::Embedded(_) => Some(other),
+                    _ => None,
+                };
+                let Some(pct_map) = pkg
+                    .and_then(GomValue::embedded_first_map)
+                    .and_then(GomValue::as_map)
+                else {
+                    continue;
+                };
+                for (stat_key, pct_val) in pct_map {
+                    let (Some(stat_idx), Some(permille)) = (stat_key.as_i64(), pct_val.as_i64())
+                    else {
+                        continue;
+                    };
+                    let Some(sname) = stat_name(stat_idx) else {
+                        continue;
+                    };
+                    insert.execute(params![mod_id, stat_idx, sname, permille])?;
+                    n_modpkg += 1;
+                }
+            }
+        }
+
+        tx.commit()?;
+        Ok((n_rating, n_budget, n_modpkg))
     }
 
     /// Populate `mission_npcs` and `mission_rewards` by walking each mission's

@@ -7,6 +7,10 @@ Versions follow [Cargo semver](https://doc.rust-lang.org/cargo/reference/semver.
 
 ## [Unreleased]
 
+### Added
+
+- **Item itemization tables** -- `item_rating_table` (`item_level` x `quality` -> `rating`, 2,010 rows), `item_budget_table` (`quality` x `item_level` x `permille` 0..999 -> stat budget `value`, ~800k rows), and `item_modifier_packages` (`mod_id` -> per-stat `permille` split, 3,635 rows). SWTOR item stats are computed, not stored per item: an item carries only `(base level, quality, modifierSetID)`, and these three tables turn that into numbers (`rating = item_rating_table[level][quality]`; `stat = item_budget_table[quality][level][permille]`, where the item's modifier package supplies each stat's permille index into the budget curve). Decoded from the `itmRatingTablePrototype` / `itmBudgetedAttributesPrototype` / `itmModifierPackageTablePrototype` singletons via a new typed-value GOM reader (`gom_reader`) that mirrors the reference `GomBinaryReader`/`ScriptObjectReader` grammar (variable-width number codec + inline type tags; DOM-free because the stream is self-describing). Oracle-verified: `budget[artifact][89]` reproduces the known relic magnitudes 484 and 167. The per-item link (materializing each item's own `modifierSetID` onto these tables) is a separate follow-up.
+
 ## [0.0.6] - 2026-05-29
 
 ### Added
