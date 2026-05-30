@@ -558,6 +558,47 @@ JOIN schematic_materials sm ON sm.schematic_fqn = s.schematic_fqn
 WHERE s.schematic_fqn = 'itm.schem.gen.quest_imp.rdps1.chest.heavy.premium.03x1_craft';
 ```
 
+### item_rating_table / item_budget_table / item_modifier_packages
+
+SWTOR item stats are *computed*, not stored per item. An item object carries only three inputs (base level, quality, modifier-set id); these three lookup tables turn that into numbers. They are decoded from the `itmRatingTablePrototype` / `itmBudgetedAttributesPrototype` / `itmModifierPackageTablePrototype` singletons via the typed-value GOM reader (`kessel::gom_reader`).
+
+The formula:
+
+```
+rating = item_rating_table[item_level][quality]
+stat_s = item_budget_table[quality][item_level][ package.permille(s) ]
+```
+
+`item_rating_table` -- 2,010 rows (201 levels x 10 qualities).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `item_level` | INTEGER | Item level 0..200. |
+| `quality` | TEXT | `cheap`, `standard`, `premium`, `prototype`, `artifact`, `legendary`, `legacy`, `quest`, `currency`, `moddable`. |
+| `rating` | INTEGER | Item rating for that level+quality. PK `(item_level, quality)`. |
+
+`item_budget_table` -- ~800k rows (4 qualities x ~200 levels x 1000 permille slots).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `quality` | TEXT | `premium`, `prototype`, `artifact`, `legendary` (the only qualities the budget curve carries). |
+| `item_level` | INTEGER | Item level (list position 0..199). |
+| `permille` | INTEGER | Budget slot index 0..999 (0.1% steps); a modifier package selects which permille feeds each stat. |
+| `value` | INTEGER | Stat budget at that slot. PK `(quality, item_level, permille)`. |
+
+`item_modifier_packages` -- 3,635 rows. The stat split per modifier set.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `mod_id` | INTEGER | Modifier set id (an item's `itmModifierSetID`). |
+| `stat_index` | INTEGER | STAT enum index (zero-based). |
+| `stat_name` | TEXT | STAT enum member name, e.g. `STAT_att_mastery`, `STAT_att_endurance`. |
+| `permille` | INTEGER | Permille this stat receives from the slot budget. PK `(mod_id, stat_index)`. |
+
+**Oracle:** `item_budget_table` at `quality='artifact'`, `item_level=89` contains the known artifact relic magnitudes 484 and 167.
+
+**Known gap (follow-up):** the per-item link is not yet materialized -- kessel does not yet emit each item's own `(item_level, quality, modifierSetID)` columns, so joining a specific `itm.*` row to these tables requires that decode (item object payloads are CF40-marker structured, unlike the clean singletons).
+
 ---
 
 ## Conversation tables

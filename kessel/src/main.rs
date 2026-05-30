@@ -10,6 +10,7 @@ mod buckets_info;
 mod db;
 mod dds;
 mod gifts;
+mod gom_reader;
 mod gom_schema;
 mod grammar;
 mod gsf_stat_dictionary;
@@ -542,6 +543,14 @@ fn main() -> Result<()> {
     // Companion roster from npc.companion.* objects (name + category).
     let companion_count = db.populate_companions()?;
     println!("  Companions: {} rows", companion_count);
+
+    // Item itemization tables (rating, budget curve, modifier packages) from
+    // the itm* prototype singletons -- the inputs to computed item stats.
+    let (rating_rows, budget_rows, modpkg_rows) = db.populate_item_itemization()?;
+    println!(
+        "  Item itemization: {} rating, {} budget, {} modifier-package rows",
+        rating_rows, budget_rows, modpkg_rows
+    );
 
     // Eighth pass: aggregate NPCs and rewards across each mission's phase tree
     db.populate_mission_data()?;
