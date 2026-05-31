@@ -367,38 +367,7 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
             CREATE INDEX IF NOT EXISTS idx_stat_curve_values_proto
                 ON stat_curve_values(prototype, curve_hash, ordinal);
 
-            -- GSF crew roster from the scffCrewPrototype singleton. One row
-            -- per crew member: the icon resource name (spvp_Crew_icon_<name>),
-            -- the bare crew_name (icon prefix stripped), and the idle
-            -- animation reference that follows it. Self-validating via the
-            -- companion names (risha, treek, zenith, dr_eckard_lokin, ...).
-            CREATE TABLE IF NOT EXISTS gsf_crew (
-                ordinal        INTEGER PRIMARY KEY,
-                icon_name      TEXT NOT NULL,
-                crew_name      TEXT NOT NULL,
-                idle_animation TEXT
-            );
-            CREATE INDEX IF NOT EXISTS idx_gsf_crew_name ON gsf_crew(crew_name);
 
-            -- Companion roster from npc.companion.* objects. The canonical
-            -- list of companions with display names resolved from the strings
-            -- table (id2 = string_id, id1 = 0, en-us). category is the FQN
-            -- segment after `npc.companion.` -- a class name (smuggler,
-            -- jedi_knight, sith_warrior, bounty_hunter, spy, sith_sorcerer,
-            -- ...) for origin-class companions, or a content source (alliance,
-            -- mtx, kotet, kotfe, galactic_seasons, ...) otherwise.
-            -- Informational source for downstream guides; supersedes the
-            -- scattered companion references in other tables.
-            CREATE TABLE IF NOT EXISTS companions (
-                fqn           TEXT PRIMARY KEY,
-                companion_key TEXT NOT NULL,
-                name          TEXT,
-                category      TEXT NOT NULL,
-                string_id     INTEGER,
-                guid          TEXT
-            );
-            CREATE INDEX IF NOT EXISTS idx_companions_category ON companions(category);
-            CREATE INDEX IF NOT EXISTS idx_companions_name ON companions(name);
 
 
 
@@ -468,32 +437,6 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
 
 
 
-            -- Combat-style-level shared ability pool (#94 PR3 rework).
-            -- Replaces the per-discipline fan-out previously emitted into
-            -- discipline_abilities for class-shared (`abl.<origin>.<name>`),
-            -- skill-utility (`abl.<origin>.skill.utility.*`), and shared-mod
-            -- (`abl.<origin>.skill.mods.tierN.*`) abilities. Each origin's
-            -- shared abilities fan to BOTH combat styles of that origin --
-            -- e.g. Force Leap (sith_warrior class-shared) emits one row for
-            -- juggernaut and one for marauder.
-            --
-            -- slot_type vocabulary: 'class_shared' | 'utility' | 'shared_mod'.
-            -- Open TEXT (no CHECK) per D3 sign-off; expected subset documented
-            -- here.
-            CREATE TABLE IF NOT EXISTS combat_style_shared_abilities (
-                combat_style_codename  TEXT NOT NULL,
-                ability_game_id        TEXT NOT NULL,
-                ability_fqn            TEXT NOT NULL,
-                slot_type              TEXT NOT NULL,
-                PRIMARY KEY (combat_style_codename, ability_game_id, slot_type),
-                FOREIGN KEY (ability_game_id) REFERENCES objects(game_id),
-                FOREIGN KEY (combat_style_codename) REFERENCES combat_styles(fqn_segment)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_combat_style_shared_abilities_style
-                ON combat_style_shared_abilities(combat_style_codename);
-            CREATE INDEX IF NOT EXISTS idx_combat_style_shared_abilities_abl
-                ON combat_style_shared_abilities(ability_game_id);
 
 
 
@@ -506,64 +449,16 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
 
 
 
-            -- Class taxonomy (#94).
-            -- Post-7.0 the system is flat: 8 origins (the legacy classes,
-            -- "story" choice in character creation), 16 combat styles (the
-            -- legacy advanced classes, "playstyle" choice). Eligibility =
-            -- matching `attack_type` (force vs tech). No join table needed.
-            --
-            -- Origins have no top-level GOM object; they live as the second
-            -- FQN segment in many other prefixes (`qst.class.<origin>.*`,
-            -- `apc.legacy.class.<origin>.*`, etc.). Rows are derived from
-            -- the canonical PLAYER_CLASSES list. `string_id` resolves via
-            -- `cdx.game_rules.classes.<fqn_segment>` -- a clean 8-row codex
-            -- block whose trailing FQN segment matches our origin codenames
-            -- exactly (agent, sith_inquisitor, etc.).
-            --
-            -- Combat styles ARE GOM objects at `class.pc.advanced.<style>`.
-            -- Two have internal codenames -- force_wizard = sage, specialist
-            -- = vanguard. Display strings come from `cdx.advanced_classes.<style>`,
-            -- which is on a different object; we resolve the cdx string_id
-            -- and store it on the combat_styles row directly.
-            CREATE TABLE IF NOT EXISTS origins (
-                fqn_segment    TEXT PRIMARY KEY,    -- 'sith_warrior', 'agent', etc.
-                faction        TEXT NOT NULL,      -- 'empire' | 'republic'
-                attack_type    TEXT NOT NULL,      -- 'force' | 'tech'
-                string_id      INTEGER             -- -> strings.id2 (NULL until source confirmed)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_origins_attack ON origins(attack_type);
-
-            CREATE TABLE IF NOT EXISTS combat_styles (
-                combat_style_id TEXT PRIMARY KEY,   -- game_id of class.pc.advanced.<style>
-                fqn             TEXT NOT NULL UNIQUE,
-                fqn_segment     TEXT NOT NULL UNIQUE,     -- internal name ('force_wizard', 'specialist', ...)
-                display_segment TEXT NOT NULL,     -- canonical name ('sage', 'vanguard', ...)
-                faction         TEXT NOT NULL,     -- 'empire' | 'republic' (legacy adv-class faction)
-                attack_type     TEXT NOT NULL,     -- 'force' | 'tech'
-                string_id       INTEGER,           -- -> strings.id2 from cdx.advanced_classes.<display>
-                FOREIGN KEY (combat_style_id) REFERENCES objects(game_id)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_combat_styles_attack ON combat_styles(attack_type);
-            CREATE INDEX IF NOT EXISTS idx_combat_styles_faction ON combat_styles(faction);
-            CREATE INDEX IF NOT EXISTS idx_combat_styles_display ON combat_styles(display_segment);
 
 
 
 
 
 
-            -- NPC typed columns (#139) -- 32 props, 5 named enums from
-            -- client.gom Npc schema.
-            CREATE TABLE IF NOT EXISTS npc_details (
-                fqn               TEXT PRIMARY KEY,
-                difficulty        TEXT,
-                faction           TEXT,
-                class_role        TEXT,
-                ai_template       TEXT,
-                level             INTEGER
-            );
+
+
+
+
 
             -- Schematic typed columns (#140) -- 35 props from Schematic schema.
             CREATE TABLE IF NOT EXISTS schematic_details (
