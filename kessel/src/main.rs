@@ -567,6 +567,13 @@ fn main() -> Result<()> {
         stat_items, stat_rows
     );
 
+    // Relic proc classification (trigger + stat from FQN; numbers are runtime).
+    let (relic_rows, relic_classified) = db.populate_relic_procs()?;
+    println!(
+        "  Relic procs: {} relics ({} stat-classified)",
+        relic_rows, relic_classified
+    );
+
     // Eighth pass: aggregate NPCs and rewards across each mission's phase tree
     db.populate_mission_data()?;
 

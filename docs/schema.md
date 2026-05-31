@@ -637,6 +637,20 @@ Decoded from the item payload's `itmEquipModStats` field (GOM field id low32 `0x
 
 **Design note:** item stats are FIXED, not computed -- no payload carries a `modifierSetID` (field `0xacec47da` is absent on all 113,361 items). The `item_rating_table` / `item_budget_table` / `item_modifier_packages` tables are for theorycrafting the budget curve, not for per-item display. Moddable shells produce no `item_stats` rows (their stats come from slotted mods, which are themselves items with their own `item_stats`).
 
+### relic_procs
+
+Classifies each relic item by what kind of proc it is.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `relic_fqn` | TEXT PK | The relic item's FQN. |
+| `relic_game_id` | TEXT | The relic's `objects.game_id`. |
+| `trigger_kind` | TEXT | `proc` (passive on-hit/on-heal) or `onuse` (player-activated). NULL for cosmetic/MTX relics. |
+| `proc_stat` | TEXT | `power` / `critical` / `mastery` / `defense` / `healing` / `absorb` / `alacrity` / `damage`. NULL when unclassifiable. |
+| `proc_ability_guid` | TEXT | The granted proc/onuse ability guid (item field `0x2d7b8786`). |
+
+**Static-data ceiling (this is the #242 finding):** the exact proc magnitude, duration, and internal cooldown are **not in the .tor archive**. The 16 proc-ability objects are shared across all rating tiers, but the proc value scales with the relic's rating at runtime, so the number is computed live -- the `str.abl.*` proc effect strings carry blank duration/ICD tokens, confirming it. This table answers "what kind of relic is this" deterministically; the live proc burst is client-side residual (cf. #111). The relic's *static* equipped stats (Endurance, Power, etc.) are captured in `item_stats`.
+
 ---
 
 ## Conversation tables

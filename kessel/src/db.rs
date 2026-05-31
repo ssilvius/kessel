@@ -894,6 +894,31 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_item_stats_rating ON item_stats(rating);
 
+            -- Relic proc classification. One row per relic item: the trigger
+            -- (passive 'proc' vs activated 'onuse') and the stat it affects
+            -- (power, critical, mastery, defense, healing, absorb, alacrity),
+            -- classified from the relic FQN, plus the granted-ability guid
+            -- (the proc/onuse ability the relic references via field
+            -- 0x2d7b8786).
+            --
+            -- IMPORTANT static-data ceiling: the EXACT proc magnitude,
+            -- duration, and internal cooldown are NOT in the .tor archive --
+            -- the 16 proc-ability objects are SHARED across all rating tiers,
+            -- but the proc value scales with the relic's rating at runtime, so
+            -- the number is computed live (the str.abl.* proc strings carry
+            -- blank duration/ICD tokens, confirming this). The relic's STATIC
+            -- equipped stats ARE captured (in item_stats). So this table
+            -- answers "what kind of relic is this" deterministically; the
+            -- live proc burst value is client-side residual (cf. #111).
+            CREATE TABLE IF NOT EXISTS relic_procs (
+                relic_fqn         TEXT PRIMARY KEY,
+                relic_game_id     TEXT,
+                trigger_kind      TEXT,   -- 'proc' (passive) or 'onuse' (activated)
+                proc_stat         TEXT,   -- power|critical|mastery|defense|healing|absorb|alacrity|NULL
+                proc_ability_guid TEXT    -- granted-ability guid (item field 0x2d7b8786)
+            );
+            CREATE INDEX IF NOT EXISTS idx_relic_procs_stat ON relic_procs(proc_stat);
+
             -- Mission NPCs: NPC references aggregated across a mission's
             -- entire phase tree. For qst-source missions this is the quest's
             -- own NPCs (same as quest_npcs). For mpn-prefix missions (alliance
@@ -5928,6 +5953,94 @@ impl Database {
         }
         tx.commit()?;
         Ok((n_items, n_rows))
+    }
+
+    /// Populate `relic_procs`: classify each relic item by its trigger
+    /// (passive `proc` vs activated `onuse`) and the stat it affects, from the
+    /// relic FQN, joined to its granted-ability guid (from
+    /// `item_granted_abilities`). Deterministic classification; the live proc
+    /// magnitude/duration/ICD are runtime-computed and intentionally not
+    /// modeled here (see the table comment). Returns (rows, classified_stat).
+    pub fn populate_relic_procs(&self) -> Result<(u64, u64)> {
+        self.flush()?;
+        // Classify the stat a relic affects from its FQN. Order matters:
+        // check the more specific tokens first.
+        fn proc_stat(fqn: &str) -> Option<&'static str> {
+            let f = fqn;
+            if f.contains("primary_stat") {
+                Some("mastery")
+            } else if f.contains("alacrity") {
+                Some("alacrity")
+            } else if f.contains("shield") {
+                Some("absorb")
+            } else if f.contains("heal") {
+                Some("healing")
+            } else if f.contains("crit") {
+                Some("critical")
+            } else if f.contains("defense") {
+                Some("defense")
+            } else if f.contains("power") {
+                Some("power")
+            } else if f.contains("kinetic")
+                || f.contains("internal")
+                || f.contains("elemental")
+                || f.contains("dps_energy")
+            {
+                Some("damage")
+            } else if f.contains("tank") {
+                Some("defense")
+            } else {
+                None
+            }
+        }
+        fn trigger_kind(fqn: &str) -> Option<&'static str> {
+            if fqn.contains("onuse") {
+                Some("onuse")
+            } else if fqn.contains("proc") {
+                Some("proc")
+            } else {
+                None
+            }
+        }
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let (mut rows, mut classified) = (0u64, 0u64);
+        {
+            let mut select = tx.prepare(
+                "SELECT o.fqn, o.game_id, ga.ability_guid \
+                 FROM objects o \
+                 JOIN item_details d ON d.fqn = o.fqn \
+                 LEFT JOIN item_granted_abilities ga ON ga.item_fqn = o.fqn \
+                 WHERE d.slot = 'relic' AND o.is_canonical = 1",
+            )?;
+            let relics = select
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+
+            let mut insert = tx.prepare_cached(
+                "INSERT OR REPLACE INTO relic_procs \
+                    (relic_fqn, relic_game_id, trigger_kind, proc_stat, proc_ability_guid) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for (fqn, game_id, guid) in relics {
+                let trigger = trigger_kind(&fqn);
+                let stat = proc_stat(&fqn);
+                if stat.is_some() {
+                    classified += 1;
+                }
+                insert.execute(params![fqn, game_id, trigger, stat, guid])?;
+                rows += 1;
+            }
+        }
+        tx.commit()?;
+        Ok((rows, classified))
     }
 
     /// Populate `mission_npcs` and `mission_rewards` by walking each mission's
