@@ -90,6 +90,19 @@ impl GomValue {
         }
     }
 
+    /// In an `Embedded` object, the value of the field whose id low32 matches
+    /// `id_low32`. GOM fields in one object share their id high32, so the low32
+    /// uniquely identifies a field within the object.
+    pub fn embedded_field(&self, id_low32: u32) -> Option<&GomValue> {
+        match self {
+            GomValue::Embedded(fields) => fields
+                .iter()
+                .find(|(id, _)| (*id as u32) == id_low32)
+                .map(|(_, v)| v),
+            _ => None,
+        }
+    }
+
     /// In an `Embedded` object, the first field whose value is itself a `Map`.
     /// Selecting by shape (rather than a field id) is deliberate: GOM field
     /// ids drift across game patches, but a modifier-package object's only
@@ -293,6 +306,22 @@ pub fn read_first_field(payload: &[u8]) -> Result<GomValue> {
     let _field_id = reader.read_number()?;
     let tag = reader.read_u8()?;
     reader.read_value(tag)
+}
+
+/// Decode a whole GOM object payload as an `Embedded` value (its delta-coded
+/// fields keyed by id). Item/NPC/etc. object payloads begin with zero padding
+/// followed by the `ScriptObjectReader` stream (script type, field count, then
+/// `<delta_id><tag><value>` per field); this skips the padding and walks it.
+/// Field values that use an unsupported tag abort the walk, so callers get the
+/// fields decoded up to that point via the returned error's context only when
+/// the whole walk succeeds.
+pub fn read_object_fields(payload: &[u8]) -> Result<GomValue> {
+    let start = payload
+        .iter()
+        .position(|&b| b != 0)
+        .ok_or_else(|| anyhow::anyhow!("gom_reader: payload is all zeros"))?;
+    let mut reader = Reader::new(payload, start);
+    reader.read_object()
 }
 
 #[cfg(test)]

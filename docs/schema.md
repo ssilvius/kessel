@@ -599,6 +599,23 @@ stat_s = item_budget_table[quality][item_level][ package.permille(s) ]
 
 **Known gap (follow-up):** the per-item link is not yet materialized -- kessel does not yet emit each item's own `(item_level, quality, modifierSetID)` columns, so joining a specific `itm.*` row to these tables requires that decode (item object payloads are CF40-marker structured, unlike the clean singletons).
 
+### item_granted_abilities
+
+The ability/proc an item grants when equipped. Decoded from the item payload's granted-ability field (GOM field id low32 `0x2d7b8786`, a UInt64 object guid), resolved against `objects.guid`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `item_fqn` | TEXT PK | The granting item's FQN. |
+| `item_game_id` | TEXT | The item's `objects.game_id`. |
+| `ability_guid` | TEXT | The granted ability's object guid (16 hex). |
+| `ability_fqn` | TEXT | Resolved ability FQN, when the ability is an extracted object. NULL otherwise. |
+| `ability_kind` | TEXT | Resolved object kind. NULL when unresolved. |
+| `effect_text` | TEXT | The ability's `id1=1` effect description, when resolved. NULL otherwise. |
+
+3,831 items grant an ability. 535 resolve to extracted abilities with effect text -- every legendary implant and tactical (e.g. Fearless Victor -> "Whenever you use a rage spending damage ability, your melee damage is increased by 10% for 10 seconds") plus set-bonus abilities.
+
+**Known gap (follow-up):** the other ~3,296 (relic procs and similar) reference UNNAMED effect objects that `should_extract_object`'s FQN-prefix whitelist drops. Their `ability_guid` is recorded but `ability_fqn`/`effect_text` are NULL. Resolving relic proc text requires capturing those guid-referenced unnamed effect objects during extraction, then joining their `str.abl.*` effect strings (which already exist in the `strings` table -- e.g. the "Power Surge" proc buff -- but carry runtime-substituted duration/ICD tokens that render blank).
+
 ---
 
 ## Conversation tables
