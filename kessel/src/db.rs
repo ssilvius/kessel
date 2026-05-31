@@ -1,7 +1,7 @@
 //! SQLite database output with batched inserts
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Transaction};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -861,6 +861,59 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_item_granted_abilities_guid
                 ON item_granted_abilities(ability_guid);
+
+            -- Per-item stat block: the actual stats an item provides, ready for
+            -- a tooltip. Stats are FIXED on equippable gear and mod pieces --
+            -- stored in the item payload's itmEquipModStats field (GOM field id
+            -- low32 0xa4faffdd, a Map<STAT-enum, value>).
+            --
+            -- Each row is one (item, stat). The item metadata (level, quality,
+            -- rating) is denormalized onto every row so a tooltip is a single
+            -- `WHERE item_fqn=?` with no join. Moddable shells carry no innate
+            -- stats (their stats come from slotted mods, which are themselves
+            -- items with their own item_stats) and so produce no rows here --
+            -- that is correct, not a gap. Item stats are fixed, not derived
+            -- from a per-item modifier set, so the budget/modifier-package
+            -- tables are for theorycrafting, not the per-item display path.
+            --   item_level = itmBaseLevel (0xc7c48e7c)
+            --   quality    = itmBaseQuality (0xc7c48e7d -> itmQuality member)
+            --   rating     = display item rating (0x191f29c8)
+            CREATE TABLE IF NOT EXISTS item_stats (
+                item_fqn     TEXT NOT NULL,
+                item_game_id TEXT,
+                item_level   INTEGER,
+                quality      TEXT,
+                rating       INTEGER,
+                stat_index   INTEGER NOT NULL,
+                stat_name    TEXT NOT NULL,
+                value        INTEGER NOT NULL,
+                PRIMARY KEY (item_fqn, stat_index)
+            );
+            CREATE INDEX IF NOT EXISTS idx_item_stats_rating ON item_stats(rating);
+
+            -- Relic proc classification. One row per relic item: the trigger
+            -- (passive 'proc' vs activated 'onuse') and the stat it affects,
+            -- classified from the relic FQN, plus the granted-ability guid
+            -- (the proc/onuse ability the relic references via field
+            -- 0x2d7b8786). See proc_stat() for the full set of stat labels.
+            --
+            -- IMPORTANT static-data ceiling: the EXACT proc magnitude,
+            -- duration, and internal cooldown are NOT in the .tor archive.
+            -- Proc-ability objects are shared across rating tiers while the
+            -- proc value scales with the relic's rating at runtime, so the
+            -- number is computed live (the str.abl.* proc strings carry blank
+            -- duration/ICD tokens). The relic's STATIC equipped stats ARE
+            -- captured (in item_stats). So this table answers "what kind of
+            -- relic is this" deterministically; the live proc burst value is
+            -- client-side residual (cf. #111).
+            CREATE TABLE IF NOT EXISTS relic_procs (
+                relic_fqn         TEXT PRIMARY KEY,
+                relic_game_id     TEXT,
+                trigger_kind      TEXT,   -- 'proc' (passive) or 'onuse' (activated); NULL if neither
+                proc_stat         TEXT,   -- see proc_stat(): power/critical/mastery/defense/healing/absorb/alacrity/damage, or NULL
+                proc_ability_guid TEXT    -- granted-ability guid (item field 0x2d7b8786)
+            );
+            CREATE INDEX IF NOT EXISTS idx_relic_procs_stat ON relic_procs(proc_stat);
 
             -- Mission NPCs: NPC references aggregated across a mission's
             -- entire phase tree. For qst-source missions this is the quest's
@@ -1921,6 +1974,21 @@ impl Database {
         self.flush_strings(strings)?;
 
         Ok(())
+    }
+
+    /// Run `f` inside a flushed write transaction: flush pending objects and
+    /// strings, take the connection lock, open a transaction, run `f`, and
+    /// commit on success (rolling back if `f` errors). This is the shared
+    /// skeleton every `populate_*` method wraps -- the body closure does only
+    /// the table-specific work, so the lock / transaction / commit ceremony
+    /// lives in exactly one place.
+    fn with_tx<T>(&self, f: impl FnOnce(&Transaction) -> Result<T>) -> Result<T> {
+        self.flush()?;
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let out = f(&tx)?;
+        tx.commit()?;
+        Ok(out)
     }
 
     /// Populate quest tables from extracted objects (second pass).
@@ -4753,6 +4821,111 @@ fn classify_quest_flag(name: &str) -> &'static str {
     }
 }
 
+/// Walk every canonical `itm.*` object: decode its payload with the
+/// typed-value GOM reader and hand the decoded object to `f` along with its
+/// FQN and game_id. Centralizes the select + decode loop shared by the
+/// per-item populators (`item_stats`, `item_granted_abilities`, ...).
+///
+/// Rows with no payload are skipped silently (storage-level absence). A
+/// *structural* decode failure -- bytes present and valid base64 but the GOM
+/// walker hit an unmodeled tag -- is the signal that the archive has drifted
+/// (a new item shape or a schema-version bump); these are counted and a
+/// summary is logged via `tracing::warn!`, never silently dropped. The reader
+/// decodes every item payload in the current archive, so a non-zero count is a
+/// real "investigate this" event, not routine.
+fn for_each_item_object(
+    tx: &Transaction,
+    mut f: impl FnMut(&str, Option<&str>, &crate::gom_reader::GomValue) -> Result<()>,
+) -> Result<()> {
+    use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+    let mut select = tx.prepare(
+        "SELECT fqn, game_id, json_extract(json, '$.payload_b64') \
+         FROM objects WHERE fqn LIKE 'itm.%' AND is_canonical = 1",
+    )?;
+    let rows: Vec<(String, Option<String>, Option<String>)> = select
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    drop(select);
+    let mut decode_failures = 0u64;
+    for (fqn, game_id, payload_b64) in rows {
+        let Some(payload_b64) = payload_b64 else {
+            continue;
+        };
+        let Ok(payload) = BASE64.decode(&payload_b64) else {
+            continue;
+        };
+        let obj = match crate::gom_reader::read_object_fields(&payload) {
+            Ok(obj) => obj,
+            Err(e) => {
+                // Structural decode failure: surface the first few, then count.
+                if decode_failures < 5 {
+                    tracing::warn!("item payload decode failed for {fqn}: {e}");
+                }
+                decode_failures += 1;
+                continue;
+            }
+        };
+        f(&fqn, game_id.as_deref(), &obj)?;
+    }
+    if decode_failures > 0 {
+        tracing::warn!(
+            "for_each_item_object: {decode_failures} item payload(s) failed to decode \
+             (archive may have drifted -- a new item shape or schema bump)"
+        );
+    }
+    Ok(())
+}
+
+/// Classify the stat a relic's proc/onuse affects from its FQN. Order matters:
+/// the more specific tokens are checked first (e.g. `primary_stat` before the
+/// generic `power`/`crit`). Returns `None` for relics with no recognized stat
+/// token (cosmetic / MTX / quest relics). Pure -- unit-tested.
+fn relic_proc_stat(fqn: &str) -> Option<&'static str> {
+    if fqn.contains("primary_stat") {
+        Some("mastery")
+    } else if fqn.contains("alacrity") {
+        Some("alacrity")
+    } else if fqn.contains("shield") {
+        Some("absorb")
+    } else if fqn.contains("heal") {
+        Some("healing")
+    } else if fqn.contains("crit") {
+        Some("critical")
+    } else if fqn.contains("defense") {
+        Some("defense")
+    } else if fqn.contains("power") {
+        Some("power")
+    } else if fqn.contains("kinetic")
+        || fqn.contains("internal")
+        || fqn.contains("elemental")
+        || fqn.contains("dps_energy")
+    {
+        Some("damage")
+    } else if fqn.contains("tank") {
+        Some("defense")
+    } else {
+        None
+    }
+}
+
+/// Classify a relic's trigger from its FQN: passive `proc` vs player-activated
+/// `onuse`. `None` for relics with neither token. Pure -- unit-tested.
+fn relic_trigger_kind(fqn: &str) -> Option<&'static str> {
+    if fqn.contains("onuse") {
+        Some("onuse")
+    } else if fqn.contains("proc") {
+        Some("proc")
+    } else {
+        None
+    }
+}
+
 /// Pull `(fqn, payload_b64)` tuples for every object of `kind`. Used by
 /// the populate_* passes that need to walk binary payloads.
 fn fetch_fqn_payloads(conn: &Connection, kind: &str) -> Result<Vec<(String, String)>> {
@@ -5571,133 +5744,117 @@ impl Database {
     ///   itmBudgetedAttributes   = Map<quality, List[level]<List[permille]<i64>>>
     ///   itmModifierPackagesList = Map<mod_id, List<{..., itmModPkgAttributePercentages: Map<stat, permille>}>>
     pub fn populate_item_itemization(&self) -> Result<(u64, u64, u64)> {
-        self.flush()?;
         use crate::gom_reader::{read_first_field, GomValue};
+        use crate::gom_schema::{enum_member, quality_label};
 
-        // itmQuality enum index -> short quality key ("artifact", ...).
-        let quality_name = |idx: i64| -> Option<String> {
-            let e = crate::gom_schema::enum_for_name("itmQuality")?;
-            let m = e.members.get(usize::try_from(idx).ok()?)?;
-            Some(
-                m.strip_prefix("itmQuality")
-                    .unwrap_or(m)
-                    .to_ascii_lowercase(),
-            )
-        };
-        // STAT enum index -> full STAT_* member name.
-        let stat_name = |idx: i64| -> Option<String> {
-            let e = crate::gom_schema::enum_for_name("STAT")?;
-            e.members.get(usize::try_from(idx).ok()?).cloned()
-        };
-
-        // Load all payloads before taking the connection lock
-        // (load_singleton_payload locks internally).
+        // Load all payloads before opening the transaction
+        // (load_singleton_payload takes the connection lock internally).
         let rating_payload = self.load_singleton_payload("itmRatingTablePrototype");
         let budget_payload = self.load_singleton_payload("itmBudgetedAttributesPrototype");
         let modpkg_payload = self.load_singleton_payload("itmModifierPackageTablePrototype");
 
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-        let (mut n_rating, mut n_budget, mut n_modpkg) = (0u64, 0u64, 0u64);
+        self.with_tx(|tx| {
+            let (mut n_rating, mut n_budget, mut n_modpkg) = (0u64, 0u64, 0u64);
 
-        // -- Rating: Map<level, Map<quality, rating>> --
-        if let Some(payload) = &rating_payload {
-            let table = read_first_field(payload)?;
-            tx.execute("DELETE FROM item_rating_table", [])?;
-            let mut insert = tx.prepare_cached(
-                "INSERT OR REPLACE INTO item_rating_table (item_level, quality, rating) \
+            // -- Rating: Map<level, Map<quality, rating>> --
+            if let Some(payload) = &rating_payload {
+                let table = read_first_field(payload)?;
+                tx.execute("DELETE FROM item_rating_table", [])?;
+                let mut insert = tx.prepare_cached(
+                    "INSERT OR REPLACE INTO item_rating_table (item_level, quality, rating) \
                  VALUES (?1, ?2, ?3)",
-            )?;
-            for (level_key, inner) in table.as_map().unwrap_or(&[]) {
-                let (Some(level), Some(qmap)) = (level_key.as_i64(), inner.as_map()) else {
-                    continue;
-                };
-                for (q_key, r_val) in qmap {
-                    let (Some(q), Some(rating)) = (q_key.as_i64(), r_val.as_i64()) else {
+                )?;
+                for (level_key, inner) in table.as_map().unwrap_or(&[]) {
+                    let (Some(level), Some(qmap)) = (level_key.as_i64(), inner.as_map()) else {
                         continue;
                     };
-                    let Some(qname) = quality_name(q) else {
-                        continue;
-                    };
-                    insert.execute(params![level, qname, rating])?;
-                    n_rating += 1;
-                }
-            }
-        }
-
-        // -- Budget: Map<quality, List[level]<List[permille]<i64>>> --
-        if let Some(payload) = &budget_payload {
-            let table = read_first_field(payload)?;
-            tx.execute("DELETE FROM item_budget_table", [])?;
-            let mut insert = tx.prepare_cached(
-                "INSERT OR REPLACE INTO item_budget_table \
-                    (quality, item_level, permille, value) \
-                 VALUES (?1, ?2, ?3, ?4)",
-            )?;
-            for (q_key, levels) in table.as_map().unwrap_or(&[]) {
-                let (Some(q), Some(level_list)) = (q_key.as_i64(), levels.as_list()) else {
-                    continue;
-                };
-                let Some(qname) = quality_name(q) else {
-                    continue;
-                };
-                for (level, slots) in level_list.iter().enumerate() {
-                    let Some(slot_list) = slots.as_list() else {
-                        continue;
-                    };
-                    for (permille, val) in slot_list.iter().enumerate() {
-                        let Some(value) = val.as_i64() else { continue };
-                        insert.execute(params![qname, level as i64, permille as i64, value])?;
-                        n_budget += 1;
+                    for (q_key, r_val) in qmap {
+                        let (Some(q), Some(rating)) = (q_key.as_i64(), r_val.as_i64()) else {
+                            continue;
+                        };
+                        let Some(qname) = quality_label(q) else {
+                            continue;
+                        };
+                        insert.execute(params![level, qname, rating])?;
+                        n_rating += 1;
                     }
                 }
             }
-        }
 
-        // -- Modifier packages: Map<mod_id, List<{..., percentages: Map<stat, permille>}>> --
-        if let Some(payload) = &modpkg_payload {
-            let table = read_first_field(payload)?;
-            tx.execute("DELETE FROM item_modifier_packages", [])?;
-            let mut insert = tx.prepare_cached(
-                "INSERT OR REPLACE INTO item_modifier_packages \
+            // -- Budget: Map<quality, List[level]<List[permille]<i64>>> --
+            if let Some(payload) = &budget_payload {
+                let table = read_first_field(payload)?;
+                tx.execute("DELETE FROM item_budget_table", [])?;
+                let mut insert = tx.prepare_cached(
+                    "INSERT OR REPLACE INTO item_budget_table \
+                    (quality, item_level, permille, value) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                )?;
+                for (q_key, levels) in table.as_map().unwrap_or(&[]) {
+                    let (Some(q), Some(level_list)) = (q_key.as_i64(), levels.as_list()) else {
+                        continue;
+                    };
+                    let Some(qname) = quality_label(q) else {
+                        continue;
+                    };
+                    for (level, slots) in level_list.iter().enumerate() {
+                        let Some(slot_list) = slots.as_list() else {
+                            continue;
+                        };
+                        for (permille, val) in slot_list.iter().enumerate() {
+                            let Some(value) = val.as_i64() else { continue };
+                            insert.execute(params![qname, level as i64, permille as i64, value])?;
+                            n_budget += 1;
+                        }
+                    }
+                }
+            }
+
+            // -- Modifier packages: Map<mod_id, List<{..., percentages: Map<stat, permille>}>> --
+            if let Some(payload) = &modpkg_payload {
+                let table = read_first_field(payload)?;
+                tx.execute("DELETE FROM item_modifier_packages", [])?;
+                let mut insert = tx.prepare_cached(
+                    "INSERT OR REPLACE INTO item_modifier_packages \
                     (mod_id, stat_index, stat_name, permille) \
                  VALUES (?1, ?2, ?3, ?4)",
-            )?;
-            for (mod_key, pkg_val) in table.as_map().unwrap_or(&[]) {
-                let Some(mod_id) = mod_key.as_i64() else {
-                    continue;
-                };
-                // The package value is a single-element list wrapping the
-                // package object; accept a bare object too for robustness. The
-                // stat split (itmModPkgAttributePercentages) is the package
-                // object's sole map field.
-                let pkg = match pkg_val {
-                    GomValue::List(items) => items.first(),
-                    other @ GomValue::Embedded(_) => Some(other),
-                    _ => None,
-                };
-                let Some(pct_map) = pkg
-                    .and_then(GomValue::embedded_first_map)
-                    .and_then(GomValue::as_map)
-                else {
-                    continue;
-                };
-                for (stat_key, pct_val) in pct_map {
-                    let (Some(stat_idx), Some(permille)) = (stat_key.as_i64(), pct_val.as_i64())
+                )?;
+                for (mod_key, pkg_val) in table.as_map().unwrap_or(&[]) {
+                    let Some(mod_id) = mod_key.as_i64() else {
+                        continue;
+                    };
+                    // The package value is a single-element list wrapping the
+                    // package object; accept a bare object too for robustness. The
+                    // stat split (itmModPkgAttributePercentages) is the package
+                    // object's sole map field.
+                    let pkg = match pkg_val {
+                        GomValue::List(items) => items.first(),
+                        other @ GomValue::Embedded(_) => Some(other),
+                        _ => None,
+                    };
+                    let Some(pct_map) = pkg
+                        .and_then(GomValue::embedded_first_map)
+                        .and_then(GomValue::as_map)
                     else {
                         continue;
                     };
-                    let Some(sname) = stat_name(stat_idx) else {
-                        continue;
-                    };
-                    insert.execute(params![mod_id, stat_idx, sname, permille])?;
-                    n_modpkg += 1;
+                    for (stat_key, pct_val) in pct_map {
+                        let (Some(stat_idx), Some(permille)) =
+                            (stat_key.as_i64(), pct_val.as_i64())
+                        else {
+                            continue;
+                        };
+                        let Some(sname) = enum_member("STAT", stat_idx) else {
+                            continue;
+                        };
+                        insert.execute(params![mod_id, stat_idx, sname, permille])?;
+                        n_modpkg += 1;
+                    }
                 }
             }
-        }
 
-        tx.commit()?;
-        Ok((n_rating, n_budget, n_modpkg))
+            Ok((n_rating, n_budget, n_modpkg))
+        })
     }
 
     /// Populate `item_granted_abilities`: for each canonical `itm.*` object,
@@ -5709,31 +5866,11 @@ impl Database {
     ///
     /// Returns (rows_linked, rows_resolved_with_fqn).
     pub fn populate_item_granted_abilities(&self) -> Result<(u64, u64)> {
-        self.flush()?;
-        use crate::gom_reader::{read_object_fields, GomValue};
-        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        use crate::gom_reader::GomValue;
         use rusqlite::OptionalExtension;
         const GRANTED_ABILITY_FIELD: u32 = 0x2d7b_8786;
 
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-        let (mut linked, mut resolved) = (0u64, 0u64);
-        {
-            // Collect each canonical item's payload + identity.
-            let mut select = tx.prepare(
-                "SELECT fqn, game_id, json_extract(json, '$.payload_b64') \
-                 FROM objects WHERE fqn LIKE 'itm.%' AND is_canonical = 1",
-            )?;
-            let items = select
-                .query_map([], |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, Option<String>>(1)?,
-                        r.get::<_, Option<String>>(2)?,
-                    ))
-                })?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-
+        self.with_tx(|tx| {
             // Resolve a granted-ability guid to (fqn, kind, id1=1 effect text).
             let mut resolve = tx.prepare_cached(
                 "SELECT o.fqn, o.kind, s.text \
@@ -5747,24 +5884,13 @@ impl Database {
                     (item_fqn, item_game_id, ability_guid, ability_fqn, ability_kind, effect_text) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?;
-
-            for (fqn, game_id, payload_b64) in items {
-                let Some(payload_b64) = payload_b64 else {
-                    continue;
-                };
-                let Ok(payload) = BASE64.decode(&payload_b64) else {
-                    continue;
-                };
-                // A tag the reader doesn't model aborts the walk; such items
-                // are skipped rather than failing the pass.
-                let Ok(obj) = read_object_fields(&payload) else {
-                    continue;
-                };
+            let (mut linked, mut resolved) = (0u64, 0u64);
+            for_each_item_object(tx, |fqn, game_id, obj| {
                 let Some(guid) = obj
                     .embedded_field(GRANTED_ABILITY_FIELD)
                     .and_then(GomValue::as_i64)
                 else {
-                    continue;
+                    return Ok(());
                 };
                 // Field is a UInt64 object guid; format to match objects.guid.
                 let guid_hex = format!("{:016X}", guid as u64);
@@ -5792,10 +5918,135 @@ impl Database {
                     effect_text
                 ])?;
                 linked += 1;
+                Ok(())
+            })?;
+            Ok((linked, resolved))
+        })
+    }
+
+    /// Populate `item_stats`: each item's fixed stat block, decoded from the
+    /// item payload's `itmEquipModStats` field (GOM field id low32 0xa4faffdd,
+    /// a `Map<STAT-enum, value>`), plus its level/quality/rating metadata. This
+    /// is the per-item stat display path. Items without the field (moddable
+    /// shells, materials, etc.) produce no rows. Returns (items, stat rows).
+    pub fn populate_item_stats(&self) -> Result<(u64, u64)> {
+        use crate::gom_reader::GomValue;
+        use crate::gom_schema::{enum_member, quality_label};
+        const EQUIP_MOD_STATS: u32 = 0xa4fa_ffdd;
+        const BASE_LEVEL: u32 = 0xc7c4_8e7c;
+        const BASE_QUALITY: u32 = 0xc7c4_8e7d;
+        const RATING: u32 = 0x191f_29c8;
+
+        self.with_tx(|tx| {
+            let mut insert = tx.prepare_cached(
+                "INSERT OR REPLACE INTO item_stats \
+                    (item_fqn, item_game_id, item_level, quality, rating, \
+                     stat_index, stat_name, value) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )?;
+            let (mut n_items, mut n_rows, mut unknown_stats) = (0u64, 0u64, 0u64);
+            for_each_item_object(tx, |fqn, game_id, obj| {
+                // Only items with a fixed stat block produce rows.
+                let Some(stats) = obj
+                    .embedded_field(EQUIP_MOD_STATS)
+                    .and_then(GomValue::as_map)
+                else {
+                    return Ok(());
+                };
+                let level = obj.embedded_field(BASE_LEVEL).and_then(GomValue::as_i64);
+                let quality = obj
+                    .embedded_field(BASE_QUALITY)
+                    .and_then(GomValue::as_i64)
+                    .and_then(quality_label);
+                let rating = obj.embedded_field(RATING).and_then(GomValue::as_i64);
+
+                let mut wrote = false;
+                for (stat_key, val) in stats {
+                    let (Some(stat_idx), Some(value)) = (stat_key.as_i64(), val.as_i64()) else {
+                        continue;
+                    };
+                    // A present stat whose index has no STAT enum member is a
+                    // schema-drift signal (a stat added by a patch), not a
+                    // missing-field skip -- count it so it isn't lost silently.
+                    let Some(sname) = enum_member("STAT", stat_idx) else {
+                        unknown_stats += 1;
+                        continue;
+                    };
+                    insert.execute(params![
+                        fqn, game_id, level, quality, rating, stat_idx, sname, value
+                    ])?;
+                    n_rows += 1;
+                    wrote = true;
+                }
+                if wrote {
+                    n_items += 1;
+                }
+                Ok(())
+            })?;
+            if unknown_stats > 0 {
+                tracing::warn!(
+                    "item_stats: {unknown_stats} stat entries had an index with no STAT enum \
+                     member (schema drift?) and were skipped"
+                );
             }
-        }
-        tx.commit()?;
-        Ok((linked, resolved))
+            Ok((n_items, n_rows))
+        })
+    }
+
+    /// Populate `relic_procs`: classify each relic item by its trigger
+    /// (passive `proc` vs activated `onuse`) and the stat it affects, from the
+    /// relic FQN, joined to its granted-ability guid (from
+    /// `item_granted_abilities`). Deterministic classification; the live proc
+    /// magnitude/duration/ICD are runtime-computed and intentionally not
+    /// modeled here (see the table comment). Returns (rows, classified_stat).
+    pub fn populate_relic_procs(&self) -> Result<(u64, u64)> {
+        self.with_tx(|tx| {
+            let (mut rows, mut classified, mut unclassified) = (0u64, 0u64, 0u64);
+            let mut select = tx.prepare(
+                "SELECT o.fqn, o.game_id, ga.ability_guid \
+                 FROM objects o \
+                 JOIN item_details d ON d.fqn = o.fqn \
+                 LEFT JOIN item_granted_abilities ga ON ga.item_fqn = o.fqn \
+                 WHERE d.slot = 'relic' AND o.is_canonical = 1",
+            )?;
+            let relics = select
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+
+            let mut insert = tx.prepare_cached(
+                "INSERT OR REPLACE INTO relic_procs \
+                    (relic_fqn, relic_game_id, trigger_kind, proc_stat, proc_ability_guid) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for (fqn, game_id, guid) in relics {
+                let trigger = relic_trigger_kind(&fqn);
+                let stat = relic_proc_stat(&fqn);
+                if stat.is_some() {
+                    classified += 1;
+                }
+                // A relic the FQN classifier understood NEITHER way is a real
+                // gap (new naming convention / unknown family), not a partial
+                // classification -- surface it rather than store it silently.
+                if trigger.is_none() && stat.is_none() {
+                    unclassified += 1;
+                }
+                insert.execute(params![fqn, game_id, trigger, stat, guid])?;
+                rows += 1;
+            }
+            if unclassified > 0 {
+                tracing::warn!(
+                    "relic_procs: {unclassified} of {rows} relics classified as neither \
+                     proc nor onuse and no stat (FQN naming the classifier doesn't cover)"
+                );
+            }
+            Ok((rows, classified))
+        })
     }
 
     /// Populate `mission_npcs` and `mission_rewards` by walking each mission's
@@ -8619,6 +8870,47 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relic_classifiers_cover_real_fqn_tails() {
+        // Real relic FQN tails (from the v24 extract) -> expected classification.
+        // trigger: proc (passive) vs onuse (activated).
+        assert_eq!(relic_trigger_kind("itm.x.relic_power_proc"), Some("proc"));
+        assert_eq!(
+            relic_trigger_kind("itm.x.relic_dps_power_onuse"),
+            Some("onuse")
+        );
+        assert_eq!(relic_trigger_kind("itm.mtx.relic.bastilas_sash"), None);
+
+        // proc_stat token mapping.
+        assert_eq!(relic_proc_stat("relic_power_proc"), Some("power"));
+        assert_eq!(relic_proc_stat("relic_crit_proc"), Some("critical"));
+        assert_eq!(relic_proc_stat("relic_primary_stat_proc"), Some("mastery"));
+        assert_eq!(relic_proc_stat("relic_heal_proc"), Some("healing"));
+        assert_eq!(relic_proc_stat("relic_defense_proc"), Some("defense"));
+        assert_eq!(
+            relic_proc_stat("trinket_relic_static_shield_proc"),
+            Some("absorb")
+        );
+        assert_eq!(
+            relic_proc_stat("relic_dps_alacrity_onuse"),
+            Some("alacrity")
+        );
+        assert_eq!(
+            relic_proc_stat("artifact_trinket_relics_dps_kinetic_proc"),
+            Some("damage")
+        );
+        assert_eq!(relic_proc_stat("trinket_relic_tank_proc"), Some("defense"));
+        // Cosmetic / MTX relic with no recognized stat token.
+        assert_eq!(relic_proc_stat("bastilas_sash"), None);
+
+        // Precedence: a tail with both "primary_stat" and "crit" resolves to
+        // the more specific primary_stat (mastery), not critical.
+        assert_eq!(
+            relic_proc_stat("relic_primary_stat_crit_proc"),
+            Some("mastery")
+        );
+    }
 
     fn temp_db_path(label: &str) -> std::path::PathBuf {
         let pid = std::process::id();

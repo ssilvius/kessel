@@ -175,6 +175,26 @@ pub fn enum_for_name(name: &str) -> Option<&'static GomEnum> {
     schema().enums_by_hash.values().find(|e| e.name == name)
 }
 
+/// The zero-based member of enum `name` at `idx` (e.g. `enum_member("STAT", 4)`
+/// -> "STAT_att_endurance"). The single source of truth for enum-index ->
+/// label resolution used by the item/itemization populators.
+pub fn enum_member(name: &str, idx: i64) -> Option<&'static str> {
+    let e = enum_for_name(name)?;
+    let i = usize::try_from(idx).ok()?;
+    e.members.get(i).map(String::as_str)
+}
+
+/// The short item-quality label for an `itmQuality` enum index: the member name
+/// with its `itmQuality` prefix stripped and lowercased (e.g. 4 -> "artifact").
+pub fn quality_label(idx: i64) -> Option<String> {
+    let m = enum_member("itmQuality", idx)?;
+    Some(
+        m.strip_prefix("itmQuality")
+            .unwrap_or(m)
+            .to_ascii_lowercase(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,6 +253,26 @@ mod tests {
             e.members.iter().any(|m| m.starts_with("STAT_")),
             "STAT enum missing STAT_* members"
         );
+    }
+
+    #[test]
+    fn enum_member_resolves_and_bounds_check() {
+        // Pins the doc-comment example and the item_stats stat-label path.
+        assert_eq!(enum_member("STAT", 4), Some("STAT_att_endurance"));
+        assert_eq!(enum_member("STAT", 1), Some("STAT_att_strength"));
+        // Out-of-range and negative indices -> None (no panic), so a drifted
+        // stat index is skipped, not a crash.
+        assert_eq!(enum_member("STAT", 9_999_999), None);
+        assert_eq!(enum_member("STAT", -1), None);
+        assert_eq!(enum_member("NoSuchEnum", 0), None);
+    }
+
+    #[test]
+    fn quality_label_strips_and_lowercases() {
+        // The label the item_stats / itemization populators store.
+        assert_eq!(quality_label(4).as_deref(), Some("artifact"));
+        assert_eq!(quality_label(2).as_deref(), Some("premium"));
+        assert_eq!(quality_label(-1), None);
     }
 
     #[test]

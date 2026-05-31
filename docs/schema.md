@@ -616,6 +616,41 @@ The ability/proc an item grants when equipped. Decoded from the item payload's g
 
 **Known gap (follow-up):** the other ~3,296 (relic procs and similar) reference UNNAMED effect objects that `should_extract_object`'s FQN-prefix whitelist drops. Their `ability_guid` is recorded but `ability_fqn`/`effect_text` are NULL. Resolving relic proc text requires capturing those guid-referenced unnamed effect objects during extraction, then joining their `str.abl.*` effect strings (which already exist in the `strings` table -- e.g. the "Power Surge" proc buff -- but carry runtime-substituted duration/ICD tokens that render blank).
 
+### item_stats
+
+Each item's actual stat block -- the numbers a tooltip shows. One row per (item, stat); the item metadata (level, quality, rating) is denormalized onto every row so a tooltip is a single `WHERE item_fqn=?`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `item_fqn` | TEXT | The item's FQN. |
+| `item_game_id` | TEXT | The item's `objects.game_id`. |
+| `item_level` | INTEGER | `itmBaseLevel` (internal level, not the display rating). |
+| `quality` | TEXT | `itmBaseQuality` (premium / prototype / artifact / legendary / ...). |
+| `rating` | INTEGER | Display item rating (e.g. 340, 344). |
+| `stat_index` | INTEGER | STAT enum index. |
+| `stat_name` | TEXT | STAT enum member (e.g. `STAT_att_mastery`, `STAT_rtg_attack_power`). PK `(item_fqn, stat_index)`. |
+| `value` | INTEGER | Stat amount. |
+
+Decoded from the item payload's `itmEquipModStats` field (GOM field id low32 `0xa4faffdd`, a `Map<STAT-enum, value>`; values are whole numbers stored as f32). 58,030 items, 182,511 stat rows.
+
+**Validated against live worn gear:** Fearless Victor implant (rating 340 -> Mastery 1223 / Endurance 1450 / Power 940 / Critical 614), Rakata Force-Healer's Robe (344) and Med-Tech Vambraces all reproduce exactly.
+
+**Design note:** item stats are FIXED, not computed -- no payload carries a `modifierSetID` (field `0xacec47da` is absent on all 113,361 items). The `item_rating_table` / `item_budget_table` / `item_modifier_packages` tables are for theorycrafting the budget curve, not for per-item display. Moddable shells produce no `item_stats` rows (their stats come from slotted mods, which are themselves items with their own `item_stats`).
+
+### relic_procs
+
+Classifies each relic item by what kind of proc it is.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `relic_fqn` | TEXT PK | The relic item's FQN. |
+| `relic_game_id` | TEXT | The relic's `objects.game_id`. |
+| `trigger_kind` | TEXT | `proc` (passive on-hit/on-heal) or `onuse` (player-activated). NULL for cosmetic/MTX relics. |
+| `proc_stat` | TEXT | `power` / `critical` / `mastery` / `defense` / `healing` / `absorb` / `alacrity` / `damage`. NULL when unclassifiable. |
+| `proc_ability_guid` | TEXT | The granted proc/onuse ability guid (item field `0x2d7b8786`). |
+
+**Static-data ceiling (this is the #242 finding):** the exact proc magnitude, duration, and internal cooldown are **not in the .tor archive**. The 16 proc-ability objects are shared across all rating tiers, but the proc value scales with the relic's rating at runtime, so the number is computed live -- the `str.abl.*` proc effect strings carry blank duration/ICD tokens, confirming it. This table answers "what kind of relic is this" deterministically; the live proc burst is client-side residual (cf. #111). The relic's *static* equipped stats (Endurance, Power, etc.) are captured in `item_stats`.
+
 ---
 
 ## Conversation tables
