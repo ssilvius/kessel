@@ -837,6 +837,31 @@ impl Database {
                 PRIMARY KEY (mod_id, stat_index)
             );
 
+            -- The ability/proc an item grants when equipped. Decoded from the
+            -- item payload's granted-ability field (GOM field id low32
+            -- 0x2d7b8786, a UInt64 object guid). This is the "what does this
+            -- item DO" link: legendary implants -> their bonus ability (e.g.
+            -- Fearless Victor), set pieces -> set-bonus abilities, relics ->
+            -- their proc.
+            --
+            -- ability_fqn / effect_text are resolved when the granted ability
+            -- is itself an extracted object (true for legendary implant and
+            -- tactical abilities, abl.itm.*). Relic procs reference UNNAMED
+            -- effect objects that the extraction whitelist drops, so their
+            -- ability_guid is recorded but ability_fqn/effect_text are NULL --
+            -- surfacing exactly which procs still need the effect-object
+            -- extraction (tracked follow-up).
+            CREATE TABLE IF NOT EXISTS item_granted_abilities (
+                item_fqn     TEXT PRIMARY KEY,
+                item_game_id TEXT,
+                ability_guid TEXT NOT NULL,
+                ability_fqn  TEXT,
+                ability_kind TEXT,
+                effect_text  TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_item_granted_abilities_guid
+                ON item_granted_abilities(ability_guid);
+
             -- Mission NPCs: NPC references aggregated across a mission's
             -- entire phase tree. For qst-source missions this is the quest's
             -- own NPCs (same as quest_npcs). For mpn-prefix missions (alliance
@@ -5673,6 +5698,104 @@ impl Database {
 
         tx.commit()?;
         Ok((n_rating, n_budget, n_modpkg))
+    }
+
+    /// Populate `item_granted_abilities`: for each canonical `itm.*` object,
+    /// decode its payload and read the granted-ability field (GOM field id
+    /// low32 `0x2d7b8786`, a UInt64 object guid). Items that grant no ability
+    /// (plain gear) lack the field and are skipped. The guid is resolved
+    /// against `objects` for the ability FQN/kind and its `id1=1` effect text
+    /// where the ability is itself extracted.
+    ///
+    /// Returns (rows_linked, rows_resolved_with_fqn).
+    pub fn populate_item_granted_abilities(&self) -> Result<(u64, u64)> {
+        self.flush()?;
+        use crate::gom_reader::{read_object_fields, GomValue};
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        use rusqlite::OptionalExtension;
+        const GRANTED_ABILITY_FIELD: u32 = 0x2d7b_8786;
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let (mut linked, mut resolved) = (0u64, 0u64);
+        {
+            // Collect each canonical item's payload + identity.
+            let mut select = tx.prepare(
+                "SELECT fqn, game_id, json_extract(json, '$.payload_b64') \
+                 FROM objects WHERE fqn LIKE 'itm.%' AND is_canonical = 1",
+            )?;
+            let items = select
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+
+            // Resolve a granted-ability guid to (fqn, kind, id1=1 effect text).
+            let mut resolve = tx.prepare_cached(
+                "SELECT o.fqn, o.kind, s.text \
+                 FROM objects o \
+                 LEFT JOIN strings s \
+                   ON s.id2 = o.string_id AND s.id1 = 1 AND s.locale = 'en-us' \
+                 WHERE o.guid = ?1 AND o.is_canonical = 1 LIMIT 1",
+            )?;
+            let mut insert = tx.prepare_cached(
+                "INSERT OR REPLACE INTO item_granted_abilities \
+                    (item_fqn, item_game_id, ability_guid, ability_fqn, ability_kind, effect_text) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+
+            for (fqn, game_id, payload_b64) in items {
+                let Some(payload_b64) = payload_b64 else {
+                    continue;
+                };
+                let Ok(payload) = BASE64.decode(&payload_b64) else {
+                    continue;
+                };
+                // A tag the reader doesn't model aborts the walk; such items
+                // are skipped rather than failing the pass.
+                let Ok(obj) = read_object_fields(&payload) else {
+                    continue;
+                };
+                let Some(guid) = obj
+                    .embedded_field(GRANTED_ABILITY_FIELD)
+                    .and_then(GomValue::as_i64)
+                else {
+                    continue;
+                };
+                // Field is a UInt64 object guid; format to match objects.guid.
+                let guid_hex = format!("{:016X}", guid as u64);
+
+                let (ability_fqn, ability_kind, effect_text) = resolve
+                    .query_row([&guid_hex], |r| {
+                        Ok((
+                            r.get::<_, Option<String>>(0)?,
+                            r.get::<_, Option<String>>(1)?,
+                            r.get::<_, Option<String>>(2)?,
+                        ))
+                    })
+                    .optional()?
+                    .unwrap_or((None, None, None));
+
+                if ability_fqn.is_some() {
+                    resolved += 1;
+                }
+                insert.execute(params![
+                    fqn,
+                    game_id,
+                    guid_hex,
+                    ability_fqn,
+                    ability_kind,
+                    effect_text
+                ])?;
+                linked += 1;
+            }
+        }
+        tx.commit()?;
+        Ok((linked, resolved))
     }
 
     /// Populate `mission_npcs` and `mission_rewards` by walking each mission's

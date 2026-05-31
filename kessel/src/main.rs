@@ -552,6 +552,14 @@ fn main() -> Result<()> {
         rating_rows, budget_rows, modpkg_rows
     );
 
+    // What each item grants when equipped (implant/set/relic abilities), via
+    // the item payload's granted-ability guid field.
+    let (granted_total, granted_resolved) = db.populate_item_granted_abilities()?;
+    println!(
+        "  Item granted abilities: {} linked ({} resolved to effect text)",
+        granted_total, granted_resolved
+    );
+
     // Eighth pass: aggregate NPCs and rewards across each mission's phase tree
     db.populate_mission_data()?;
 
