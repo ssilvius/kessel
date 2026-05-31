@@ -15,6 +15,7 @@ mod ability;
 mod conquest;
 mod item;
 mod npc;
+pub mod passes;
 mod quest;
 mod schema;
 mod schematic;
