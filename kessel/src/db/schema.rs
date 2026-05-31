@@ -140,26 +140,6 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
 
 
 
-            -- Schematic recipes (#60). Each itm.schem.* schematic has a
-            -- companion schem.* GOM object whose payload encodes the recipe:
-            -- output item GUID + material GUIDs with quantities. The schem.*
-            -- companion is reachable via a CF GUID ref in the itm.schem.*
-            -- payload. Output and materials are distinguished by the resolved
-            -- FQN's prefix (itm.mat.* = material, anything else = output).
-            CREATE TABLE IF NOT EXISTS schematics (
-                schematic_fqn TEXT PRIMARY KEY,
-                output_fqn TEXT,
-                output_resolved INTEGER NOT NULL DEFAULT 0
-            );
-
-            CREATE TABLE IF NOT EXISTS schematic_materials (
-                schematic_fqn TEXT NOT NULL,
-                material_fqn TEXT NOT NULL,
-                quantity INTEGER NOT NULL,
-                PRIMARY KEY (schematic_fqn, material_fqn)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_schematic_materials_mat ON schematic_materials(material_fqn);
 
 
 
@@ -177,109 +157,13 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
 
 
 
-            -- Conquest objectives: structured view of `ach.conquests.*` with
-            -- category and cadence parsed from the FQN. After PR #38 these
-            -- have working string_id resolution to names/descriptions.
-            CREATE TABLE IF NOT EXISTS conquest_objectives (
-                fqn         TEXT PRIMARY KEY,
-                category    TEXT NOT NULL,   -- chapter|class|crafting|event|flashpoint|galactic_seasons|location|operation|spvp|uprisings|quest|weekly
-                subcategory TEXT,            -- e.g. 'tatooine' (location), 'bounty' (event), 'bounty_hunter' (class)
-                cadence     TEXT,            -- 'weekly' | 'daily' | NULL
-                string_id   INTEGER
-            );
 
-            CREATE INDEX IF NOT EXISTS idx_conquest_objectives_category ON conquest_objectives(category);
-            CREATE INDEX IF NOT EXISTS idx_conquest_objectives_subcategory ON conquest_objectives(subcategory);
-            CREATE INDEX IF NOT EXISTS idx_conquest_objectives_cadence ON conquest_objectives(cadence);
 
-            -- Conquest events from cnqConquestInfoPrototype singleton. One
-            -- row per CF40 8C7DAFE5 record (90 events total). Each record:
-            --   event_name (length-prefixed ASCII at marker tail)
-            --   planet_code (CC 0BAC73FD + "_pla_<planet>" ASCII)
-            --   record_size (bytes from this 8C7DAFE5 to the next one)
-            --
-            -- record_size is bimodal: single-planet invasion records cluster
-            -- at 68-80 bytes; themed/special events (Yavin, Onderon, Iokath,
-            -- Rishi, Ossus, CZ198, Ruhnuk, Meksha) cluster at 7700-8400 bytes
-            -- with many inner sub-bonuses and CFE0 references. The two
-            -- clusters are separated by a ~7400-byte empty gap. Observed
-            -- split: 74 invasion / 16 themed.
-            --
-            -- CAVEAT: the FINAL record has no following marker, so its
-            -- record_size is measured to end-of-payload and therefore absorbs
-            -- the singleton's trailing top-level CFE0 reference array (~250
-            -- extra bytes). event_kind is classified by a threshold placed
-            -- inside the bimodal gap so this inflation cannot mis-tag the
-            -- last event (see THEMED_SIZE_THRESHOLD).
-            --
-            -- Complements conquest_objectives (806 weekly tasks) by giving
-            -- the actual event roster the tasks group under.
-            CREATE TABLE IF NOT EXISTS conquest_events (
-                ordinal      INTEGER PRIMARY KEY,
-                event_name   TEXT NOT NULL,
-                planet_code  TEXT,
-                event_kind   TEXT NOT NULL,    -- 'invasion' | 'themed'
-                record_size  INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_conquest_events_name ON conquest_events(event_name);
-            CREATE INDEX IF NOT EXISTS idx_conquest_events_planet ON conquest_events(planet_code);
 
-            -- Weekly conquest rotation from the cnqSchedulePrototype singleton.
-            -- 496 consecutive weekly entries: each maps a week_ordinal to the
-            -- conquest event scheduled that week, resolved by matching the
-            -- schedule's event GUID against the conquest event records in
-            -- cnqConquestInfoPrototype (event_ordinal aligns with
-            -- conquest_events.ordinal; event_name denormalized for convenience).
-            --
-            -- week_ordinal is a RELATIVE index (1001..1496), not a calendar
-            -- date: the schedule carries no epoch anchor, so this is the
-            -- rotation order. Absolute dates require pinning one known week
-            -- downstream. event_ordinal/event_name are NULL when the
-            -- scheduled GUID does not resolve to an event record.
-            CREATE TABLE IF NOT EXISTS conquest_schedule (
-                week_ordinal  INTEGER PRIMARY KEY,
-                event_guid    TEXT NOT NULL,
-                event_ordinal INTEGER,
-                event_name    TEXT
-            );
-            CREATE INDEX IF NOT EXISTS idx_conquest_schedule_event
-                ON conquest_schedule(event_ordinal);
 
-            -- Armor-class taxonomy from the cbtArmorTablePrototype singleton.
-            -- One row per CF40 record: a small code byte and the class name.
-            -- The canonical list of armor/equipment classes (medium,
-            -- heavy_droid, focus, light, generator, heavy, shield_force,
-            -- shield, adaptive). Self-validating via the names. The CFE0 refs
-            -- in each record are short indexed refs, not 8-byte GUIDs, so they
-            -- are intentionally not surfaced here.
-            CREATE TABLE IF NOT EXISTS armor_classes (
-                ordinal  INTEGER PRIMARY KEY,
-                code     INTEGER NOT NULL,
-                name     TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_armor_classes_name ON armor_classes(name);
 
-            -- Raw combat stat-curve values from the cbtShieldPerLevel
-            -- singleton. One row per typed float (0x04 tag + f32 LE) found
-            -- inside the prototype's CF40 records, in payload order, grouped
-            -- by the enclosing CF40 field-hash.
-            --
-            -- These are LITERAL stored values with NO semantic claim about
-            -- level or stat: the curve is 2D (an undecoded segment key x
-            -- level), so this table intentionally records (prototype,
-            -- curve_hash, ordinal, value) only. Downstream (huttspawn) renders
-            -- them as prose/charts; series separation is by curve_hash. The
-            -- prototype column is retained so sibling per-level curves can be
-            -- added later without a schema change.
-            CREATE TABLE IF NOT EXISTS stat_curve_values (
-                id          INTEGER PRIMARY KEY,
-                prototype   TEXT NOT NULL,
-                curve_hash  TEXT,
-                ordinal     INTEGER NOT NULL,
-                value       REAL NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_stat_curve_values_proto
-                ON stat_curve_values(prototype, curve_hash, ordinal);
+
+
 
 
 
@@ -361,13 +245,6 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
 
 
 
-            -- Schematic typed columns (#140) -- 35 props from Schematic schema.
-            CREATE TABLE IF NOT EXISTS schematic_details (
-                fqn               TEXT PRIMARY KEY,
-                profession        TEXT,
-                tier              INTEGER,
-                training_cost     INTEGER
-            );
 
 
 
