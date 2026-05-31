@@ -36,3 +36,6 @@ indicatif.workspace = true
 rayon.workspace = true
 image.workspace = true
 image_dds.workspace = true
+
+[lints]
+workspace = true
