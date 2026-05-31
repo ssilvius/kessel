@@ -133,65 +133,10 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
                 WHERE (kind = 'Npc' OR fqn LIKE 'npc.%')
                   AND is_canonical = 1;
 
-            -- Quest details (classified from FQN patterns)
-            CREATE TABLE IF NOT EXISTS quest_details (
-                fqn TEXT PRIMARY KEY,
-                mission_type TEXT NOT NULL,
-                faction TEXT,
-                planet TEXT,
-                class_code TEXT,
-                companion_class TEXT,
-                step_count INTEGER DEFAULT 0
-            );
 
-            CREATE INDEX IF NOT EXISTS idx_quest_details_type ON quest_details(mission_type);
-            CREATE INDEX IF NOT EXISTS idx_quest_details_planet ON quest_details(planet);
 
-            -- Quest objectives (#130, closes #15).
-            -- Populated from the Quest class_ref array referenced by client.gom
-            -- Quest property [38] (QuestObjective struct). Foundation pass
-            -- records detected-objective count via marker scan; per-objective
-            -- field decode (target_fqn, kind enum, count, name_string_id) lands
-            -- in a follow-on PR once class_ref element byte-layout is verified.
-            CREATE TABLE IF NOT EXISTS quest_objectives (
-                quest_game_id   TEXT NOT NULL,
-                quest_fqn       TEXT NOT NULL,
-                ordinal         INTEGER NOT NULL,
-                target_fqn      TEXT,
-                kind            TEXT NOT NULL,
-                count           INTEGER,
-                name_string_id  INTEGER,
-                raw_props       TEXT,
-                PRIMARY KEY (quest_game_id, ordinal)
-            );
 
-            CREATE INDEX IF NOT EXISTS idx_quest_objectives_target ON quest_objectives(target_fqn);
-            CREATE INDEX IF NOT EXISTS idx_quest_objectives_kind ON quest_objectives(kind);
-            CREATE INDEX IF NOT EXISTS idx_quest_objectives_quest_fqn ON quest_objectives(quest_fqn);
 
-            -- Per-step flag map (#212). Each quest payload encodes ALL its
-            -- internal tracking flags inline as repeated CF40 markers at
-            -- property hash 2ADEC3C7 (the same hash whose first occurrence
-            -- populates quest_details.primary_tracking_flag). One row here
-            -- per flag occurrence, ordered by byte position in the payload.
-            --
-            -- Drives kessel-warden's per-step quest matchers: combat-log
-            -- events like RemoveEffect:InConversation, kill events, looting
-            -- events fire named flags that match these strings. Categorize
-            -- by prefix: jrn (journal display), track (progress tracker),
-            -- hook (script trigger), qm (quest manager state), counter
-            -- (kill-count), hyd (hydra event), branch_step (_bN_sN_tN game
-            -- coordinate), quest_reward, spoke (action-specific), other.
-            CREATE TABLE IF NOT EXISTS quest_objective_flags (
-                quest_fqn       TEXT NOT NULL,
-                ordinal         INTEGER NOT NULL,
-                flag_name       TEXT NOT NULL,
-                flag_category   TEXT NOT NULL,
-                PRIMARY KEY (quest_fqn, ordinal)
-            );
-            CREATE INDEX IF NOT EXISTS idx_qof_flag ON quest_objective_flags(flag_name);
-            CREATE INDEX IF NOT EXISTS idx_qof_quest ON quest_objective_flags(quest_fqn);
-            CREATE INDEX IF NOT EXISTS idx_qof_category ON quest_objective_flags(flag_category);
 
             -- Item details (classified from FQN patterns; #59).
             -- Set name and set bonus require GOM payload parsing and are
@@ -303,35 +248,6 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
             );
             CREATE INDEX IF NOT EXISTS idx_cnv_enc_enc ON conversation_encounters(encounter_fqn);
 
-            -- Quest clusters: derived groupings to support bulk curation.
-            -- Each quest gets one row per cluster_kind it matches; a quest can
-            -- belong to multiple clusters (e.g. "class_act" and "class_planet"
-            -- for the same FQN).
-            --   cluster_kind:
-            --     class_act        -- (faction, class, act_N)
-            --     class_planet     -- qst.location.<planet>.class.<class>
-            --     world_arc_hub    -- (exp.NN, planet, faction, hub_N)
-            --     world_arc        -- (exp.NN, planet, world_arc, faction)
-            --     planet_world     -- qst.location.<planet>.world.<faction>
-            --     expansion_arc    -- (exp.NN, planet, arc_segment)
-            --     event            -- qst.event.<event_name>
-            --     alliance         -- qst.alliance.<arc>
-            --     companion        -- qst.alliance.companion.<class>
-            --     flashpoint       -- qst.flashpoint.<name>
-            --     operation        -- qst.operation.<name>
-            --     daily_area       -- qst.daily_area.<planet>
-            --     heroic           -- qst.heroic.<name>
-            --     qtr              -- qst.qtr.* (weekly conquests)
-            --     ventures         -- qst.ventures.*
-            --     galactic_seasons -- qst.exp.galactic_seasons.<season>
-            CREATE TABLE IF NOT EXISTS quest_clusters (
-                quest_fqn TEXT NOT NULL,
-                cluster_kind TEXT NOT NULL,
-                cluster_id TEXT NOT NULL,
-                PRIMARY KEY (quest_fqn, cluster_kind, cluster_id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_quest_clusters_id ON quest_clusters(cluster_id);
-            CREATE INDEX IF NOT EXISTS idx_quest_clusters_kind ON quest_clusters(cluster_kind);
 
             -- Per-conversation counts of alignment-event tokens found in NODE
             -- bytes. SWTOR encodes alignment-coded dialog beats by attaching
@@ -361,54 +277,11 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
             );
             CREATE INDEX IF NOT EXISTS idx_cnv_align_kind ON conversation_alignment_events(event_kind);
 
-            -- Quest NPC references (npc.* FQNs embedded in payload)
-            CREATE TABLE IF NOT EXISTS quest_npcs (
-                quest_fqn TEXT NOT NULL,
-                npc_fqn TEXT NOT NULL,
-                PRIMARY KEY (quest_fqn, npc_fqn)
-            );
 
-            -- Quest phase references (mpn.* FQNs embedded in payload)
-            CREATE TABLE IF NOT EXISTS quest_phases (
-                quest_fqn TEXT NOT NULL,
-                phase_fqn TEXT NOT NULL,
-                PRIMARY KEY (quest_fqn, phase_fqn)
-            );
 
-            -- Quest prerequisites (has_* variables in payload)
-            CREATE TABLE IF NOT EXISTS quest_prerequisites (
-                fqn TEXT NOT NULL,
-                variable TEXT NOT NULL,
-                PRIMARY KEY (fqn, variable)
-            );
 
-            -- Quest chain links (built from GUID refs and prereq graph).
-            -- Both endpoints are objects.game_id values (sha256(fqn:guid)[0:16]).
-            CREATE TABLE IF NOT EXISTS quest_chain (
-                source_game_id TEXT NOT NULL,
-                target_game_id TEXT NOT NULL,
-                link_type TEXT NOT NULL,
-                PRIMARY KEY (source_game_id, target_game_id),
-                FOREIGN KEY (source_game_id) REFERENCES objects(game_id),
-                FOREIGN KEY (target_game_id) REFERENCES objects(game_id)
-            );
 
-            -- Missions: unified mission identities from two sources.
-            --
-            -- 1. Every qst.* object is a mission (source='qst').
-            -- 2. Every unique mpn-prefix grouping (a path-prefix of mpn.* objects
-            --    formed by dropping the leaf segment) that has no qst.* parent
-            --    is also a mission (source='mpn-prefix'). These are typically
-            --    alliance alerts, side missions encoded purely as phase trees,
-            --    and other content that lives only as mpn.* phases.
-            --
-            -- Closes the 3.9k vs 1.3k gap from #34.
-            CREATE TABLE IF NOT EXISTS missions (
-                mission_fqn TEXT PRIMARY KEY,
-                source      TEXT NOT NULL  -- 'qst' or 'mpn-prefix'
-            );
 
-            CREATE INDEX IF NOT EXISTS idx_missions_source ON missions(source);
 
             -- Conquest objectives: structured view of `ach.conquests.*` with
             -- category and cadence parsed from the FQN. After PR #38 these
@@ -666,29 +539,9 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
             );
             CREATE INDEX IF NOT EXISTS idx_relic_procs_stat ON relic_procs(proc_stat);
 
-            -- Mission NPCs: NPC references aggregated across a mission's
-            -- entire phase tree. For qst-source missions this is the quest's
-            -- own NPCs (same as quest_npcs). For mpn-prefix missions (alliance
-            -- alerts, mpn-only side missions) this aggregates NPCs from every
-            -- mpn.<prefix>.* child phase. Closes the gap where quest_npcs
-            -- only saw qst.* objects -- mission_npcs sees the full mission.
-            CREATE TABLE IF NOT EXISTS mission_npcs (
-                mission_fqn TEXT NOT NULL,
-                npc_fqn     TEXT NOT NULL,
-                PRIMARY KEY (mission_fqn, npc_fqn)
-            );
 
-            CREATE INDEX IF NOT EXISTS idx_mission_npcs_npc ON mission_npcs(npc_fqn);
 
-            -- Mission rewards: same idea -- quest_reward_* variable names
-            -- aggregated across the mission's entire phase tree.
-            CREATE TABLE IF NOT EXISTS mission_rewards (
-                mission_fqn     TEXT NOT NULL,
-                reward_variable TEXT NOT NULL,
-                PRIMARY KEY (mission_fqn, reward_variable)
-            );
 
-            CREATE INDEX IF NOT EXISTS idx_mission_rewards_variable ON mission_rewards(reward_variable);
 
             -- Spawn runtime IDs: every SPN triple `spn.X;target.Y;<id>` in a
             -- quest payload becomes one row. The numeric ID may be the runtime
@@ -1037,38 +890,6 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
 
             CREATE INDEX IF NOT EXISTS idx_item_set_members_set ON item_set_members(set_fqn);
 
-            -- Hydra script references (#214). Each hyd.* payload is a runtime
-            -- trigger script encoded as plain GOM with FQN refs and command
-            -- names stored inline as length-prefixed ASCII strings. No
-            -- bytecode decryption needed — the names are right there.
-            --
-            -- One row per (hyd_fqn, ref_fqn) edge. ref_kind discriminates:
-            --   - 'counter'     : qst.*.counter_* flag (kill/gather counter)
-            --   - 'tracking'    : qst.*.track_* flag (step tracker)
-            --   - 'journal'     : qst.*.jrn_* flag (journal entry trigger)
-            --   - 'qm_state'    : qst.*.qm_* flag (quest manager state)
-            --   - 'cnv_flag'    : qst.*.cnv_* flag (conversation-set flag)
-            --   - 'glb_flag'    : qst.*.glb_* flag (global story flag)
-            --   - 'hook'        : qst.*.hook_* flag (hydra script trigger)
-            --   - 'target_npc'  : npc.* / enc.* / spn.* / plc.* target ref
-            --   - 'conversation': cnv.* dialog ref
-            --   - 'ability'     : abl.* ability spawn ref
-            --   - 'quest_self'  : qst.* root ref (no trailing flag)
-            --   - 'other_flag'  : qst.* with unrecognized suffix family
-            --
-            -- For warden Kill/Gather matchers: join counter rows to
-            -- target_npc rows by hyd_fqn to find "this hyd's kill watch
-            -- increments this counter when this NPC dies".
-            CREATE TABLE IF NOT EXISTS hydra_refs (
-                hyd_fqn      TEXT NOT NULL,
-                ordinal      INTEGER NOT NULL,
-                ref_kind     TEXT NOT NULL,
-                ref_fqn      TEXT NOT NULL,
-                PRIMARY KEY (hyd_fqn, ordinal)
-            );
-            CREATE INDEX IF NOT EXISTS idx_hydra_refs_kind ON hydra_refs(ref_kind);
-            CREATE INDEX IF NOT EXISTS idx_hydra_refs_ref  ON hydra_refs(ref_fqn);
-            CREATE INDEX IF NOT EXISTS idx_hydra_refs_hyd  ON hydra_refs(hyd_fqn);
 
             -- NPC typed columns (#139) -- 32 props, 5 named enums from
             -- client.gom Npc schema.

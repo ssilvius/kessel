@@ -278,3 +278,20 @@ pub(crate) fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     }
     haystack.windows(needle.len()).position(|w| w == needle)
 }
+
+/// Extract the destination planet component from a transit tracking/journal string.
+///
+/// Matches strings containing `_to_{dest}` where `{dest}` consists of lowercase
+/// letters and underscores. Strips a leading `the_` if present. The caller filters
+/// by checking for a matching intro quest, so non-planet results (e.g. `imperial_transit_station`)
+/// are silently dropped.
+pub(crate) fn extract_transit_dest(s: &str) -> Option<String> {
+    let idx = s.find("_to_")?;
+    let after = &s[idx + 4..];
+    let dest = after.strip_prefix("the_").unwrap_or(after);
+    if !dest.is_empty() && dest.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+        Some(dest.to_string())
+    } else {
+        None
+    }
+}
