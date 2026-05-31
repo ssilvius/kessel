@@ -161,101 +161,15 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
 
             CREATE INDEX IF NOT EXISTS idx_schematic_materials_mat ON schematic_materials(material_fqn);
 
-            -- Conversation -> quest references. NODE conversation files (cnv.*)
-            -- embed CF GUID refs to qst.* objects representing the quests
-            -- that conversation grants or affects. ~23% of NODE files carry
-            -- such refs in observed data. Populated by scanning .tor archives
-            -- for NODE entries during the populate phase.
-            CREATE TABLE IF NOT EXISTS conversation_quest_refs (
-                cnv_fqn TEXT NOT NULL,
-                quest_fqn TEXT NOT NULL,
-                PRIMARY KEY (cnv_fqn, quest_fqn)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_cnv_quest_refs_quest ON conversation_quest_refs(quest_fqn);
-
-            -- Conversation -> NPC actors. CF GUID refs in NODE bodies that
-            -- match npc.* objects. NPC participants in the dialog (the cnv
-            -- FQN's name segment usually picks out the primary NPC; this
-            -- captures every actor present).
-            CREATE TABLE IF NOT EXISTS conversation_npcs (
-                cnv_fqn TEXT NOT NULL,
-                npc_fqn TEXT NOT NULL,
-                PRIMARY KEY (cnv_fqn, npc_fqn)
-            );
-            CREATE INDEX IF NOT EXISTS idx_cnv_npcs_npc ON conversation_npcs(npc_fqn);
-
-            -- Conversation -> achievement unlocks. CF GUID refs to ach.*.
-            CREATE TABLE IF NOT EXISTS conversation_achievements (
-                cnv_fqn TEXT NOT NULL,
-                achievement_fqn TEXT NOT NULL,
-                PRIMARY KEY (cnv_fqn, achievement_fqn)
-            );
-            CREATE INDEX IF NOT EXISTS idx_cnv_ach_ach ON conversation_achievements(achievement_fqn);
-
-            -- Conversation -> codex unlocks. CF GUID refs to cdx.*.
-            CREATE TABLE IF NOT EXISTS conversation_codex (
-                cnv_fqn TEXT NOT NULL,
-                codex_fqn TEXT NOT NULL,
-                PRIMARY KEY (cnv_fqn, codex_fqn)
-            );
-            CREATE INDEX IF NOT EXISTS idx_cnv_cdx_cdx ON conversation_codex(codex_fqn);
-
-            -- Conversation -> item grants. CF GUID refs to itm.* (rewards
-            -- mailed/awarded by the dialog).
-            CREATE TABLE IF NOT EXISTS conversation_items (
-                cnv_fqn TEXT NOT NULL,
-                item_fqn TEXT NOT NULL,
-                PRIMARY KEY (cnv_fqn, item_fqn)
-            );
-            CREATE INDEX IF NOT EXISTS idx_cnv_items_item ON conversation_items(item_fqn);
-
-            -- Conversation -> follow-up conversation. CF GUID refs to other
-            -- cnv.* objects (sequel dialogs, branching outcomes).
-            CREATE TABLE IF NOT EXISTS conversation_followups (
-                cnv_fqn TEXT NOT NULL,
-                target_cnv_fqn TEXT NOT NULL,
-                PRIMARY KEY (cnv_fqn, target_cnv_fqn)
-            );
-            CREATE INDEX IF NOT EXISTS idx_cnv_follow_target ON conversation_followups(target_cnv_fqn);
-
-            -- Conversation -> combat encounter. CF GUID refs to enc.* (combat
-            -- triggered by the dialog).
-            CREATE TABLE IF NOT EXISTS conversation_encounters (
-                cnv_fqn TEXT NOT NULL,
-                encounter_fqn TEXT NOT NULL,
-                PRIMARY KEY (cnv_fqn, encounter_fqn)
-            );
-            CREATE INDEX IF NOT EXISTS idx_cnv_enc_enc ON conversation_encounters(encounter_fqn);
 
 
-            -- Per-conversation counts of alignment-event tokens found in NODE
-            -- bytes. SWTOR encodes alignment-coded dialog beats by attaching
-            -- audio/effect event names like `event.darkmoment_NN`,
-            -- `event.bigdarkmoment_NN`, `event.sinistermoment_NN`,
-            -- `event.heroicmoment_NN`, `event.darksidetheme.*`,
-            -- `event.lightsidetheme.*`, plus explicit `alignment_override` and
-            -- `influence_desync` tokens. The presence and count of each kind
-            -- is a coarse signal for the LS/DS/influence character of the
-            -- dialog, even though the per-choice magnitudes (LS+50/+100, etc)
-            -- are not yet decoded.
-            --   event_kind:
-            --     darkmoment        small DS choice trigger
-            --     bigdarkmoment     major DS choice trigger
-            --     sinistermoment    DS choice trigger
-            --     darksidetheme     DS music theme setter
-            --     heroicmoment      LS choice trigger
-            --     lightsidetheme    LS music theme setter
-            --     alignment_override explicit alignment override
-            --     influence_desync  companion influence event
-            --     affection_bot     companion affection-bot reaction
-            CREATE TABLE IF NOT EXISTS conversation_alignment_events (
-                cnv_fqn TEXT NOT NULL,
-                event_kind TEXT NOT NULL,
-                event_count INTEGER NOT NULL,
-                PRIMARY KEY (cnv_fqn, event_kind)
-            );
-            CREATE INDEX IF NOT EXISTS idx_cnv_align_kind ON conversation_alignment_events(event_kind);
+
+
+
+
+
+
+
 
 
 
@@ -379,20 +293,7 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
 
 
 
-            -- Spawn runtime IDs: every SPN triple `spn.X;target.Y;<id>` in a
-            -- quest payload becomes one row. The numeric ID may be the runtime
-            -- node ID the combat log emits when the entity is interacted with
-            -- (hypothesis from #20, awaiting log verification). Even if it
-            -- turns out to be packed coordinates, the bridge data lives here.
-            CREATE TABLE IF NOT EXISTS spawn_runtime_ids (
-                spn_fqn     TEXT NOT NULL,
-                target_fqn  TEXT NOT NULL,
-                runtime_id  INTEGER NOT NULL,
-                PRIMARY KEY (spn_fqn, target_fqn, runtime_id)
-            );
 
-            CREATE INDEX IF NOT EXISTS idx_spawn_runtime_ids_target ON spawn_runtime_ids(target_fqn);
-            CREATE INDEX IF NOT EXISTS idx_spawn_runtime_ids_runtime ON spawn_runtime_ids(runtime_id);
 
             -- Quest descriptions: first journal entry per quest, surfaced as
             -- a view over the strings table. Mirrors the CSV's "Mission
@@ -496,42 +397,8 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
 
 
 
-            -- Appearance specs (#183). One row per .epp file at
-            -- /resources/gamedata/epp/.../<name>.epp. FQN is the dotted
-            -- form of the path-relative key. appearance_actions and
-            -- fx_spec_refs are JSON arrays decoded from the XML body;
-            -- raw_xml preserves the full XML for downstream typed-field
-            -- consumers.
-            CREATE TABLE IF NOT EXISTS appearance_specs (
-                fqn                 TEXT PRIMARY KEY,
-                appearance_actions  TEXT,
-                fx_spec_refs        TEXT,
-                raw_xml             TEXT NOT NULL
-            );
 
-            -- FX specs (#183). One row per .fxspec file. node_classes is a
-            -- JSON array of the class names listed in the <classes> block;
-            -- raw_xml preserves the full XML for per-node-instance
-            -- consumers.
-            CREATE TABLE IF NOT EXISTS fx_specs (
-                fqn                 TEXT PRIMARY KEY,
-                node_classes_json   TEXT NOT NULL,
-                raw_xml             TEXT NOT NULL
-            );
 
-            -- SCPT compiled-native script bodies (#182, closes #127's
-            -- consumer gap). One row per .scpt file at
-            -- /resources/systemgenerated/compilednative/<numeric_id>.
-            -- decoded_body is the post-XOR-decrypt body bytes (typically
-            -- x86-64 UI/SFX native code per kessel/src/scpt.rs docs).
-            -- Per-script semantic interpretation is a downstream consumer's
-            -- job; this table provides the raw decrypted bytes.
-            CREATE TABLE IF NOT EXISTS scripts (
-                script_id          INTEGER PRIMARY KEY,
-                decoded_size       INTEGER NOT NULL,
-                decoded_body_b64   TEXT NOT NULL,
-                extracted_at       INTEGER NOT NULL DEFAULT (unixepoch())
-            );
 
         "#,
     )?;
