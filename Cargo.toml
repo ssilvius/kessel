@@ -7,6 +7,14 @@ resolver = "2"
 edition = "2021"
 license = "MIT"
 
+# Lint policy. The production `kessel` crate opts in (`[lints] workspace = true`);
+# the build-on-demand `kessel-discovery` examples are intentionally exempt.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "deny"
+
 [workspace.dependencies]
 # Shared deps; both crates inherit via `dep = { workspace = true }`
 anyhow = "1.0"

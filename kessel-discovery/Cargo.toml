@@ -3,11 +3,11 @@ name = "kessel-discovery"
 version = "0.0.1"
 edition.workspace = true
 license.workspace = true
-description = "Discovery and reverse-engineering tooling for kessel. Not shipped by default; build with `cargo build -p kessel-discovery` or `cargo build --workspace`."
+description = "Discovery and reverse-engineering tooling for kessel. Build-on-demand examples; run with `cargo run -p kessel-discovery --example <name>`."
 publish = false
 
-# Discovery binaries are picked up automatically from src/bin/*.rs
-# (no explicit [[bin]] declarations needed)
+# Discovery tools live in examples/ -- built on demand (cargo run --example <name>),
+# so the default workspace build stays cheap. Keepers: the verify_* oracles.
 
 [dependencies]
 kessel = { path = "../kessel" }
