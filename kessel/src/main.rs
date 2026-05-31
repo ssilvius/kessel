@@ -560,6 +560,13 @@ fn main() -> Result<()> {
         granted_total, granted_resolved
     );
 
+    // Per-item fixed stat block (itmEquipModStats) -- tooltip-ready stats.
+    let (stat_items, stat_rows) = db.populate_item_stats()?;
+    println!(
+        "  Item stats: {} items, {} stat rows",
+        stat_items, stat_rows
+    );
+
     // Eighth pass: aggregate NPCs and rewards across each mission's phase tree
     db.populate_mission_data()?;
 

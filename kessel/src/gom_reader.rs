@@ -65,11 +65,13 @@ pub enum GomValue {
 }
 
 impl GomValue {
-    /// The integer payload of `I64`/`U64`/`Enum`, if numeric.
+    /// The integer payload of any numeric variant. `Float` is rounded (stat
+    /// values such as `itmEquipModStats` are whole numbers stored as f32).
     pub fn as_i64(&self) -> Option<i64> {
         match self {
             GomValue::I64(v) | GomValue::Enum(v) => Some(*v),
             GomValue::U64(v) => Some(*v as i64),
+            GomValue::F32(v) => Some(v.round() as i64),
             _ => None,
         }
     }

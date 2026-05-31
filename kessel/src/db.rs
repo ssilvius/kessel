@@ -862,6 +862,38 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_item_granted_abilities_guid
                 ON item_granted_abilities(ability_guid);
 
+            -- Per-item stat block: the actual stats an item provides, ready for
+            -- a tooltip. Stats are FIXED on equippable gear and mod pieces --
+            -- stored in the item payload's itmEquipModStats field (GOM field id
+            -- low32 0xa4faffdd, a Map<STAT-enum, value>). Validated against live
+            -- gear: Fearless Victor implant (340), Rakata Force-Healer's Robe
+            -- (344), Med-Tech Vambraces all reproduce exactly.
+            --
+            -- Each row is one (item, stat). The item metadata (level, quality,
+            -- rating) is denormalized onto every row so a tooltip is a single
+            -- `WHERE item_fqn=?` with no join. Moddable shells carry no innate
+            -- stats (their stats come from slotted mods, which are themselves
+            -- items with their own item_stats) and so produce no rows here --
+            -- that is correct, not a gap. There is no per-item modifierSetID in
+            -- the payload (field 0xacec47da is absent on every item), so the
+            -- budget/modifier-package tables are for theorycrafting, not the
+            -- per-item display path.
+            --   item_level = itmBaseLevel (0xc7c48e7c)
+            --   quality    = itmBaseQuality (0xc7c48e7d -> itmQuality member)
+            --   rating     = display item rating (0x191f29c8)
+            CREATE TABLE IF NOT EXISTS item_stats (
+                item_fqn     TEXT NOT NULL,
+                item_game_id TEXT,
+                item_level   INTEGER,
+                quality      TEXT,
+                rating       INTEGER,
+                stat_index   INTEGER NOT NULL,
+                stat_name    TEXT NOT NULL,
+                value        INTEGER NOT NULL,
+                PRIMARY KEY (item_fqn, stat_index)
+            );
+            CREATE INDEX IF NOT EXISTS idx_item_stats_rating ON item_stats(rating);
+
             -- Mission NPCs: NPC references aggregated across a mission's
             -- entire phase tree. For qst-source missions this is the quest's
             -- own NPCs (same as quest_npcs). For mpn-prefix missions (alliance
@@ -5796,6 +5828,106 @@ impl Database {
         }
         tx.commit()?;
         Ok((linked, resolved))
+    }
+
+    /// Populate `item_stats`: each item's fixed stat block, decoded from the
+    /// item payload's `itmEquipModStats` field (GOM field id low32 0xa4faffdd,
+    /// a `Map<STAT-enum, value>`), plus its level/quality/rating metadata. This
+    /// is the per-item stat display path. Items without the field (moddable
+    /// shells, materials, etc.) produce no rows. Returns (items, stat rows).
+    pub fn populate_item_stats(&self) -> Result<(u64, u64)> {
+        self.flush()?;
+        use crate::gom_reader::{read_object_fields, GomValue};
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        const EQUIP_MOD_STATS: u32 = 0xa4fa_ffdd;
+        const BASE_LEVEL: u32 = 0xc7c4_8e7c;
+        const BASE_QUALITY: u32 = 0xc7c4_8e7d;
+        const RATING: u32 = 0x191f_29c8;
+
+        let stat_name = |idx: i64| -> Option<String> {
+            let e = crate::gom_schema::enum_for_name("STAT")?;
+            e.members.get(usize::try_from(idx).ok()?).cloned()
+        };
+        let quality_name = |idx: i64| -> Option<String> {
+            let e = crate::gom_schema::enum_for_name("itmQuality")?;
+            let m = e.members.get(usize::try_from(idx).ok()?)?;
+            Some(
+                m.strip_prefix("itmQuality")
+                    .unwrap_or(m)
+                    .to_ascii_lowercase(),
+            )
+        };
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let (mut n_items, mut n_rows) = (0u64, 0u64);
+        {
+            let mut select = tx.prepare(
+                "SELECT fqn, game_id, json_extract(json, '$.payload_b64') \
+                 FROM objects WHERE fqn LIKE 'itm.%' AND is_canonical = 1",
+            )?;
+            let items = select
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+
+            let mut insert = tx.prepare_cached(
+                "INSERT OR REPLACE INTO item_stats \
+                    (item_fqn, item_game_id, item_level, quality, rating, \
+                     stat_index, stat_name, value) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )?;
+
+            for (fqn, game_id, payload_b64) in items {
+                let Some(payload_b64) = payload_b64 else {
+                    continue;
+                };
+                let Ok(payload) = BASE64.decode(&payload_b64) else {
+                    continue;
+                };
+                let Ok(obj) = read_object_fields(&payload) else {
+                    continue;
+                };
+                // Only items with a fixed stat block produce rows.
+                let Some(stats) = obj
+                    .embedded_field(EQUIP_MOD_STATS)
+                    .and_then(GomValue::as_map)
+                else {
+                    continue;
+                };
+                let level = obj.embedded_field(BASE_LEVEL).and_then(GomValue::as_i64);
+                let quality = obj
+                    .embedded_field(BASE_QUALITY)
+                    .and_then(GomValue::as_i64)
+                    .and_then(quality_name);
+                let rating = obj.embedded_field(RATING).and_then(GomValue::as_i64);
+
+                let mut wrote = false;
+                for (stat_key, val) in stats {
+                    let (Some(stat_idx), Some(value)) = (stat_key.as_i64(), val.as_i64()) else {
+                        continue;
+                    };
+                    let Some(sname) = stat_name(stat_idx) else {
+                        continue;
+                    };
+                    insert.execute(params![
+                        fqn, game_id, level, quality, rating, stat_idx, sname, value
+                    ])?;
+                    n_rows += 1;
+                    wrote = true;
+                }
+                if wrote {
+                    n_items += 1;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok((n_items, n_rows))
     }
 
     /// Populate `mission_npcs` and `mission_rewards` by walking each mission's
