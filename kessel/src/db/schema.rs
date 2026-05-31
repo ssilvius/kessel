@@ -1,15 +1,14 @@
 //! Schema DDL + the `init_schema` table-creation step.
 //!
-//! `create_tables` currently holds the full DDL as one idempotent batch; the
-//! per-domain `create_tables` split happens as each domain module is extracted
-//! (it carves its CREATE statements out of here into its own module).
+//! Holds only the CORE tables (objects, strings, singletons) + the schema
+//! dispatcher. Every domain owns its own tables in its module's create_tables.
 
 use anyhow::Result;
 use rusqlite::Transaction;
 
-/// Create every table and index (idempotent -- every statement is
-/// `IF NOT EXISTS`). Runs inside the caller's transaction for atomicity.
-pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
+/// Create the core tables (objects/strings/singletons). Domain tables are
+/// created by each domain module's `create_tables`. Idempotent (IF NOT EXISTS).
+pub(crate) fn create_core_tables(tx: &Transaction) -> Result<()> {
     tx.execute_batch(
         r#"
             -- Raw game objects table.

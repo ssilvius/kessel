@@ -155,7 +155,7 @@ impl Database {
         {
             let mut conn = self.conn.lock().unwrap();
             let tx = conn.transaction()?;
-            schema::create_tables(&tx)?;
+            schema::create_core_tables(&tx)?;
             stats_systems::create_tables(&tx)?;
             schematic::create_tables(&tx)?;
             conquest::create_tables(&tx)?;
