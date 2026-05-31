@@ -462,72 +462,11 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
                 WHERE o.fqn LIKE 'mpn.%.bonus.%'
                   AND o.is_canonical = 1;
 
-            -- Disciplines: one row per combat discipline. After the PR3
-            -- rework (#94 follow-up), per-origin shared and utility pools
-            -- no longer live here -- they go to combat_style_shared_abilities
-            -- and class_utility_talents respectively.
-            --
-            -- Two keys: origin_codename (mechanical from FQN -- abl.<origin>.skill.*)
-            -- and combat_style_codename (from a hardcoded 48-row map: stable
-            -- since 4.0, e.g. vengeance->juggernaut, watchman->sentinel).
-            -- huttspawn ETL uses origin for faction routing + nav grouping
-            -- and combat_style for editorial joins to combat_style_shared_abilities
-            -- / class_utility_talents.
-            CREATE TABLE IF NOT EXISTS disciplines (
-                origin_codename        TEXT NOT NULL,
-                discipline_name        TEXT NOT NULL,
-                fqn_prefix             TEXT NOT NULL UNIQUE,  -- e.g. "abl.jedi_knight.skill.defense"
-                combat_style_codename  TEXT NOT NULL,
-                PRIMARY KEY (origin_codename, discipline_name),
-                FOREIGN KEY (combat_style_codename) REFERENCES combat_styles(fqn_segment)
-            );
 
-            CREATE INDEX IF NOT EXISTS idx_disciplines_origin ON disciplines(origin_codename);
-            CREATE INDEX IF NOT EXISTS idx_disciplines_combat_style ON disciplines(combat_style_codename);
 
-            -- Discipline abilities: every abl.* that belongs to a discipline,
-            -- with tier level and slot type derived from FQN segments.
-            -- tier_level: NULL for base abilities (no mods segment), else
-            --   15/23/27/35/39/43/47/51/60/64/68/73/78 from tal.* payload.
-            -- slot_type: 'core' | 'choice' | 'utility' | 'special' | 'passive' | 'base'
-            CREATE TABLE IF NOT EXISTS discipline_abilities (
-                discipline_fqn_prefix  TEXT NOT NULL,
-                ability_game_id        TEXT NOT NULL,
-                ability_fqn            TEXT NOT NULL,
-                tier_level             INTEGER,
-                slot_type              TEXT NOT NULL,
-                PRIMARY KEY (discipline_fqn_prefix, ability_game_id),
-                FOREIGN KEY (ability_game_id) REFERENCES objects(game_id)
-            );
 
-            CREATE INDEX IF NOT EXISTS idx_discipline_abilities_disc ON discipline_abilities(discipline_fqn_prefix);
-            CREATE INDEX IF NOT EXISTS idx_discipline_abilities_abl  ON discipline_abilities(ability_game_id);
 
-            -- Discipline talents: every tal.* that belongs to a discipline.
-            -- Mapping is mechanical from FQN: a talent at
-            --   tal.<class>.skill.<segment>.<name>
-            -- maps to the discipline whose fqn_prefix is
-            --   abl.<class>.skill.<segment>
-            -- This includes the per-class shared utility discipline
-            -- (tal.<class>.skill.utility.*) -- consumers fold those into
-            -- combat-discipline trees editorially if they want.
-            --
-            -- No tier_level column. SWTOR's discipline-tree tier coordinates
-            -- (which talent sits at which level/column on screen) are not
-            -- encoded in tal.* payloads or FQN segments -- that's editorial
-            -- tree layout that lives outside kessel's source data. The
-            -- junction is mechanical membership only; trees rendered from
-            -- it need a separate curated layout layer.
-            CREATE TABLE IF NOT EXISTS discipline_talents (
-                discipline_fqn_prefix  TEXT NOT NULL,
-                talent_game_id         TEXT NOT NULL,
-                talent_fqn             TEXT NOT NULL,
-                PRIMARY KEY (discipline_fqn_prefix, talent_game_id),
-                FOREIGN KEY (talent_game_id) REFERENCES objects(game_id)
-            );
 
-            CREATE INDEX IF NOT EXISTS idx_discipline_talents_disc ON discipline_talents(discipline_fqn_prefix);
-            CREATE INDEX IF NOT EXISTS idx_discipline_talents_tal  ON discipline_talents(talent_game_id);
 
             -- Combat-style-level shared ability pool (#94 PR3 rework).
             -- Replaces the per-discipline fan-out previously emitted into
@@ -556,128 +495,16 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
             CREATE INDEX IF NOT EXISTS idx_combat_style_shared_abilities_abl
                 ON combat_style_shared_abilities(ability_game_id);
 
-            -- Combat-style-level utility talent pool (#94 PR3 rework).
-            -- Replaces the per-discipline fan-out previously emitted into
-            -- discipline_talents for `tal.<origin>.skill.utility.*`. Each
-            -- origin's utility talents fan to BOTH combat styles of that
-            -- origin -- huttspawn ETL just reads, no FQN re-derivation.
-            CREATE TABLE IF NOT EXISTS class_utility_talents (
-                combat_style_codename  TEXT NOT NULL,
-                talent_game_id         TEXT NOT NULL,
-                talent_fqn             TEXT NOT NULL,
-                PRIMARY KEY (combat_style_codename, talent_game_id),
-                FOREIGN KEY (talent_game_id) REFERENCES objects(game_id),
-                FOREIGN KEY (combat_style_codename) REFERENCES combat_styles(fqn_segment)
-            );
 
-            CREATE INDEX IF NOT EXISTS idx_class_utility_talents_style
-                ON class_utility_talents(combat_style_codename);
-            CREATE INDEX IF NOT EXISTS idx_class_utility_talents_talent
-                ON class_utility_talents(talent_game_id);
 
-            -- Talent → ability links: GUID refs decoded from tal.* payloads.
-            -- 37% of talents reference 1-3 abilities via CC 17E2840B + CF GUID pattern.
-            CREATE TABLE IF NOT EXISTS talent_abilities (
-                talent_game_id   TEXT NOT NULL,
-                talent_fqn       TEXT NOT NULL,
-                ability_game_id  TEXT NOT NULL,
-                ability_fqn      TEXT,           -- NULL if GUID not in our object set
-                PRIMARY KEY (talent_game_id, ability_game_id)
-            );
 
-            CREATE INDEX IF NOT EXISTS idx_talent_abilities_talent  ON talent_abilities(talent_game_id);
-            CREATE INDEX IF NOT EXISTS idx_talent_abilities_ability ON talent_abilities(ability_game_id);
 
-            -- Talent classification + script-hook decode from tal.* GOM
-            -- payload (#70). resource_pool mirrors ability_stats (rage,
-            -- focus, force, heat, ammo, energy, gsf). tier is the FQN's
-            -- last segment (tier1, tier_3a, base, passive, etc) — useful
-            -- for grouping discipline-tree tiers and GSF upgrade tiers
-            -- without a second lookup. script_hook is the length-prefixed
-            -- ASCII tail string at the end of the talent payload (vault
-            -- MAPPINGS.md lines 339-365); it identifies the underlying
-            -- ability mod the talent triggers (e.g. abl_bh_me_kolto_shot,
-            -- spvp_reducedcooldown, iamilitaryofficer). 94% of talents
-            -- have one.
-            CREATE TABLE IF NOT EXISTS talent_details (
-                talent_game_id  TEXT PRIMARY KEY,
-                resource_pool   TEXT,    -- force | rage | focus | heat | ammo | energy | gsf | NULL
-                tier            TEXT,    -- FQN last segment
-                script_hook     TEXT,    -- payload tail string, NULL if none
-                FOREIGN KEY (talent_game_id) REFERENCES objects(game_id)
-            );
 
-            CREATE INDEX IF NOT EXISTS idx_talent_details_pool ON talent_details(resource_pool);
-            CREATE INDEX IF NOT EXISTS idx_talent_details_hook ON talent_details(script_hook);
 
-            -- Ability stats decoded from abl.* GOM payload (#69, refined #74).
-            -- Properties live as a contiguous run of [u16 LE propId][f32 LE
-            -- value] records starting at the sentinel 01 04 00 00 80 BF
-            -- (= 0x0401 = -1.0, an uninit marker). The block ends where the
-            -- next 2 bytes are not in 0x04xx. Walker is sentinel-anchored,
-            -- which eliminates the brute-force false positives the v1 scan
-            -- produced (force_cost=1 on warrior/agent abilities, etc).
-            -- Resource costs use a value threshold (>=5) since 0x0403 also
-            -- appears at low values for non-Force tech abilities as a
-            -- scaling coefficient, not a cost.
-            CREATE TABLE IF NOT EXISTS ability_stats (
-                ability_game_id     TEXT PRIMARY KEY,
-                resource_pool       TEXT,    -- force | rage | focus | heat | ammo | energy | NULL
-                cooldown            REAL,    -- 0x0401, seconds
-                cast_time           REAL,    -- 0x041b, seconds (cast or channel)
-                channel_duration    REAL,    -- 0x0406, seconds
-                hard_cast_time      REAL,    -- 0x041a, alternate cast prop
-                force_cost          INTEGER, -- 0x0403, Force-pool cost (sorcerer/sage)
-                resource_cost       INTEGER, -- 0x041e, heat/energy/ammo cost (tech)
-                raw_props           TEXT,    -- JSON {hex_id: f32} for all in-block 0x04xx records
-                FOREIGN KEY (ability_game_id) REFERENCES objects(game_id)
-            );
 
-            -- GSF talent stats decoded from tal.spvp.* GOM payloads (#80).
-            -- Records have shape `[c9 01]? <stat_id:u8> 01 04 <f32 LE>` and end
-            -- at the signature `cb 19 d7 4b ?? 03`. Stat IDs are decoded via
-            -- the embedded gsf_stat_dictionary.toml; rows ship with plain
-            -- labels and units so consumers query
-            --   WHERE label = 'cooldown_delta_seconds'
-            -- rather than a hex byte. `confidence` is verified | guess |
-            -- unknown -- callers can filter to verified-only data.
-            -- `rank` preserves rank-progression ordering when a single talent
-            -- payload encodes multiple records of the same stat (e.g.
-            -- engine_power_regen.upgrade emits +4/+8/+12 as three rows).
-            CREATE TABLE IF NOT EXISTS gsf_talent_stats (
-                talent_game_id  TEXT NOT NULL,
-                label           TEXT NOT NULL,
-                unit            TEXT NOT NULL,
-                rank            INTEGER NOT NULL,
-                value           REAL NOT NULL,
-                confidence      TEXT NOT NULL,
-                stat_id         INTEGER NOT NULL,  -- raw byte for forensics
-                PRIMARY KEY (talent_game_id, label, rank),
-                FOREIGN KEY (talent_game_id) REFERENCES objects(game_id)
-            );
 
-            CREATE INDEX IF NOT EXISTS idx_gsf_talent_stats_label
-                ON gsf_talent_stats(label);
 
-            -- GSF base ability stats decoded from abl.spvp.* payloads (#78).
-            -- Same shape as gsf_talent_stats: labels and units come from the
-            -- embedded dictionary. prop_id semantics differ from ground
-            -- abilities (0x0402 = cooldown for GSF, animation marker for
-            -- ground), so the dictionary has a separate ability_stats section.
-            CREATE TABLE IF NOT EXISTS gsf_ability_stats (
-                ability_game_id TEXT NOT NULL,
-                label           TEXT NOT NULL,
-                unit            TEXT NOT NULL,
-                rank            INTEGER NOT NULL,
-                value           REAL NOT NULL,
-                confidence      TEXT NOT NULL,
-                prop_id         INTEGER NOT NULL,  -- raw u16 for forensics
-                PRIMARY KEY (ability_game_id, label, rank),
-                FOREIGN KEY (ability_game_id) REFERENCES objects(game_id)
-            );
 
-            CREATE INDEX IF NOT EXISTS idx_gsf_ability_stats_label
-                ON gsf_ability_stats(label);
 
             -- Class taxonomy (#94).
             -- Post-7.0 the system is flat: 8 origins (the legacy classes,
@@ -746,35 +573,7 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
                 training_cost     INTEGER
             );
 
-            -- Talent typed columns (#140) -- 7 props from Talent schema.
-            CREATE TABLE IF NOT EXISTS talent_details (
-                fqn               TEXT PRIMARY KEY,
-                discipline_code   TEXT,
-                tree_position     INTEGER,
-                tier              INTEGER
-            );
 
-            -- GSF requisition costs (#115 / #172). Decoded from the
-            -- scFFComponentsCostPrototype + scFFComponentUpgradesCostPrototype
-            -- singletons. (target_guid, cost_kind, tier) is the natural key;
-            -- a single component appears once with cost_kind = 'component_unlock'
-            -- and tier = 0, then five times with cost_kind = 'tier_upgrade' and
-            -- tier = 1..5. target_game_id resolves the GUID into kessel's
-            -- objects table (NULL when the component's content GUID isn't in
-            -- the extracted set).
-            CREATE TABLE IF NOT EXISTS gsf_requisition_costs (
-                target_guid       TEXT NOT NULL,
-                cost_kind         TEXT NOT NULL CHECK (cost_kind IN ('component_unlock', 'tier_upgrade')),
-                tier              INTEGER NOT NULL,
-                cost              INTEGER NOT NULL,
-                target_game_id    TEXT,
-                target_fqn        TEXT,
-                art_path          TEXT,
-                component_kind    TEXT,
-                PRIMARY KEY (target_guid, cost_kind, tier)
-            );
-            CREATE INDEX IF NOT EXISTS idx_gsf_req_costs_target ON gsf_requisition_costs(target_game_id);
-            CREATE INDEX IF NOT EXISTS idx_gsf_req_costs_kind ON gsf_requisition_costs(component_kind);
 
             -- PBUK singleton prototypes (#171): one row per zero-dot PBUK
             -- object. These are master tables / config blobs the game references
@@ -793,215 +592,14 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
             );
             CREATE INDEX IF NOT EXISTS idx_singletons_size ON singletons(payload_size DESC);
 
-            -- Ability/talent -> effect block linkage (#173). One row per
-            -- indexed CF E0 sub-record in the parent's payload. The parent
-            -- self-reference is NOT included; this table is the structural
-            -- linkage to the parent's effect-block sub-records that carry
-            -- per-block typed properties (Weapon Damage, Modify Meta Stat,
-            -- Play Appearance, Call Effect).
-            --
-            -- block_game_id is NULL when the effect block's GUID doesn't
-            -- resolve to an extracted object (versioned-only ability
-            -- category, issue #179). The raw block_guid is preserved so the
-            -- unresolved edge stays visible in spice instead of being
-            -- silently dropped.
-            CREATE TABLE IF NOT EXISTS ability_effect_blocks (
-                parent_game_id    TEXT NOT NULL,
-                block_index       INTEGER NOT NULL,
-                block_guid        TEXT NOT NULL,
-                block_game_id     TEXT,
-                PRIMARY KEY (parent_game_id, block_index),
-                FOREIGN KEY (parent_game_id) REFERENCES objects(game_id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_ability_effect_blocks_block
-                ON ability_effect_blocks(block_game_id);
-            CREATE INDEX IF NOT EXISTS idx_ability_effect_blocks_guid
-                ON ability_effect_blocks(block_guid);
 
-            -- Ability action records. Decoded from CF40 markers
-            -- E251D1CC (effAction), E251D1CD (effCondition),
-            -- E251D1D0 (effInitializer), E71E2F92 (effLogicOp) in
-            -- ability payloads. Scans BOTH canonical and non-canonical
-            -- variants per FQN -- the rich effect data lives on the
-            -- longer non-canonical variant (same pattern as PR #174 tags).
-            -- Per-action parameter decode (damage values, multipliers)
-            -- is deferred to the E251D1CE/CF parameter-list grammar work.
-            CREATE TABLE IF NOT EXISTS ability_effects (
-                ability_fqn       TEXT NOT NULL,
-                ordinal           INTEGER NOT NULL,
-                kind              TEXT NOT NULL CHECK (kind IN ('action','condition','initializer','logic_op')),
-                enum_index        INTEGER NOT NULL,
-                enum_member       TEXT NOT NULL,
-                PRIMARY KEY (ability_fqn, ordinal)
-            );
-            CREATE INDEX IF NOT EXISTS idx_ability_effects_kind ON ability_effects(kind);
-            CREATE INDEX IF NOT EXISTS idx_ability_effects_member ON ability_effects(enum_member);
 
-            -- Ability effect numeric parameters. Decoded from the
-            -- E251D1CE and E251D1CF parameter-list CF40 markers in abl
-            -- payloads. Each row is one (param_flag, float_value) pair
-            -- found inside the parameter-list tail.
-            --
-            -- Format inside the param list: `04 01 01 <flag_u8> <f32_LE>`
-            -- (a typed-value triplet introducing a single float). param_flag
-            -- empirically clusters around 0x10 (~90% of triplets) and 0x20
-            -- (~10%); the semantic meaning of each flag varies per action
-            -- and is not yet enum-resolved.
-            --
-            -- Floats outside the `04 01 01 XX <f32>` pattern (other
-            -- parameter shapes) are NOT yet decoded -- this captures the
-            -- subset that uses the well-formed primitive pattern.
-            CREATE TABLE IF NOT EXISTS ability_effect_params (
-                ability_fqn       TEXT NOT NULL,
-                ordinal           INTEGER NOT NULL,
-                source            TEXT NOT NULL CHECK (source IN ('CE','CF')),
-                param_flag        INTEGER NOT NULL,
-                value_f32         REAL NOT NULL,
-                PRIMARY KEY (ability_fqn, ordinal)
-            );
-            CREATE INDEX IF NOT EXISTS idx_ability_effect_params_flag
-                ON ability_effect_params(param_flag);
 
-            -- Object CC marker references. CC is the second-layer marker
-            -- family per docs/probes/dis-payload-format.md: every CC byte
-            -- is followed by a 4-byte property-name hash + a variable-
-            -- length value. CC markers are 4-10x more common than CF40
-            -- markers per object (Quest: 474 CC vs 83 CF40; NPC: 11 CC
-            -- vs 3 CF40). They're the alternative storage layer for the
-            -- per-object typed data the CF40 walker doesn't catch.
-            --
-            -- The 4-byte CC ID is stored LE in payloads; the MAPPINGS.md
-            -- known IDs are BE strings, so they're byte-reversed here.
-            -- Known names (per MAPPINGS.md + legion 019e4e2a):
-            --   37AE6F6F = stringRef        (BE: 6F6FAE37)
-            --   0B84E217 = abilityRef       (BE: 17E2840B)
-            --   03DDAFE4 = ?                (BE: E4AFDD03)
-            --   2D31CD0C = ?                (BE: 0CCD312D)
-            --   19D74B9D = ?                (BE: 9D4BD719)
-            --   19D74B96 = ?                (BE: 964BD719)
-            -- The full CC-hash-to-name dictionary is in a proprietary
-            -- Bioware namespace; spike #144 to crack it (6 known names
-            -- so far; ~700+ distinct IDs observed corpus-wide).
-            --
-            -- value_bytes_hex captures up to 16 bytes from the CC marker's
-            -- value tail (limited because per-ID length grammar is unknown);
-            -- a future PR per-ID grammar will extract typed values cleanly.
-            CREATE TABLE IF NOT EXISTS object_cc_refs (
-                object_game_id     TEXT NOT NULL,
-                ordinal            INTEGER NOT NULL,
-                cc_id_hex          TEXT NOT NULL,
-                cc_known_name      TEXT,
-                value_bytes_hex    TEXT NOT NULL,
-                PRIMARY KEY (object_game_id, ordinal),
-                FOREIGN KEY (object_game_id) REFERENCES objects(game_id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_object_cc_refs_id ON object_cc_refs(cc_id_hex);
-            CREATE INDEX IF NOT EXISTS idx_object_cc_refs_name ON object_cc_refs(cc_known_name);
 
-            -- effAction parameter values. Within each effAction's parameter
-            -- array, parameters are encoded as `<effParam_idx_u8><f32_LE>`.
-            -- This is the per-action numeric data: damage coefficients,
-            -- modifier amounts, condition values.
-            --
-            -- Verified for Massacre (effAction_BallisticImpulse):
-            --   effParam_StandardHealthPercentMin = 0.1543
-            --   effParam_IgnoreDualWieldModifier  = 1.54
-            -- The 1.54 is the coefficient parsely displays as ~1.47.
-            --
-            -- Detection heuristic: inside the bytes after an effAction
-            -- marker (until the next CF40 marker), scan for the pattern
-            -- `<5-byte segment header><param_id_u8><f32_LE>` repeating.
-            -- The segment header has the form `14 ED 0D 1E 3E ...` (more
-            -- complex param shapes are not yet decoded).
-            CREATE TABLE IF NOT EXISTS ability_action_params (
-                ability_fqn       TEXT NOT NULL,
-                effect_ordinal    INTEGER NOT NULL,
-                param_ordinal     INTEGER NOT NULL,
-                effparam_index    INTEGER NOT NULL,
-                effparam_name     TEXT,
-                value_f32         REAL NOT NULL,
-                PRIMARY KEY (ability_fqn, effect_ordinal, param_ordinal)
-            );
-            CREATE INDEX IF NOT EXISTS idx_ability_action_params_name
-                ON ability_action_params(effparam_name);
 
-            -- Damage-action CC parameter values. Per-effAction_Damage
-            -- record, captures the 6 core CC parameter IDs + 2 optional
-            -- ones, each with a 1-byte int8 value (CC + 4-byte ID + i8).
-            --
-            -- Verified across 1,452 occurrences each for the 6 core IDs:
-            --   0135C0E0, 017459AB, 39285472, 0BB0D06E, 0176E21B, 011A6E3E
-            -- Plus optional 3C0EB23D (342 occ), 0B9BBBDA (318 occ).
-            --
-            -- CC ID names are unknown (separate Bioware hash namespace per
-            -- spike #144). The 1-byte values likely encode damage_type,
-            -- modifier_type, target flag, etc. -- semantic resolution
-            -- requires the hash crack or consumer-side reverse-mapping.
-            --
-            -- NOTE: the float damage coefficient (Massacre 1.47 per
-            -- parsely) is NOT in these CC fields. It lives in a different
-            -- encoding layer not yet characterized.
-            CREATE TABLE IF NOT EXISTS ability_damage_params (
-                ability_fqn       TEXT NOT NULL,
-                effect_ordinal    INTEGER NOT NULL,
-                param_ordinal     INTEGER NOT NULL,
-                cc_id_hex         TEXT NOT NULL,
-                value_i8          INTEGER NOT NULL,
-                PRIMARY KEY (ability_fqn, effect_ordinal, param_ordinal)
-            );
-            CREATE INDEX IF NOT EXISTS idx_ability_damage_params_cc
-                ON ability_damage_params(cc_id_hex);
 
-            -- Talent stat effects (PR: wire-typed-value-decoder).
-            -- Decoded from CF40 D954FB02 markers in talent payloads.
-            -- Each row: which stat the talent modifies and by how much.
-            -- Verified format: <05><stat_idx_u8><01><04><float32_LE>.
-            -- stat_name resolves to a member of the STAT enum (517 members);
-            -- magnitude is a multiplier (e.g. 0.30 = +30%) per modStatType
-            -- semantics. modStatType is in the D954FB04 effect-block class
-            -- but is not yet decoded per-row here (deferred to per-property
-            -- element grammar work).
-            CREATE TABLE IF NOT EXISTS talent_stat_effects (
-                talent_fqn        TEXT NOT NULL,
-                ordinal           INTEGER NOT NULL,
-                stat_index        INTEGER NOT NULL,
-                stat_name         TEXT NOT NULL,
-                magnitude         REAL NOT NULL,
-                PRIMARY KEY (talent_fqn, ordinal)
-            );
-            CREATE INDEX IF NOT EXISTS idx_talent_stat_effects_stat
-                ON talent_stat_effects(stat_name);
 
-            -- Tag dictionary (#174). Decoded from the `tagTablePrototype`
-            -- singleton. ~6750 entries, all in the `tag.abl.*` namespace.
-            -- Two marker forms:
-            --   CE  → 7-byte hash (44 legacy records)
-            --   CF  → 8-byte hash (6706 records)
-            -- The hash is what abilities/talents reference in their payloads;
-            -- `tag_fqn` is the human-readable name.
-            CREATE TABLE IF NOT EXISTS tags (
-                tag_hash       TEXT PRIMARY KEY,
-                tag_fqn        TEXT NOT NULL,
-                hash_marker    TEXT NOT NULL CHECK (hash_marker IN ('CE', 'CF'))
-            );
-            CREATE INDEX IF NOT EXISTS idx_tags_fqn ON tags(tag_fqn);
 
-            -- Ability ↔ tag edges (#174). One row per (ability FQN, tag FQN)
-            -- pair where the tag's hash bytes appear in any payload variant
-            -- of that ability (canonical OR non-canonical -- tags often live
-            -- on the longer non-canonical variant that kessel deduplicates).
-            -- Aggregated per FQN so users get a stable tag set regardless of
-            -- which variant happens to be canonical.
-            CREATE TABLE IF NOT EXISTS ability_tags (
-                ability_fqn        TEXT NOT NULL,
-                ability_game_id    TEXT,
-                tag_hash           TEXT NOT NULL,
-                tag_fqn            TEXT NOT NULL,
-                PRIMARY KEY (ability_fqn, tag_hash),
-                FOREIGN KEY (tag_hash) REFERENCES tags(tag_hash)
-            );
-            CREATE INDEX IF NOT EXISTS idx_ability_tags_tag ON ability_tags(tag_hash);
-            CREATE INDEX IF NOT EXISTS idx_ability_tags_game_id ON ability_tags(ability_game_id);
 
             -- Appearance specs (#183). One row per .epp file at
             -- /resources/gamedata/epp/.../<name>.epp. FQN is the dotted
@@ -1040,17 +638,6 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
                 extracted_at       INTEGER NOT NULL DEFAULT (unixepoch())
             );
 
-            -- Talent ↔ tag edges (#174). Same shape as ability_tags.
-            CREATE TABLE IF NOT EXISTS talent_tags (
-                talent_fqn         TEXT NOT NULL,
-                talent_game_id     TEXT,
-                tag_hash           TEXT NOT NULL,
-                tag_fqn            TEXT NOT NULL,
-                PRIMARY KEY (talent_fqn, tag_hash),
-                FOREIGN KEY (tag_hash) REFERENCES tags(tag_hash)
-            );
-            CREATE INDEX IF NOT EXISTS idx_talent_tags_tag ON talent_tags(tag_hash);
-            CREATE INDEX IF NOT EXISTS idx_talent_tags_game_id ON talent_tags(talent_game_id);
         "#,
     )?;
     Ok(())
