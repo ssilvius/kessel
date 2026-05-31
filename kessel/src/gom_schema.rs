@@ -175,6 +175,26 @@ pub fn enum_for_name(name: &str) -> Option<&'static GomEnum> {
     schema().enums_by_hash.values().find(|e| e.name == name)
 }
 
+/// The zero-based member of enum `name` at `idx` (e.g. `enum_member("STAT", 4)`
+/// -> "STAT_att_endurance"). The single source of truth for enum-index ->
+/// label resolution used by the item/itemization populators.
+pub fn enum_member(name: &str, idx: i64) -> Option<&'static str> {
+    let e = enum_for_name(name)?;
+    let i = usize::try_from(idx).ok()?;
+    e.members.get(i).map(String::as_str)
+}
+
+/// The short item-quality label for an `itmQuality` enum index: the member name
+/// with its `itmQuality` prefix stripped and lowercased (e.g. 4 -> "artifact").
+pub fn quality_label(idx: i64) -> Option<String> {
+    let m = enum_member("itmQuality", idx)?;
+    Some(
+        m.strip_prefix("itmQuality")
+            .unwrap_or(m)
+            .to_ascii_lowercase(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

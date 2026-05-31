@@ -1,7 +1,7 @@
 //! SQLite database output with batched inserts
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Transaction};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -1978,6 +1978,21 @@ impl Database {
         self.flush_strings(strings)?;
 
         Ok(())
+    }
+
+    /// Run `f` inside a flushed write transaction: flush pending objects and
+    /// strings, take the connection lock, open a transaction, run `f`, and
+    /// commit on success (rolling back if `f` errors). This is the shared
+    /// skeleton every `populate_*` method wraps -- the body closure does only
+    /// the table-specific work, so the lock / transaction / commit ceremony
+    /// lives in exactly one place.
+    fn with_tx<T>(&self, f: impl FnOnce(&Transaction) -> Result<T>) -> Result<T> {
+        self.flush()?;
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let out = f(&tx)?;
+        tx.commit()?;
+        Ok(out)
     }
 
     /// Populate quest tables from extracted objects (second pass).
@@ -4810,6 +4825,46 @@ fn classify_quest_flag(name: &str) -> &'static str {
     }
 }
 
+/// Walk every canonical `itm.*` object: decode its payload with the
+/// typed-value GOM reader and hand the decoded object to `f` along with its
+/// FQN and game_id. Rows whose payload is missing or fails to decode are
+/// skipped (the reader decodes all item payloads in practice, so this is just
+/// tolerance, not silent loss). Centralizes the select + decode loop shared by
+/// the per-item populators (`item_stats`, `item_granted_abilities`, ...).
+fn for_each_item_object(
+    tx: &Transaction,
+    mut f: impl FnMut(&str, Option<&str>, &crate::gom_reader::GomValue) -> Result<()>,
+) -> Result<()> {
+    use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+    let mut select = tx.prepare(
+        "SELECT fqn, game_id, json_extract(json, '$.payload_b64') \
+         FROM objects WHERE fqn LIKE 'itm.%' AND is_canonical = 1",
+    )?;
+    let rows: Vec<(String, Option<String>, Option<String>)> = select
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    drop(select);
+    for (fqn, game_id, payload_b64) in rows {
+        let Some(payload_b64) = payload_b64 else {
+            continue;
+        };
+        let Ok(payload) = BASE64.decode(&payload_b64) else {
+            continue;
+        };
+        let Ok(obj) = crate::gom_reader::read_object_fields(&payload) else {
+            continue;
+        };
+        f(&fqn, game_id.as_deref(), &obj)?;
+    }
+    Ok(())
+}
+
 /// Pull `(fqn, payload_b64)` tuples for every object of `kind`. Used by
 /// the populate_* passes that need to walk binary payloads.
 fn fetch_fqn_payloads(conn: &Connection, kind: &str) -> Result<Vec<(String, String)>> {
@@ -5628,133 +5683,117 @@ impl Database {
     ///   itmBudgetedAttributes   = Map<quality, List[level]<List[permille]<i64>>>
     ///   itmModifierPackagesList = Map<mod_id, List<{..., itmModPkgAttributePercentages: Map<stat, permille>}>>
     pub fn populate_item_itemization(&self) -> Result<(u64, u64, u64)> {
-        self.flush()?;
         use crate::gom_reader::{read_first_field, GomValue};
+        use crate::gom_schema::{enum_member, quality_label};
 
-        // itmQuality enum index -> short quality key ("artifact", ...).
-        let quality_name = |idx: i64| -> Option<String> {
-            let e = crate::gom_schema::enum_for_name("itmQuality")?;
-            let m = e.members.get(usize::try_from(idx).ok()?)?;
-            Some(
-                m.strip_prefix("itmQuality")
-                    .unwrap_or(m)
-                    .to_ascii_lowercase(),
-            )
-        };
-        // STAT enum index -> full STAT_* member name.
-        let stat_name = |idx: i64| -> Option<String> {
-            let e = crate::gom_schema::enum_for_name("STAT")?;
-            e.members.get(usize::try_from(idx).ok()?).cloned()
-        };
-
-        // Load all payloads before taking the connection lock
-        // (load_singleton_payload locks internally).
+        // Load all payloads before opening the transaction
+        // (load_singleton_payload takes the connection lock internally).
         let rating_payload = self.load_singleton_payload("itmRatingTablePrototype");
         let budget_payload = self.load_singleton_payload("itmBudgetedAttributesPrototype");
         let modpkg_payload = self.load_singleton_payload("itmModifierPackageTablePrototype");
 
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-        let (mut n_rating, mut n_budget, mut n_modpkg) = (0u64, 0u64, 0u64);
+        self.with_tx(|tx| {
+            let (mut n_rating, mut n_budget, mut n_modpkg) = (0u64, 0u64, 0u64);
 
-        // -- Rating: Map<level, Map<quality, rating>> --
-        if let Some(payload) = &rating_payload {
-            let table = read_first_field(payload)?;
-            tx.execute("DELETE FROM item_rating_table", [])?;
-            let mut insert = tx.prepare_cached(
-                "INSERT OR REPLACE INTO item_rating_table (item_level, quality, rating) \
+            // -- Rating: Map<level, Map<quality, rating>> --
+            if let Some(payload) = &rating_payload {
+                let table = read_first_field(payload)?;
+                tx.execute("DELETE FROM item_rating_table", [])?;
+                let mut insert = tx.prepare_cached(
+                    "INSERT OR REPLACE INTO item_rating_table (item_level, quality, rating) \
                  VALUES (?1, ?2, ?3)",
-            )?;
-            for (level_key, inner) in table.as_map().unwrap_or(&[]) {
-                let (Some(level), Some(qmap)) = (level_key.as_i64(), inner.as_map()) else {
-                    continue;
-                };
-                for (q_key, r_val) in qmap {
-                    let (Some(q), Some(rating)) = (q_key.as_i64(), r_val.as_i64()) else {
+                )?;
+                for (level_key, inner) in table.as_map().unwrap_or(&[]) {
+                    let (Some(level), Some(qmap)) = (level_key.as_i64(), inner.as_map()) else {
                         continue;
                     };
-                    let Some(qname) = quality_name(q) else {
-                        continue;
-                    };
-                    insert.execute(params![level, qname, rating])?;
-                    n_rating += 1;
-                }
-            }
-        }
-
-        // -- Budget: Map<quality, List[level]<List[permille]<i64>>> --
-        if let Some(payload) = &budget_payload {
-            let table = read_first_field(payload)?;
-            tx.execute("DELETE FROM item_budget_table", [])?;
-            let mut insert = tx.prepare_cached(
-                "INSERT OR REPLACE INTO item_budget_table \
-                    (quality, item_level, permille, value) \
-                 VALUES (?1, ?2, ?3, ?4)",
-            )?;
-            for (q_key, levels) in table.as_map().unwrap_or(&[]) {
-                let (Some(q), Some(level_list)) = (q_key.as_i64(), levels.as_list()) else {
-                    continue;
-                };
-                let Some(qname) = quality_name(q) else {
-                    continue;
-                };
-                for (level, slots) in level_list.iter().enumerate() {
-                    let Some(slot_list) = slots.as_list() else {
-                        continue;
-                    };
-                    for (permille, val) in slot_list.iter().enumerate() {
-                        let Some(value) = val.as_i64() else { continue };
-                        insert.execute(params![qname, level as i64, permille as i64, value])?;
-                        n_budget += 1;
+                    for (q_key, r_val) in qmap {
+                        let (Some(q), Some(rating)) = (q_key.as_i64(), r_val.as_i64()) else {
+                            continue;
+                        };
+                        let Some(qname) = quality_label(q) else {
+                            continue;
+                        };
+                        insert.execute(params![level, qname, rating])?;
+                        n_rating += 1;
                     }
                 }
             }
-        }
 
-        // -- Modifier packages: Map<mod_id, List<{..., percentages: Map<stat, permille>}>> --
-        if let Some(payload) = &modpkg_payload {
-            let table = read_first_field(payload)?;
-            tx.execute("DELETE FROM item_modifier_packages", [])?;
-            let mut insert = tx.prepare_cached(
-                "INSERT OR REPLACE INTO item_modifier_packages \
+            // -- Budget: Map<quality, List[level]<List[permille]<i64>>> --
+            if let Some(payload) = &budget_payload {
+                let table = read_first_field(payload)?;
+                tx.execute("DELETE FROM item_budget_table", [])?;
+                let mut insert = tx.prepare_cached(
+                    "INSERT OR REPLACE INTO item_budget_table \
+                    (quality, item_level, permille, value) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                )?;
+                for (q_key, levels) in table.as_map().unwrap_or(&[]) {
+                    let (Some(q), Some(level_list)) = (q_key.as_i64(), levels.as_list()) else {
+                        continue;
+                    };
+                    let Some(qname) = quality_label(q) else {
+                        continue;
+                    };
+                    for (level, slots) in level_list.iter().enumerate() {
+                        let Some(slot_list) = slots.as_list() else {
+                            continue;
+                        };
+                        for (permille, val) in slot_list.iter().enumerate() {
+                            let Some(value) = val.as_i64() else { continue };
+                            insert.execute(params![qname, level as i64, permille as i64, value])?;
+                            n_budget += 1;
+                        }
+                    }
+                }
+            }
+
+            // -- Modifier packages: Map<mod_id, List<{..., percentages: Map<stat, permille>}>> --
+            if let Some(payload) = &modpkg_payload {
+                let table = read_first_field(payload)?;
+                tx.execute("DELETE FROM item_modifier_packages", [])?;
+                let mut insert = tx.prepare_cached(
+                    "INSERT OR REPLACE INTO item_modifier_packages \
                     (mod_id, stat_index, stat_name, permille) \
                  VALUES (?1, ?2, ?3, ?4)",
-            )?;
-            for (mod_key, pkg_val) in table.as_map().unwrap_or(&[]) {
-                let Some(mod_id) = mod_key.as_i64() else {
-                    continue;
-                };
-                // The package value is a single-element list wrapping the
-                // package object; accept a bare object too for robustness. The
-                // stat split (itmModPkgAttributePercentages) is the package
-                // object's sole map field.
-                let pkg = match pkg_val {
-                    GomValue::List(items) => items.first(),
-                    other @ GomValue::Embedded(_) => Some(other),
-                    _ => None,
-                };
-                let Some(pct_map) = pkg
-                    .and_then(GomValue::embedded_first_map)
-                    .and_then(GomValue::as_map)
-                else {
-                    continue;
-                };
-                for (stat_key, pct_val) in pct_map {
-                    let (Some(stat_idx), Some(permille)) = (stat_key.as_i64(), pct_val.as_i64())
+                )?;
+                for (mod_key, pkg_val) in table.as_map().unwrap_or(&[]) {
+                    let Some(mod_id) = mod_key.as_i64() else {
+                        continue;
+                    };
+                    // The package value is a single-element list wrapping the
+                    // package object; accept a bare object too for robustness. The
+                    // stat split (itmModPkgAttributePercentages) is the package
+                    // object's sole map field.
+                    let pkg = match pkg_val {
+                        GomValue::List(items) => items.first(),
+                        other @ GomValue::Embedded(_) => Some(other),
+                        _ => None,
+                    };
+                    let Some(pct_map) = pkg
+                        .and_then(GomValue::embedded_first_map)
+                        .and_then(GomValue::as_map)
                     else {
                         continue;
                     };
-                    let Some(sname) = stat_name(stat_idx) else {
-                        continue;
-                    };
-                    insert.execute(params![mod_id, stat_idx, sname, permille])?;
-                    n_modpkg += 1;
+                    for (stat_key, pct_val) in pct_map {
+                        let (Some(stat_idx), Some(permille)) =
+                            (stat_key.as_i64(), pct_val.as_i64())
+                        else {
+                            continue;
+                        };
+                        let Some(sname) = enum_member("STAT", stat_idx) else {
+                            continue;
+                        };
+                        insert.execute(params![mod_id, stat_idx, sname, permille])?;
+                        n_modpkg += 1;
+                    }
                 }
             }
-        }
 
-        tx.commit()?;
-        Ok((n_rating, n_budget, n_modpkg))
+            Ok((n_rating, n_budget, n_modpkg))
+        })
     }
 
     /// Populate `item_granted_abilities`: for each canonical `itm.*` object,
@@ -5766,31 +5805,11 @@ impl Database {
     ///
     /// Returns (rows_linked, rows_resolved_with_fqn).
     pub fn populate_item_granted_abilities(&self) -> Result<(u64, u64)> {
-        self.flush()?;
-        use crate::gom_reader::{read_object_fields, GomValue};
-        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        use crate::gom_reader::GomValue;
         use rusqlite::OptionalExtension;
         const GRANTED_ABILITY_FIELD: u32 = 0x2d7b_8786;
 
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-        let (mut linked, mut resolved) = (0u64, 0u64);
-        {
-            // Collect each canonical item's payload + identity.
-            let mut select = tx.prepare(
-                "SELECT fqn, game_id, json_extract(json, '$.payload_b64') \
-                 FROM objects WHERE fqn LIKE 'itm.%' AND is_canonical = 1",
-            )?;
-            let items = select
-                .query_map([], |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, Option<String>>(1)?,
-                        r.get::<_, Option<String>>(2)?,
-                    ))
-                })?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-
+        self.with_tx(|tx| {
             // Resolve a granted-ability guid to (fqn, kind, id1=1 effect text).
             let mut resolve = tx.prepare_cached(
                 "SELECT o.fqn, o.kind, s.text \
@@ -5804,24 +5823,13 @@ impl Database {
                     (item_fqn, item_game_id, ability_guid, ability_fqn, ability_kind, effect_text) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?;
-
-            for (fqn, game_id, payload_b64) in items {
-                let Some(payload_b64) = payload_b64 else {
-                    continue;
-                };
-                let Ok(payload) = BASE64.decode(&payload_b64) else {
-                    continue;
-                };
-                // A tag the reader doesn't model aborts the walk; such items
-                // are skipped rather than failing the pass.
-                let Ok(obj) = read_object_fields(&payload) else {
-                    continue;
-                };
+            let (mut linked, mut resolved) = (0u64, 0u64);
+            for_each_item_object(tx, |fqn, game_id, obj| {
                 let Some(guid) = obj
                     .embedded_field(GRANTED_ABILITY_FIELD)
                     .and_then(GomValue::as_i64)
                 else {
-                    continue;
+                    return Ok(());
                 };
                 // Field is a UInt64 object guid; format to match objects.guid.
                 let guid_hex = format!("{:016X}", guid as u64);
@@ -5849,10 +5857,10 @@ impl Database {
                     effect_text
                 ])?;
                 linked += 1;
-            }
-        }
-        tx.commit()?;
-        Ok((linked, resolved))
+                Ok(())
+            })?;
+            Ok((linked, resolved))
+        })
     }
 
     /// Populate `item_stats`: each item's fixed stat block, decoded from the
@@ -5861,75 +5869,34 @@ impl Database {
     /// is the per-item stat display path. Items without the field (moddable
     /// shells, materials, etc.) produce no rows. Returns (items, stat rows).
     pub fn populate_item_stats(&self) -> Result<(u64, u64)> {
-        self.flush()?;
-        use crate::gom_reader::{read_object_fields, GomValue};
-        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        use crate::gom_reader::GomValue;
+        use crate::gom_schema::{enum_member, quality_label};
         const EQUIP_MOD_STATS: u32 = 0xa4fa_ffdd;
         const BASE_LEVEL: u32 = 0xc7c4_8e7c;
         const BASE_QUALITY: u32 = 0xc7c4_8e7d;
         const RATING: u32 = 0x191f_29c8;
 
-        let stat_name = |idx: i64| -> Option<String> {
-            let e = crate::gom_schema::enum_for_name("STAT")?;
-            e.members.get(usize::try_from(idx).ok()?).cloned()
-        };
-        let quality_name = |idx: i64| -> Option<String> {
-            let e = crate::gom_schema::enum_for_name("itmQuality")?;
-            let m = e.members.get(usize::try_from(idx).ok()?)?;
-            Some(
-                m.strip_prefix("itmQuality")
-                    .unwrap_or(m)
-                    .to_ascii_lowercase(),
-            )
-        };
-
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-        let (mut n_items, mut n_rows) = (0u64, 0u64);
-        {
-            let mut select = tx.prepare(
-                "SELECT fqn, game_id, json_extract(json, '$.payload_b64') \
-                 FROM objects WHERE fqn LIKE 'itm.%' AND is_canonical = 1",
-            )?;
-            let items = select
-                .query_map([], |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, Option<String>>(1)?,
-                        r.get::<_, Option<String>>(2)?,
-                    ))
-                })?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-
+        self.with_tx(|tx| {
             let mut insert = tx.prepare_cached(
                 "INSERT OR REPLACE INTO item_stats \
                     (item_fqn, item_game_id, item_level, quality, rating, \
                      stat_index, stat_name, value) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )?;
-
-            for (fqn, game_id, payload_b64) in items {
-                let Some(payload_b64) = payload_b64 else {
-                    continue;
-                };
-                let Ok(payload) = BASE64.decode(&payload_b64) else {
-                    continue;
-                };
-                let Ok(obj) = read_object_fields(&payload) else {
-                    continue;
-                };
+            let (mut n_items, mut n_rows) = (0u64, 0u64);
+            for_each_item_object(tx, |fqn, game_id, obj| {
                 // Only items with a fixed stat block produce rows.
                 let Some(stats) = obj
                     .embedded_field(EQUIP_MOD_STATS)
                     .and_then(GomValue::as_map)
                 else {
-                    continue;
+                    return Ok(());
                 };
                 let level = obj.embedded_field(BASE_LEVEL).and_then(GomValue::as_i64);
                 let quality = obj
                     .embedded_field(BASE_QUALITY)
                     .and_then(GomValue::as_i64)
-                    .and_then(quality_name);
+                    .and_then(quality_label);
                 let rating = obj.embedded_field(RATING).and_then(GomValue::as_i64);
 
                 let mut wrote = false;
@@ -5937,7 +5904,7 @@ impl Database {
                     let (Some(stat_idx), Some(value)) = (stat_key.as_i64(), val.as_i64()) else {
                         continue;
                     };
-                    let Some(sname) = stat_name(stat_idx) else {
+                    let Some(sname) = enum_member("STAT", stat_idx) else {
                         continue;
                     };
                     insert.execute(params![
@@ -5949,10 +5916,10 @@ impl Database {
                 if wrote {
                     n_items += 1;
                 }
-            }
-        }
-        tx.commit()?;
-        Ok((n_items, n_rows))
+                Ok(())
+            })?;
+            Ok((n_items, n_rows))
+        })
     }
 
     /// Populate `relic_procs`: classify each relic item by its trigger
@@ -5962,7 +5929,6 @@ impl Database {
     /// magnitude/duration/ICD are runtime-computed and intentionally not
     /// modeled here (see the table comment). Returns (rows, classified_stat).
     pub fn populate_relic_procs(&self) -> Result<(u64, u64)> {
-        self.flush()?;
         // Classify the stat a relic affects from its FQN. Order matters:
         // check the more specific tokens first.
         fn proc_stat(fqn: &str) -> Option<&'static str> {
@@ -6003,10 +5969,8 @@ impl Database {
             }
         }
 
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-        let (mut rows, mut classified) = (0u64, 0u64);
-        {
+        self.with_tx(|tx| {
+            let (mut rows, mut classified) = (0u64, 0u64);
             let mut select = tx.prepare(
                 "SELECT o.fqn, o.game_id, ga.ability_guid \
                  FROM objects o \
@@ -6038,9 +6002,8 @@ impl Database {
                 insert.execute(params![fqn, game_id, trigger, stat, guid])?;
                 rows += 1;
             }
-        }
-        tx.commit()?;
-        Ok((rows, classified))
+            Ok((rows, classified))
+        })
     }
 
     /// Populate `mission_npcs` and `mission_rewards` by walking each mission's
