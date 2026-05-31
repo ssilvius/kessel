@@ -138,26 +138,7 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
 
 
 
-            -- Item details (classified from FQN patterns; #59).
-            -- Set name and set bonus require GOM payload parsing and are
-            -- deferred to a follow-up issue.
-            CREATE TABLE IF NOT EXISTS item_details (
-                fqn TEXT PRIMARY KEY,
-                item_kind TEXT NOT NULL,
-                slot TEXT,
-                weapon_type TEXT,
-                armor_weight TEXT,
-                rarity TEXT,
-                item_level INTEGER,
-                source TEXT,
-                is_schematic INTEGER NOT NULL DEFAULT 0,
-                crew_skill TEXT
-            );
 
-            CREATE INDEX IF NOT EXISTS idx_item_details_kind ON item_details(item_kind);
-            CREATE INDEX IF NOT EXISTS idx_item_details_slot ON item_details(slot);
-            CREATE INDEX IF NOT EXISTS idx_item_details_source ON item_details(source);
-            CREATE INDEX IF NOT EXISTS idx_item_details_rarity ON item_details(rarity);
 
             -- Schematic recipes (#60). Each itm.schem.* schematic has a
             -- companion schem.* GOM object whose payload encodes the recipe:
@@ -179,7 +160,6 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
             );
 
             CREATE INDEX IF NOT EXISTS idx_schematic_materials_mat ON schematic_materials(material_fqn);
-            CREATE INDEX IF NOT EXISTS idx_item_details_crew_skill ON item_details(crew_skill);
 
             -- Conversation -> quest references. NODE conversation files (cnv.*)
             -- embed CF GUID refs to qst.* objects representing the quests
@@ -420,124 +400,11 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
             CREATE INDEX IF NOT EXISTS idx_companions_category ON companions(category);
             CREATE INDEX IF NOT EXISTS idx_companions_name ON companions(name);
 
-            -- Item itemization tables. SWTOR item stats are computed, not
-            -- stored per item: an item carries only (base level, quality,
-            -- modifier set id), and these three tables turn that into numbers.
-            -- Decoded from the itmRatingTablePrototype /
-            -- itmBudgetedAttributesPrototype / itmModifierPackageTablePrototype
-            -- singletons via the typed-value GOM grammar (gom_reader).
-            --
-            --   rating = item_rating_table[item_level][quality]
-            --   stat   = item_budget_table[quality][item_level][permille]
-            -- where the item's modifier package (item_modifier_packages, keyed
-            -- by itmModifierSetID) supplies the per-stat permille index into
-            -- the budget curve. Oracle: budget[artifact][89] holds 484 and 167.
-            CREATE TABLE IF NOT EXISTS item_rating_table (
-                item_level INTEGER NOT NULL,
-                quality    TEXT NOT NULL,
-                rating     INTEGER NOT NULL,
-                PRIMARY KEY (item_level, quality)
-            );
 
-            -- Per-quality, per-level budget curve. permille is the 0..999 slot
-            -- index (0.1% steps); a modifier package picks which permille feeds
-            -- each stat. ~796k rows (4 qualities x ~199 levels x 1000 slots).
-            CREATE TABLE IF NOT EXISTS item_budget_table (
-                quality    TEXT NOT NULL,
-                item_level INTEGER NOT NULL,
-                permille   INTEGER NOT NULL,
-                value      INTEGER NOT NULL,
-                PRIMARY KEY (quality, item_level, permille)
-            );
 
-            -- Modifier package stat split. One row per (mod_id, stat): the
-            -- permille of the slot budget that stat receives (single-stat mods
-            -- = 1000; a 70/30 DPS armoring = strength 700 + endurance 300).
-            CREATE TABLE IF NOT EXISTS item_modifier_packages (
-                mod_id     INTEGER NOT NULL,
-                stat_index INTEGER NOT NULL,
-                stat_name  TEXT NOT NULL,
-                permille   INTEGER NOT NULL,
-                PRIMARY KEY (mod_id, stat_index)
-            );
 
-            -- The ability/proc an item grants when equipped. Decoded from the
-            -- item payload's granted-ability field (GOM field id low32
-            -- 0x2d7b8786, a UInt64 object guid). This is the "what does this
-            -- item DO" link: legendary implants -> their bonus ability (e.g.
-            -- Fearless Victor), set pieces -> set-bonus abilities, relics ->
-            -- their proc.
-            --
-            -- ability_fqn / effect_text are resolved when the granted ability
-            -- is itself an extracted object (true for legendary implant and
-            -- tactical abilities, abl.itm.*). Relic procs reference UNNAMED
-            -- effect objects that the extraction whitelist drops, so their
-            -- ability_guid is recorded but ability_fqn/effect_text are NULL --
-            -- surfacing exactly which procs still need the effect-object
-            -- extraction (tracked follow-up).
-            CREATE TABLE IF NOT EXISTS item_granted_abilities (
-                item_fqn     TEXT PRIMARY KEY,
-                item_game_id TEXT,
-                ability_guid TEXT NOT NULL,
-                ability_fqn  TEXT,
-                ability_kind TEXT,
-                effect_text  TEXT
-            );
-            CREATE INDEX IF NOT EXISTS idx_item_granted_abilities_guid
-                ON item_granted_abilities(ability_guid);
 
-            -- Per-item stat block: the actual stats an item provides, ready for
-            -- a tooltip. Stats are FIXED on equippable gear and mod pieces --
-            -- stored in the item payload's itmEquipModStats field (GOM field id
-            -- low32 0xa4faffdd, a Map<STAT-enum, value>).
-            --
-            -- Each row is one (item, stat). The item metadata (level, quality,
-            -- rating) is denormalized onto every row so a tooltip is a single
-            -- `WHERE item_fqn=?` with no join. Moddable shells carry no innate
-            -- stats (their stats come from slotted mods, which are themselves
-            -- items with their own item_stats) and so produce no rows here --
-            -- that is correct, not a gap. Item stats are fixed, not derived
-            -- from a per-item modifier set, so the budget/modifier-package
-            -- tables are for theorycrafting, not the per-item display path.
-            --   item_level = itmBaseLevel (0xc7c48e7c)
-            --   quality    = itmBaseQuality (0xc7c48e7d -> itmQuality member)
-            --   rating     = display item rating (0x191f29c8)
-            CREATE TABLE IF NOT EXISTS item_stats (
-                item_fqn     TEXT NOT NULL,
-                item_game_id TEXT,
-                item_level   INTEGER,
-                quality      TEXT,
-                rating       INTEGER,
-                stat_index   INTEGER NOT NULL,
-                stat_name    TEXT NOT NULL,
-                value        INTEGER NOT NULL,
-                PRIMARY KEY (item_fqn, stat_index)
-            );
-            CREATE INDEX IF NOT EXISTS idx_item_stats_rating ON item_stats(rating);
 
-            -- Relic proc classification. One row per relic item: the trigger
-            -- (passive 'proc' vs activated 'onuse') and the stat it affects,
-            -- classified from the relic FQN, plus the granted-ability guid
-            -- (the proc/onuse ability the relic references via field
-            -- 0x2d7b8786). See proc_stat() for the full set of stat labels.
-            --
-            -- IMPORTANT static-data ceiling: the EXACT proc magnitude,
-            -- duration, and internal cooldown are NOT in the .tor archive.
-            -- Proc-ability objects are shared across rating tiers while the
-            -- proc value scales with the relic's rating at runtime, so the
-            -- number is computed live (the str.abl.* proc strings carry blank
-            -- duration/ICD tokens). The relic's STATIC equipped stats ARE
-            -- captured (in item_stats). So this table answers "what kind of
-            -- relic is this" deterministically; the live proc burst value is
-            -- client-side residual (cf. #111).
-            CREATE TABLE IF NOT EXISTS relic_procs (
-                relic_fqn         TEXT PRIMARY KEY,
-                relic_game_id     TEXT,
-                trigger_kind      TEXT,   -- 'proc' (passive) or 'onuse' (activated); NULL if neither
-                proc_stat         TEXT,   -- see proc_stat(): power/critical/mastery/defense/healing/absorb/alacrity/damage, or NULL
-                proc_ability_guid TEXT    -- granted-ability guid (item field 0x2d7b8786)
-            );
-            CREATE INDEX IF NOT EXISTS idx_relic_procs_stat ON relic_procs(proc_stat);
 
 
 
@@ -855,40 +722,9 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
             CREATE INDEX IF NOT EXISTS idx_combat_styles_faction ON combat_styles(faction);
             CREATE INDEX IF NOT EXISTS idx_combat_styles_display ON combat_styles(display_segment);
 
-            -- Item set membership (#105 part 1).
-            --
-            -- Set membership is encoded in the FQN itself, not in any pkg.*
-            -- mediator (the issue's original pkg.* hypothesis was disproved
-            -- by Phase 1 investigation: pkg.* contains 6 profession-trainer
-            -- packages, unrelated to gear sets). Pattern:
-            --   itm.setbonus.<source>.<class_group>.<subclass>.<set_id>.<slot>
-            -- Members sharing the leading segments through <set_id> form a set.
-            --
-            -- Set display name comes from the .armor_box (or similar lockbox)
-            -- member, whose str.itm.0.<id> string is the set's in-game name
-            -- ("Berserker's Armor Lockbox" -> the set is "Berserker's Armor").
-            -- Tier-bonus text (the 2/4/6-piece descriptions) lives in
-            -- str.abl.* namespace and requires a separate resolver pass; it's
-            -- not in this table yet -- documented follow-up.
-            CREATE TABLE IF NOT EXISTS item_sets (
-                set_fqn         TEXT PRIMARY KEY,
-                source          TEXT,
-                class_group     TEXT,
-                name_string_id  INTEGER
-            );
 
-            CREATE INDEX IF NOT EXISTS idx_item_sets_source ON item_sets(source);
 
-            CREATE TABLE IF NOT EXISTS item_set_members (
-                item_game_id    TEXT NOT NULL,
-                set_fqn         TEXT NOT NULL,
-                slot            TEXT NOT NULL,
-                PRIMARY KEY (item_game_id, set_fqn),
-                FOREIGN KEY (item_game_id) REFERENCES objects(game_id),
-                FOREIGN KEY (set_fqn) REFERENCES item_sets(set_fqn)
-            );
 
-            CREATE INDEX IF NOT EXISTS idx_item_set_members_set ON item_set_members(set_fqn);
 
 
             -- NPC typed columns (#139) -- 32 props, 5 named enums from
