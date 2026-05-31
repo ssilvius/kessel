@@ -256,6 +256,26 @@ mod tests {
     }
 
     #[test]
+    fn enum_member_resolves_and_bounds_check() {
+        // Pins the doc-comment example and the item_stats stat-label path.
+        assert_eq!(enum_member("STAT", 4), Some("STAT_att_endurance"));
+        assert_eq!(enum_member("STAT", 1), Some("STAT_att_strength"));
+        // Out-of-range and negative indices -> None (no panic), so a drifted
+        // stat index is skipped, not a crash.
+        assert_eq!(enum_member("STAT", 9_999_999), None);
+        assert_eq!(enum_member("STAT", -1), None);
+        assert_eq!(enum_member("NoSuchEnum", 0), None);
+    }
+
+    #[test]
+    fn quality_label_strips_and_lowercases() {
+        // The label the item_stats / itemization populators store.
+        assert_eq!(quality_label(4).as_deref(), Some("artifact"));
+        assert_eq!(quality_label(2).as_deref(), Some("premium"));
+        assert_eq!(quality_label(-1), None);
+    }
+
+    #[test]
     fn resolves_effaction_spvp_members() {
         // effAction enum hash AEA8895FE251D1C7
         let e = enum_for_hash(0xAEA8895FE251D1C7).expect("effAction enum missing");

@@ -393,4 +393,16 @@ mod tests {
             GomValue::Enum(2)
         );
     }
+
+    #[test]
+    fn as_i64_rounds_float() {
+        // itmEquipModStats values are whole numbers stored as f32; as_i64 must
+        // round, not truncate (a truncating `as i64` would mis-state stats).
+        assert_eq!(GomValue::F32(344.0).as_i64(), Some(344));
+        assert_eq!(GomValue::F32(343.6).as_i64(), Some(344));
+        assert_eq!(GomValue::F32(343.4).as_i64(), Some(343));
+        assert_eq!(GomValue::I64(-5).as_i64(), Some(-5));
+        assert_eq!(GomValue::U64(7).as_i64(), Some(7));
+        assert_eq!(GomValue::Str("x".into()).as_i64(), None);
+    }
 }

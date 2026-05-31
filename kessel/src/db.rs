@@ -865,19 +865,16 @@ impl Database {
             -- Per-item stat block: the actual stats an item provides, ready for
             -- a tooltip. Stats are FIXED on equippable gear and mod pieces --
             -- stored in the item payload's itmEquipModStats field (GOM field id
-            -- low32 0xa4faffdd, a Map<STAT-enum, value>). Validated against live
-            -- gear: Fearless Victor implant (340), Rakata Force-Healer's Robe
-            -- (344), Med-Tech Vambraces all reproduce exactly.
+            -- low32 0xa4faffdd, a Map<STAT-enum, value>).
             --
             -- Each row is one (item, stat). The item metadata (level, quality,
             -- rating) is denormalized onto every row so a tooltip is a single
             -- `WHERE item_fqn=?` with no join. Moddable shells carry no innate
             -- stats (their stats come from slotted mods, which are themselves
             -- items with their own item_stats) and so produce no rows here --
-            -- that is correct, not a gap. There is no per-item modifierSetID in
-            -- the payload (field 0xacec47da is absent on every item), so the
-            -- budget/modifier-package tables are for theorycrafting, not the
-            -- per-item display path.
+            -- that is correct, not a gap. Item stats are fixed, not derived
+            -- from a per-item modifier set, so the budget/modifier-package
+            -- tables are for theorycrafting, not the per-item display path.
             --   item_level = itmBaseLevel (0xc7c48e7c)
             --   quality    = itmBaseQuality (0xc7c48e7d -> itmQuality member)
             --   rating     = display item rating (0x191f29c8)
@@ -895,26 +892,25 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_item_stats_rating ON item_stats(rating);
 
             -- Relic proc classification. One row per relic item: the trigger
-            -- (passive 'proc' vs activated 'onuse') and the stat it affects
-            -- (power, critical, mastery, defense, healing, absorb, alacrity),
+            -- (passive 'proc' vs activated 'onuse') and the stat it affects,
             -- classified from the relic FQN, plus the granted-ability guid
             -- (the proc/onuse ability the relic references via field
-            -- 0x2d7b8786).
+            -- 0x2d7b8786). See proc_stat() for the full set of stat labels.
             --
             -- IMPORTANT static-data ceiling: the EXACT proc magnitude,
-            -- duration, and internal cooldown are NOT in the .tor archive --
-            -- the 16 proc-ability objects are SHARED across all rating tiers,
-            -- but the proc value scales with the relic's rating at runtime, so
-            -- the number is computed live (the str.abl.* proc strings carry
-            -- blank duration/ICD tokens, confirming this). The relic's STATIC
-            -- equipped stats ARE captured (in item_stats). So this table
-            -- answers "what kind of relic is this" deterministically; the
-            -- live proc burst value is client-side residual (cf. #111).
+            -- duration, and internal cooldown are NOT in the .tor archive.
+            -- Proc-ability objects are shared across rating tiers while the
+            -- proc value scales with the relic's rating at runtime, so the
+            -- number is computed live (the str.abl.* proc strings carry blank
+            -- duration/ICD tokens). The relic's STATIC equipped stats ARE
+            -- captured (in item_stats). So this table answers "what kind of
+            -- relic is this" deterministically; the live proc burst value is
+            -- client-side residual (cf. #111).
             CREATE TABLE IF NOT EXISTS relic_procs (
                 relic_fqn         TEXT PRIMARY KEY,
                 relic_game_id     TEXT,
-                trigger_kind      TEXT,   -- 'proc' (passive) or 'onuse' (activated)
-                proc_stat         TEXT,   -- power|critical|mastery|defense|healing|absorb|alacrity|NULL
+                trigger_kind      TEXT,   -- 'proc' (passive) or 'onuse' (activated); NULL if neither
+                proc_stat         TEXT,   -- see proc_stat(): power/critical/mastery/defense/healing/absorb/alacrity/damage, or NULL
                 proc_ability_guid TEXT    -- granted-ability guid (item field 0x2d7b8786)
             );
             CREATE INDEX IF NOT EXISTS idx_relic_procs_stat ON relic_procs(proc_stat);
@@ -4827,10 +4823,16 @@ fn classify_quest_flag(name: &str) -> &'static str {
 
 /// Walk every canonical `itm.*` object: decode its payload with the
 /// typed-value GOM reader and hand the decoded object to `f` along with its
-/// FQN and game_id. Rows whose payload is missing or fails to decode are
-/// skipped (the reader decodes all item payloads in practice, so this is just
-/// tolerance, not silent loss). Centralizes the select + decode loop shared by
-/// the per-item populators (`item_stats`, `item_granted_abilities`, ...).
+/// FQN and game_id. Centralizes the select + decode loop shared by the
+/// per-item populators (`item_stats`, `item_granted_abilities`, ...).
+///
+/// Rows with no payload are skipped silently (storage-level absence). A
+/// *structural* decode failure -- bytes present and valid base64 but the GOM
+/// walker hit an unmodeled tag -- is the signal that the archive has drifted
+/// (a new item shape or a schema-version bump); these are counted and a
+/// summary is logged via `tracing::warn!`, never silently dropped. The reader
+/// decodes every item payload in the current archive, so a non-zero count is a
+/// real "investigate this" event, not routine.
 fn for_each_item_object(
     tx: &Transaction,
     mut f: impl FnMut(&str, Option<&str>, &crate::gom_reader::GomValue) -> Result<()>,
@@ -4850,6 +4852,7 @@ fn for_each_item_object(
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     drop(select);
+    let mut decode_failures = 0u64;
     for (fqn, game_id, payload_b64) in rows {
         let Some(payload_b64) = payload_b64 else {
             continue;
@@ -4857,12 +4860,70 @@ fn for_each_item_object(
         let Ok(payload) = BASE64.decode(&payload_b64) else {
             continue;
         };
-        let Ok(obj) = crate::gom_reader::read_object_fields(&payload) else {
-            continue;
+        let obj = match crate::gom_reader::read_object_fields(&payload) {
+            Ok(obj) => obj,
+            Err(e) => {
+                // Structural decode failure: surface the first few, then count.
+                if decode_failures < 5 {
+                    tracing::warn!("item payload decode failed for {fqn}: {e}");
+                }
+                decode_failures += 1;
+                continue;
+            }
         };
         f(&fqn, game_id.as_deref(), &obj)?;
     }
+    if decode_failures > 0 {
+        tracing::warn!(
+            "for_each_item_object: {decode_failures} item payload(s) failed to decode \
+             (archive may have drifted -- a new item shape or schema bump)"
+        );
+    }
     Ok(())
+}
+
+/// Classify the stat a relic's proc/onuse affects from its FQN. Order matters:
+/// the more specific tokens are checked first (e.g. `primary_stat` before the
+/// generic `power`/`crit`). Returns `None` for relics with no recognized stat
+/// token (cosmetic / MTX / quest relics). Pure -- unit-tested.
+fn relic_proc_stat(fqn: &str) -> Option<&'static str> {
+    if fqn.contains("primary_stat") {
+        Some("mastery")
+    } else if fqn.contains("alacrity") {
+        Some("alacrity")
+    } else if fqn.contains("shield") {
+        Some("absorb")
+    } else if fqn.contains("heal") {
+        Some("healing")
+    } else if fqn.contains("crit") {
+        Some("critical")
+    } else if fqn.contains("defense") {
+        Some("defense")
+    } else if fqn.contains("power") {
+        Some("power")
+    } else if fqn.contains("kinetic")
+        || fqn.contains("internal")
+        || fqn.contains("elemental")
+        || fqn.contains("dps_energy")
+    {
+        Some("damage")
+    } else if fqn.contains("tank") {
+        Some("defense")
+    } else {
+        None
+    }
+}
+
+/// Classify a relic's trigger from its FQN: passive `proc` vs player-activated
+/// `onuse`. `None` for relics with neither token. Pure -- unit-tested.
+fn relic_trigger_kind(fqn: &str) -> Option<&'static str> {
+    if fqn.contains("onuse") {
+        Some("onuse")
+    } else if fqn.contains("proc") {
+        Some("proc")
+    } else {
+        None
+    }
 }
 
 /// Pull `(fqn, payload_b64)` tuples for every object of `kind`. Used by
@@ -5883,7 +5944,7 @@ impl Database {
                      stat_index, stat_name, value) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )?;
-            let (mut n_items, mut n_rows) = (0u64, 0u64);
+            let (mut n_items, mut n_rows, mut unknown_stats) = (0u64, 0u64, 0u64);
             for_each_item_object(tx, |fqn, game_id, obj| {
                 // Only items with a fixed stat block produce rows.
                 let Some(stats) = obj
@@ -5904,7 +5965,11 @@ impl Database {
                     let (Some(stat_idx), Some(value)) = (stat_key.as_i64(), val.as_i64()) else {
                         continue;
                     };
+                    // A present stat whose index has no STAT enum member is a
+                    // schema-drift signal (a stat added by a patch), not a
+                    // missing-field skip -- count it so it isn't lost silently.
                     let Some(sname) = enum_member("STAT", stat_idx) else {
+                        unknown_stats += 1;
                         continue;
                     };
                     insert.execute(params![
@@ -5918,6 +5983,12 @@ impl Database {
                 }
                 Ok(())
             })?;
+            if unknown_stats > 0 {
+                tracing::warn!(
+                    "item_stats: {unknown_stats} stat entries had an index with no STAT enum \
+                     member (schema drift?) and were skipped"
+                );
+            }
             Ok((n_items, n_rows))
         })
     }
@@ -5929,48 +6000,8 @@ impl Database {
     /// magnitude/duration/ICD are runtime-computed and intentionally not
     /// modeled here (see the table comment). Returns (rows, classified_stat).
     pub fn populate_relic_procs(&self) -> Result<(u64, u64)> {
-        // Classify the stat a relic affects from its FQN. Order matters:
-        // check the more specific tokens first.
-        fn proc_stat(fqn: &str) -> Option<&'static str> {
-            let f = fqn;
-            if f.contains("primary_stat") {
-                Some("mastery")
-            } else if f.contains("alacrity") {
-                Some("alacrity")
-            } else if f.contains("shield") {
-                Some("absorb")
-            } else if f.contains("heal") {
-                Some("healing")
-            } else if f.contains("crit") {
-                Some("critical")
-            } else if f.contains("defense") {
-                Some("defense")
-            } else if f.contains("power") {
-                Some("power")
-            } else if f.contains("kinetic")
-                || f.contains("internal")
-                || f.contains("elemental")
-                || f.contains("dps_energy")
-            {
-                Some("damage")
-            } else if f.contains("tank") {
-                Some("defense")
-            } else {
-                None
-            }
-        }
-        fn trigger_kind(fqn: &str) -> Option<&'static str> {
-            if fqn.contains("onuse") {
-                Some("onuse")
-            } else if fqn.contains("proc") {
-                Some("proc")
-            } else {
-                None
-            }
-        }
-
         self.with_tx(|tx| {
-            let (mut rows, mut classified) = (0u64, 0u64);
+            let (mut rows, mut classified, mut unclassified) = (0u64, 0u64, 0u64);
             let mut select = tx.prepare(
                 "SELECT o.fqn, o.game_id, ga.ability_guid \
                  FROM objects o \
@@ -5994,13 +6025,25 @@ impl Database {
                  VALUES (?1, ?2, ?3, ?4, ?5)",
             )?;
             for (fqn, game_id, guid) in relics {
-                let trigger = trigger_kind(&fqn);
-                let stat = proc_stat(&fqn);
+                let trigger = relic_trigger_kind(&fqn);
+                let stat = relic_proc_stat(&fqn);
                 if stat.is_some() {
                     classified += 1;
                 }
+                // A relic the FQN classifier understood NEITHER way is a real
+                // gap (new naming convention / unknown family), not a partial
+                // classification -- surface it rather than store it silently.
+                if trigger.is_none() && stat.is_none() {
+                    unclassified += 1;
+                }
                 insert.execute(params![fqn, game_id, trigger, stat, guid])?;
                 rows += 1;
+            }
+            if unclassified > 0 {
+                tracing::warn!(
+                    "relic_procs: {unclassified} of {rows} relics classified as neither \
+                     proc nor onuse and no stat (FQN naming the classifier doesn't cover)"
+                );
             }
             Ok((rows, classified))
         })
@@ -8827,6 +8870,47 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relic_classifiers_cover_real_fqn_tails() {
+        // Real relic FQN tails (from the v24 extract) -> expected classification.
+        // trigger: proc (passive) vs onuse (activated).
+        assert_eq!(relic_trigger_kind("itm.x.relic_power_proc"), Some("proc"));
+        assert_eq!(
+            relic_trigger_kind("itm.x.relic_dps_power_onuse"),
+            Some("onuse")
+        );
+        assert_eq!(relic_trigger_kind("itm.mtx.relic.bastilas_sash"), None);
+
+        // proc_stat token mapping.
+        assert_eq!(relic_proc_stat("relic_power_proc"), Some("power"));
+        assert_eq!(relic_proc_stat("relic_crit_proc"), Some("critical"));
+        assert_eq!(relic_proc_stat("relic_primary_stat_proc"), Some("mastery"));
+        assert_eq!(relic_proc_stat("relic_heal_proc"), Some("healing"));
+        assert_eq!(relic_proc_stat("relic_defense_proc"), Some("defense"));
+        assert_eq!(
+            relic_proc_stat("trinket_relic_static_shield_proc"),
+            Some("absorb")
+        );
+        assert_eq!(
+            relic_proc_stat("relic_dps_alacrity_onuse"),
+            Some("alacrity")
+        );
+        assert_eq!(
+            relic_proc_stat("artifact_trinket_relics_dps_kinetic_proc"),
+            Some("damage")
+        );
+        assert_eq!(relic_proc_stat("trinket_relic_tank_proc"), Some("defense"));
+        // Cosmetic / MTX relic with no recognized stat token.
+        assert_eq!(relic_proc_stat("bastilas_sash"), None);
+
+        // Precedence: a tail with both "primary_stat" and "crit" resolves to
+        // the more specific primary_stat (mastery), not critical.
+        assert_eq!(
+            relic_proc_stat("relic_primary_stat_crit_proc"),
+            Some("mastery")
+        );
+    }
 
     fn temp_db_path(label: &str) -> std::path::PathBuf {
         let pid = std::process::id();
