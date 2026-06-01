@@ -74,6 +74,13 @@ pub fn run_passes(db: &Database, ctx: &PassCtx) -> Result<PassCounts> {
     let name_tag_rows = db.populate_quest_name_tags()?;
     println!("  Quest name tags: {} rows", name_tag_rows);
 
+    // Quest objective/journal/description text (#262), sourced from the strings
+    // table (quest text is not in the GOM payload). One row per str.qst text
+    // slot for every named mission -- the progress-display text warden/huttspawn
+    // need, for all ~6761 missions, not just the extracted objects.
+    let text_rows = db.populate_quest_text()?;
+    println!("  Quest text: {} rows", text_rows);
+
     // Hydra script FQN refs (#214): every counter/track/jrn/qm flag +
     // target NPC/cnv/abl ref pulled from hyd.* payload ASCII strings.
     let hydra_ref_rows = db.populate_hydra_refs()?;
