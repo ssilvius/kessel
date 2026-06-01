@@ -252,36 +252,10 @@ impl Database {
                 let string_for_hash = |hi32: &str| -> Option<String> {
                     prop_by_hash(hi32)?.as_str().map(String::from)
                 };
-                // Enum properties are keyed by hash, not name, in the decoded
-                // output -- so the name-based `enum_member` lookup never matched
-                // (all four columns landed empty across every quest). Resolve by
-                // the canonical `__<HI32>` suffix instead, the same path the
-                // tracking-flag / *_code columns already use successfully (#269).
-                // The walker either emits the member name directly, or a raw
-                // enum index (it mislabels some enum kinds as int8) -- handle
-                // both, resolving the index against the schema's member list.
-                let enum_by_hash = |hi32: &str, enum_name: &str| -> Option<String> {
-                    let v = prop_by_hash(hi32)?;
-                    if let Some(name) = v.get("name").and_then(|n| n.as_str()) {
-                        return Some(name.to_string());
-                    }
-                    let idx = v.as_i64()?;
-                    if idx < 0 {
-                        return None;
-                    }
-                    crate::gom_schema::enum_for_name(enum_name)
-                        .and_then(|e| e.members.get(idx as usize).cloned())
-                };
-                // Hashes are the first 8 hex of each property id and match the
-                // Quest class property_refs (e.g. 4000004EB58CE5FC).
-                let activity = enum_by_hash("B58CE5FC", "qstActivityType")
-                    .or_else(|| enum_member("qstActivityType"));
-                let difficulty = enum_by_hash("B0E9BAF2", "qstDifficulty")
-                    .or_else(|| enum_member("qstDifficulty"));
-                let rewards = enum_by_hash("1D4649A2", "qstRewardsVisibility")
-                    .or_else(|| enum_member("qstRewardsVisibility"));
-                let episode = enum_by_hash("D3680699", "qstEpisodeSeason")
-                    .or_else(|| enum_member("qstEpisodeSeason"));
+                let activity = enum_member("qstActivityType");
+                let difficulty = enum_member("qstDifficulty");
+                let rewards = enum_member("qstRewardsVisibility");
+                let episode = enum_member("qstEpisodeSeason");
                 // Level: per-property level field may be int8 stored as
                 // an int value (not a wrapped struct). Try direct decode.
                 let level = int_value("Level").or_else(|| int_value("level"));
@@ -2131,64 +2105,6 @@ mod tests {
             .unwrap();
         assert_eq!(activity.as_deref(), Some(expected_member.as_str()));
     }
-    #[test]
-    fn populate_quest_details_typed_resolves_heroic_activity_by_hash() {
-        // Locks in the #271 subsumption: a quest whose qstActivityType enum
-        // decodes to index 2 must classify as the Heroic member, resolved via
-        // the canonical hash path (B58CE5FC) -- not the FQN/name (the heroic
-        // signal is the payload enum, not the title).
-        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-        let expected = crate::gom_schema::enum_for_name("qstActivityType")
-            .and_then(|e| e.members.get(2).cloned());
-        let Some(expected) = expected else {
-            return; // schema lacks the enum -> nothing to assert
-        };
-        assert!(
-            expected.contains("Heroic"),
-            "member index 2 should be the Heroic activity type, got {expected}"
-        );
-        let path = temp_db_path("quest_typed_heroic");
-        let db = Database::with_grammar(&path, None).unwrap();
-        db.init_schema().unwrap();
-
-        // CF40 marker for hash B58CE5FC + enum_ref tag (0x05) + index 2.
-        let hi32: u32 = 0xB58C_E5FC;
-        let mut payload = vec![0u8; 4];
-        payload.push(0xCF);
-        payload.push(0x40);
-        payload.extend_from_slice(&[0u8; 2]);
-        payload.push(0x40);
-        payload.extend_from_slice(&hi32.to_be_bytes());
-        payload.push(0x05);
-        payload.push(0x02);
-        let payload_b64 = BASE64.encode(&payload);
-        {
-            let conn = db.conn.lock().unwrap();
-            let json = format!(r#"{{"payload_b64":"{payload_b64}"}}"#);
-            conn.execute(
-                "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, json, is_canonical) \
-                 VALUES ('qh1', 'sid', 'ph', 'g', 'qst.test.heroic', 'Quest', ?1, 1)",
-                params![json],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO quest_details (fqn, mission_type) VALUES ('qst.test.heroic', 'side')",
-                [],
-            )
-            .unwrap();
-        }
-        db.populate_quest_details_typed().unwrap();
-        let conn = db.conn.lock().unwrap();
-        let activity: Option<String> = conn
-            .query_row(
-                "SELECT activity_type FROM quest_details WHERE fqn = 'qst.test.heroic'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(activity.as_deref(), Some(expected.as_str()));
-    }
-
     #[test]
     fn quest_objectives_table_exists_after_init() {
         let path = temp_db_path("quest_obj_table");
