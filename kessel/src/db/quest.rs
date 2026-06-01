@@ -404,6 +404,67 @@ impl Database {
         Ok(written)
     }
 
+    /// Populate `quest_name_tags` (#269/#271): the canonical named-mission
+    /// catalog with activity/difficulty/group/cadence parsed from the mission
+    /// name's leading bracket tag.
+    ///
+    /// Source is the `str.qst.88.<string_id>` name-string namespace (the slot
+    /// that holds every mission's display name). This is far larger than the
+    /// extracted Quest-object set (6761 names vs ~1514 objects), so it captures
+    /// the heroic/flashpoint/weekly missions that exist as named missions but
+    /// are not emitted as qst.* objects. The bracket tag (`[HEROIC 2+]`,
+    /// `[VETERAN]`, `[WEEKLY]`, ...) is the authoritative activity/difficulty
+    /// source -- the GOM enum properties are class-default and not serialized.
+    ///
+    /// One row per name string (en-us). Consumers attach a quest FQN by joining
+    /// `objects.string_id`. Returns rows written.
+    pub fn populate_quest_name_tags(&self) -> Result<u64> {
+        let rows: Vec<(i64, String)> = {
+            let conn = self.conn.lock().unwrap();
+            // id1 = 88 is the mission-name slot; id2 = objects.string_id (the
+            // link key, same one quest_descriptions joins on).
+            let mut stmt = conn.prepare(
+                "SELECT id2, text FROM strings \
+                 WHERE id1 = 88 AND locale = 'en-us' AND text IS NOT NULL",
+            )?;
+            let collected: Vec<(i64, String)> = stmt
+                .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect();
+            collected
+        };
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut written = 0u64;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR REPLACE INTO quest_name_tags \
+                    (string_id, name, name_clean, activity_type, difficulty, group_size, cadence) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            )?;
+            for (string_id, name) in &rows {
+                if *string_id == 0 {
+                    continue;
+                }
+                let tags = parse_quest_name_tag(name);
+                let clean = strip_name_tags(name);
+                stmt.execute(params![
+                    string_id,
+                    name,
+                    clean,
+                    tags.activity_type,
+                    tags.difficulty,
+                    tags.group_size,
+                    tags.cadence,
+                ])?;
+                written += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(written)
+    }
+
     /// Populate `hydra_refs` (#214) by scanning hyd.* payloads for inline
     /// ASCII FQN references. Hydra scripts encode their references (counter
     /// flags, target NPCs, conversations, etc.) as length-prefixed ASCII
@@ -1734,6 +1795,92 @@ pub(crate) fn classify_hydra_ref(fqn: &str) -> &'static str {
     "other"
 }
 
+/// Activity/difficulty classification parsed from a mission display name's
+/// leading bracket tags such as `HEROIC 2+`, `VETERAN`, or `WEEKLY`.
+#[derive(Default, PartialEq, Debug)]
+pub(crate) struct NameTags {
+    pub activity_type: Option<&'static str>,
+    pub difficulty: Option<&'static str>,
+    pub group_size: Option<i64>,
+    pub cadence: Option<&'static str>,
+}
+
+/// Parse the leading bracket tag(s) of a mission name into a typed
+/// classification. SWTOR encodes mission activity/difficulty/cadence in the
+/// display-name prefix (the GOM enum properties are class-default and not
+/// serialized per mission), so the name is the authoritative source. A name
+/// may carry more than one tag (e.g. a weekly heroic); every leading bracket
+/// is applied. Returns all-None for untagged names.
+pub(crate) fn parse_quest_name_tag(name: &str) -> NameTags {
+    let mut t = NameTags::default();
+    let mut rest = name.trim_start();
+    while rest.starts_with('[') {
+        let Some(end) = rest.find(']') else { break };
+        let tag = rest[1..end].trim().to_ascii_uppercase();
+        apply_name_tag(&tag, &mut t);
+        rest = rest[end + 1..].trim_start();
+    }
+    t
+}
+
+fn apply_name_tag(tag: &str, t: &mut NameTags) {
+    if tag.starts_with("HEROIC") {
+        t.activity_type = Some("heroic");
+        if tag.contains('4') {
+            t.group_size = Some(4);
+        } else if tag.contains('2') {
+            t.group_size = Some(2);
+        }
+    } else if tag.starts_with("AREA") {
+        t.activity_type = Some("area");
+        if tag.contains('2') {
+            t.group_size = Some(2);
+        }
+    } else if tag == "UPRISING" {
+        t.activity_type = Some("uprising");
+    } else if tag == "OPS" {
+        t.activity_type = Some("operation");
+    } else if tag == "WORLD BOSS" {
+        t.activity_type = Some("world_boss");
+    } else if tag == "PVP" {
+        t.activity_type = Some("pvp");
+    } else if tag == "FLASHPOINT" {
+        t.activity_type = Some("flashpoint");
+    } else if tag == "VETERAN" {
+        t.activity_type = Some("flashpoint");
+        t.difficulty = Some("veteran");
+    } else if tag.starts_with("MASTER") {
+        t.activity_type = Some("flashpoint");
+        t.difficulty = Some("master");
+        if tag.contains('4') {
+            t.group_size = Some(4);
+        }
+    } else if tag == "STORY" {
+        t.activity_type = Some("flashpoint");
+        t.difficulty = Some("story");
+    } else if tag.starts_with("SOLO") {
+        t.activity_type = Some("flashpoint");
+        t.difficulty = Some("solo");
+    } else if tag.contains("WEEKLY") {
+        t.cadence = Some("weekly");
+    } else if tag.contains("DAILY") {
+        t.cadence = Some("daily");
+    }
+    // INTRO/TUTORIAL/VEHICLE/LEGACY/DNT/HOLOFILE/PRIORITY/GROUP FINDER/
+    // DATE NIGHT/HIDDEN/PVP-misc: no activity classification (left None).
+}
+
+/// Strip every leading bracket tag from a mission name, returning the clean
+/// title (e.g. a `HEROIC 2+`-tagged "The Hate Machine" becomes "The Hate Machine").
+pub(crate) fn strip_name_tags(name: &str) -> String {
+    let mut rest = name.trim_start();
+    while rest.starts_with('[') {
+        let Some(end) = rest.find(']') else { break };
+        rest = rest[end + 1..].trim_start();
+    }
+    rest.to_string()
+}
+
 /// Categorize a SWTOR quest progression-flag string by its leading
 /// underscore-delimited segment.
 ///
@@ -1871,6 +2018,27 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
             );
             CREATE INDEX IF NOT EXISTS idx_quest_milestones_quest ON quest_milestones(quest_fqn);
             CREATE INDEX IF NOT EXISTS idx_quest_milestones_terminal ON quest_milestones(is_terminal);
+            -- Quest name catalog + activity/difficulty classification (#269/#271).
+            -- The mission NAME strings (str.qst.88.<string_id>) are the canonical
+            -- catalog of every named mission -- 6761 of them, vs the ~1514 quests
+            -- kessel extracts as objects. The leading bracket tag on the name
+            -- (e.g. "[HEROIC 2+]", "[VETERAN]", "[WEEKLY]") encodes the mission's
+            -- activity type, flashpoint difficulty, group size, and cadence -- the
+            -- data is in the display name, NOT a GOM enum (those are class-default
+            -- and unserialized). One row per name string; activity/difficulty/
+            -- group_size/cadence are NULL for untagged names. Consumers join
+            -- objects.string_id = quest_name_tags.string_id to attach a quest FQN.
+            CREATE TABLE IF NOT EXISTS quest_name_tags (
+                string_id     INTEGER PRIMARY KEY,
+                name          TEXT NOT NULL,   -- full display name incl. bracket
+                name_clean    TEXT NOT NULL,   -- bracket tags stripped
+                activity_type TEXT,            -- heroic|flashpoint|uprising|operation|world_boss|pvp|area
+                difficulty    TEXT,            -- story|veteran|master|solo (flashpoint mode)
+                group_size    INTEGER,         -- 2 | 4 (heroic/area player count)
+                cadence       TEXT             -- daily|weekly
+            );
+            CREATE INDEX IF NOT EXISTS idx_quest_name_tags_activity ON quest_name_tags(activity_type);
+            CREATE INDEX IF NOT EXISTS idx_quest_name_tags_cadence ON quest_name_tags(cadence);
             -- Quest clusters: derived groupings to support bulk curation.
             -- Each quest gets one row per cluster_kind it matches; a quest can
             -- belong to multiple clusters (e.g. "class_act" and "class_planet"
@@ -2373,5 +2541,108 @@ mod tests {
             .unwrap();
         assert_eq!(total, 2);
         assert_eq!(terminals, 1);
+    }
+
+    #[test]
+    fn parse_quest_name_tag_classifies_bracket_families() {
+        let h = parse_quest_name_tag("[HEROIC 2+] The Hate Machine");
+        assert_eq!(h.activity_type, Some("heroic"));
+        assert_eq!(h.group_size, Some(2));
+
+        let h4 = parse_quest_name_tag("[HEROIC 4] The Hunt");
+        assert_eq!(h4.activity_type, Some("heroic"));
+        assert_eq!(h4.group_size, Some(4));
+
+        let vet = parse_quest_name_tag("[VETERAN] Hammer Station");
+        assert_eq!(vet.activity_type, Some("flashpoint"));
+        assert_eq!(vet.difficulty, Some("veteran"));
+
+        let master = parse_quest_name_tag("[MASTER] Battle of Rishi");
+        assert_eq!(master.activity_type, Some("flashpoint"));
+        assert_eq!(master.difficulty, Some("master"));
+
+        let solo = parse_quest_name_tag("[SOLO-STORY] Foundry");
+        assert_eq!(solo.difficulty, Some("solo"));
+
+        let wk = parse_quest_name_tag("[WEEKLY] Conquer the Galaxy");
+        assert_eq!(wk.cadence, Some("weekly"));
+        assert_eq!(wk.activity_type, None);
+
+        let up = parse_quest_name_tag("[UPRISING] Destabilization");
+        assert_eq!(up.activity_type, Some("uprising"));
+
+        // multi-tag: weekly + heroic both apply
+        let multi = parse_quest_name_tag("[WEEKLY] [HEROIC 2+] Black Hole");
+        assert_eq!(multi.cadence, Some("weekly"));
+        assert_eq!(multi.activity_type, Some("heroic"));
+
+        // untagged -> all None
+        assert_eq!(
+            parse_quest_name_tag("The Relics of Tuulak"),
+            NameTags::default()
+        );
+    }
+
+    #[test]
+    fn strip_name_tags_removes_leading_brackets() {
+        assert_eq!(
+            strip_name_tags("[HEROIC 2+] The Hate Machine"),
+            "The Hate Machine"
+        );
+        assert_eq!(
+            strip_name_tags("[WEEKLY] [HEROIC 2+] Black Hole"),
+            "Black Hole"
+        );
+        assert_eq!(strip_name_tags("No Tags Here"), "No Tags Here");
+    }
+
+    #[test]
+    fn populate_quest_name_tags_classifies_and_catalogs() {
+        let path = temp_db_path("quest_name_tags");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+        {
+            let conn = db.conn.lock().unwrap();
+            for (sid, text) in [
+                (293, "[HEROIC 2+] The Hate Machine"),
+                (466154, "[HEROIC 4] Stage 3"),
+                (1000, "[VETERAN] Hammer Station"),
+                (1001, "Plain Story Mission"),
+            ] {
+                conn.execute(
+                    "INSERT INTO strings (fqn, locale, id1, id2, text) VALUES (?1, 'en-us', 88, ?2, ?3)",
+                    params![format!("str.qst.88.{sid}"), sid, text],
+                )
+                .unwrap();
+            }
+            // a non-name string (id1 != 88) that must be ignored
+            conn.execute(
+                "INSERT INTO strings (fqn, locale, id1, id2, text) VALUES ('str.qst.1.42', 'en-us', 1, 42, '[HEROIC] objective text')",
+                [],
+            )
+            .unwrap();
+        }
+        let n = db.populate_quest_name_tags().unwrap();
+        assert_eq!(
+            n, 4,
+            "4 str.qst.88.* names cataloged, the str.qst.1.* ignored"
+        );
+        let conn = db.conn.lock().unwrap();
+        let heroics: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM quest_name_tags WHERE activity_type='heroic'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(heroics, 2);
+        let clean: String = conn
+            .query_row(
+                "SELECT name_clean FROM quest_name_tags WHERE string_id=293",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(clean, "The Hate Machine");
     }
 }
