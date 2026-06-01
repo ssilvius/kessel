@@ -137,9 +137,11 @@ cargo build --release -p kessel-discovery --bin catalog_singletons
 | `prototypes.info` | `PINF` | 7.2 MB | 723,690 records (10 bytes each: u64 BE id + u8 flag + u8 unknown). **Prior interpretation as "routing key" needs revisiting** — flag bytes 0x00–0xFF all appear evenly (~2,800 each), not as a small enum. Format not fully understood. |
 | `buckets.info` | `PBCK` | 7.8 KB | Directory listing of the 997 `.bkt` bucket files (`0.bkt`, `1.bkt`, ...). |
 | `scriptdef.list` | `SDEF` | 38 KB | Script definition records (`<u64 id><CF prefix><hash>` per record). |
-| `compilednative/<numeric_id>` | `SCPT` | varies | 1,340 compiled Pawn bytecode files. Combat formulas / GSF physics / UI script logic. Kessel has `kessel::scpt` decoder (from #127) but no consumer wired. |
+| `compilednative/<numeric_id>` | `SCPT` | varies | **HeroScript** (HeroEngine), compiled to native x86-64 — engine/systems logic (combat clips, skill trees, GSF physics, UI). **NOT story-content scripts.** Verified 2026-06-01 against the 1,196 `.scpt` bodies in spice: only 8 carry any FQN ref and **0 reference quest flags** (`counter_`/`qm_`/`go_`/`track_`); the bytes are x86 prologues (`push rsi/rdi/rbx` …) + a "Missing return." compiler string. Quest/story progression logic is **not** in here. Kessel has `kessel::scpt` (decrypt only, from #127); decoding the native code would yield engine internals, not content. |
 | `buckets/<n>.bkt` | `PBUK` | varies | 997 individual bucket payloads. Each holds many GOM objects. Already consumed by kessel via `pbuk::parse`. |
 | `prototypes/<numeric_id>.node` | `PROT` (per agent 019e4d74) | varies | 17,514 prototype files. Per the file-format catalog, contains a mix of cnv + creature + stage + player-ability prototypes. **Caveat**: a sample hash failed to resolve via `dump_epp` — exact present-vs-absent count needs re-verification per .node. |
+
+> **No story-content scripts in the archive (verified 2026-06-01).** Quest/story *content* is declarative — names, objective/journal/description text, progression flags (all in the strings table + quest payloads, extracted) — and is fully captured. The procedural *logic* (objective counts, conversation flow, cross-quest prerequisites, completion conditions, planet order) lives in **HeroScript** (the compiled `.scpt` native engine code above — no quest-flag symbols) and **hydra** (`hyd.*` spawn/POI/encounter event scripting). Neither is a readable "story content script": HeroScript is compiled native x86-64; hydra is spawn/event scaffolding. So those runtime behaviors are not extractable as data without decompiling engine code — they are the runtime-residual ceiling, not a content layer we are missing.
 
 ## 4. Singleton meta files (top-level)
 
@@ -176,7 +178,7 @@ cargo build --release -p kessel-discovery --bin catalog_singletons
 | `.rul` | 1 | `<?xml version="1.0"?><Rules>` | ASCII XML rule set (only `testrules.rul`). |
 | `.ini` | 1 | (input keybindings) | Dev keybinding config. |
 | `.bkt` | 997 | `PBUK` | Individual bucket file (kessel consumes these via PBUK parser; the file itself is in scope). |
-| `.node` | 17,514 | (per catalog: `PROT`, but a sample hash failed to resolve via `dump_epp`) | Prototype files. Mix of cnv + creature + stage + player-ability prototypes per file-format catalog. |
+| `.node` | 17,514 | (per catalog: `PROT`, but a sample hash failed to resolve via `dump_epp`) | Prototype files. Mix of cnv + creature + stage + player-ability prototypes. **`cnv.*` .node = conversation CINEMATICS** (camera marks, animation, music cues, actor movement, stage refs) — verified 2026-06-01: a 131 KB cnv NODE carries **no dialogue text** (not ASCII, not UTF-16) and **no narrative next-conversation refs** (the `cnv→cnv` refs present are alien-VO variants). **NOT story content / not dialogue scripts.** The quest↔conversation *link* used downstream (`conversation_quest_refs`) comes from CF-GUID refs, not from decoding the NODE. |
 
 ### Files in hash dictionary but NOT in client archives (server-only)
 
@@ -213,6 +215,31 @@ cargo build --release -p kessel-discovery --bin catalog_singletons
 | `en-us/` | 14,924 | Extracted by kessel |
 | `fr-fr/` | 14,497 | Out of scope (per Sean: filter non-English) |
 | `de-de/` | 14,497 | Out of scope |
+
+kessel extracts **all** `/resources/{locale}/str/*.stb` (no prefix filter); only `en-us` assets are installed, so the `strings` table is 558,196 rows, all `en-us`. The `locale` is read from the path, so dropping the `fr-fr`/`de-de` `.tor` archives in and re-extracting would populate them with no code change.
+
+### 6a. The strings table is where quest/mission CONTENT lives (verified 2026-06-01)
+
+Strings are keyed `(id1 = field slot, id2 = object's string_id)`; the FQN is `str.<domain>.<id1>.<id2>`. This — **not** the GOM payload — is the source of all quest text. **`str.qst` slot map:**
+
+| `id1` slot | Holds | Count |
+|---|---|---:|
+| `88` | **Mission name** (the canonical named-mission universe) | 6,761 |
+| `89–199` | **Objective** lines ("Speak to X", "Slay the Beast") | ~14,280 |
+| `200–699` | **Journal / step description** narrative | ~23,600 |
+| `>699` | reference text | ~650 |
+
+The link to a quest object is `strings.id2 = objects.string_id` (same join `quest_descriptions` uses). Downstream tables built from this: `quest_name_tags`, `quest_text`, `mission_catalog`.
+
+**Named-mission universe ≫ extracted objects:** there are **6,761** `str.qst.88` mission names vs the **1,514** `qst` objects kessel extracts (§2a). The ~5,000 extras (heroics, flashpoints, weeklies, dailies) exist only as named strings — now first-class in `mission_catalog` (keyed by `string_id`), but they carry no FQN/planet/class (those need the object). Coverage vs the Exarch oracle: 82% exact name match + superset size, no clear gaps.
+
+### 6b. str namespaces (top)
+
+`str.itm` 241,606 · `str.abl` 182,842 · `str.qst` 45,379 · `str.npc` 40,328 (NPC names/titles, not dialogue) · `str.ach` 37,819 · `str.cdx` 7,671 · `str.tal` 2,341 · `str.gui` 210. **No `str.cnv`/`str.dlg` namespace exists** — conversation dialogue text is not in `/str/` at all (nor in the cnv NODE; see §3).
+
+### 6c. Quest classification: in the NAME, not the GOM enum
+
+`qstActivityType` / `qstDifficulty` / `qstRewardsVisibility` / `qstEpisodeSeason` are class/prototype defaults and are **NOT serialized per quest** (0 CF40 occurrences of their hashes across all 1,514 quest payloads). The real signal is the **mission-name bracket tag** (`[HEROIC 2+]`, `[VETERAN]`, `[MASTER]`, `[FLASHPOINT]`, `[UPRISING]`, `[WEEKLY]`, `[DAILY]`) → parsed into `quest_name_tags`. Runtime-residual / not-in-archive (the ceiling): objective `count` ("0/10"), conversation flow, cross-quest prerequisites, planet-progression order (class story is all `qst.location.open_world.*`; arc edges are same-planet).
 
 ## 7. Where I am uncertain / earlier reflections may be wrong
 
