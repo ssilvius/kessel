@@ -168,6 +168,7 @@ impl Database {
             tx.commit()?;
         }
         self.migrate_quest_typed_columns()?;
+        self.migrate_quest_chain_taxonomy()?;
         self.migrate_disciplines_from_dis_columns()?;
 
         Ok(())

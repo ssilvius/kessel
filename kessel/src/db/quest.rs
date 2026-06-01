@@ -58,6 +58,60 @@ impl Database {
         Ok(())
     }
 
+    /// Add the `edge_class` + `confidence` discriminator columns to
+    /// `quest_chain` (#266). Idempotent -- checks pragma_table_info first. The
+    /// raw `link_type` is kept for provenance; these columns give huttspawn a
+    /// filterable semantic so the chain renderer can show the story spine and
+    /// drop low-confidence heuristic edges.
+    pub fn migrate_quest_chain_taxonomy(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let existing: std::collections::HashSet<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(quest_chain)")?;
+            let cols = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?;
+            cols.into_iter().collect()
+        };
+        for (name, ty) in [("edge_class", "TEXT"), ("confidence", "TEXT")] {
+            if !existing.contains(name) {
+                conn.execute(
+                    &format!("ALTER TABLE quest_chain ADD COLUMN {name} {ty}"),
+                    [],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Classify every `quest_chain` edge into a consumer-facing `edge_class`
+    /// (next | branch | bonus | related) + `confidence` (high | medium | low),
+    /// mapped from the raw `link_type` (#266). guid_ref becomes bonus/high when
+    /// the target is a bonus mission (FQN contains `.bonus.`) else next/high;
+    /// planet_transition becomes next/high; fqn_arc_order becomes next/medium
+    /// (heuristic act/hub order); npc_giver becomes related/low (shared-NPC
+    /// overlap, weak). Idempotent UPDATE on the existing PK. Returns rows set.
+    pub fn populate_quest_chain_taxonomy(&self) -> Result<u64> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn.execute(
+            "UPDATE quest_chain SET
+                edge_class = CASE
+                    WHEN link_type = 'guid_ref' AND target_game_id IN (
+                        SELECT game_id FROM objects WHERE fqn LIKE '%.bonus.%'
+                    ) THEN 'bonus'
+                    WHEN link_type IN ('guid_ref', 'planet_transition', 'fqn_arc_order') THEN 'next'
+                    WHEN link_type = 'npc_giver' THEN 'related'
+                    ELSE 'next'
+                END,
+                confidence = CASE
+                    WHEN link_type = 'fqn_arc_order' THEN 'medium'
+                    WHEN link_type = 'npc_giver' THEN 'low'
+                    ELSE 'high'
+                END",
+            [],
+        )? as u64;
+        Ok(n)
+    }
+
     pub fn populate_quest_tables(&self) -> Result<u64> {
         self.flush()?;
 
@@ -2876,5 +2930,59 @@ mod tests {
         assert_eq!(fqn2, None, "string-only mission has no object FQN");
         assert_eq!(act.as_deref(), Some("heroic"));
         assert_eq!(gsize, Some(4));
+    }
+
+    #[test]
+    fn populate_quest_chain_taxonomy_classifies_edges() {
+        let path = temp_db_path("quest_chain_taxonomy");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+        {
+            let conn = db.conn.lock().unwrap();
+            // objects for every edge endpoint (quest_chain has FKs to objects):
+            // two targets (one bonus, one normal) + four sources.
+            for (gid, fqn) in [
+                ("tb", "qst.exp.02.yavin.bonus.confederacy"),
+                ("tn", "qst.exp.02.yavin.confederacy"),
+                ("s1", "qst.s.one"),
+                ("s2", "qst.s.two"),
+                ("s3", "qst.s.three"),
+                ("s4", "qst.s.four"),
+            ] {
+                conn.execute(
+                    "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, json, is_canonical) \
+                     VALUES (?1,'s','p','g',?2,'Quest','{}',1)",
+                    params![gid, fqn],
+                )
+                .unwrap();
+            }
+            for (src, tgt, lt) in [
+                ("s1", "tb", "guid_ref"),      // -> bonus/high
+                ("s2", "tn", "guid_ref"),      // -> next/high
+                ("s3", "tn", "fqn_arc_order"), // -> next/medium
+                ("s4", "tn", "npc_giver"),     // -> related/low
+            ] {
+                conn.execute(
+                    "INSERT INTO quest_chain (source_game_id, target_game_id, link_type) VALUES (?1,?2,?3)",
+                    params![src, tgt, lt],
+                )
+                .unwrap();
+            }
+        }
+        let n = db.populate_quest_chain_taxonomy().unwrap();
+        assert_eq!(n, 4);
+        let conn = db.conn.lock().unwrap();
+        let q = |src: &str| -> (String, String) {
+            conn.query_row(
+                "SELECT edge_class, confidence FROM quest_chain WHERE source_game_id=?1",
+                [src],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(q("s1"), ("bonus".into(), "high".into()));
+        assert_eq!(q("s2"), ("next".into(), "high".into()));
+        assert_eq!(q("s3"), ("next".into(), "medium".into()));
+        assert_eq!(q("s4"), ("related".into(), "low".into()));
     }
 }

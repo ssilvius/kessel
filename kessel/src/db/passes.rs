@@ -278,6 +278,12 @@ pub fn run_passes(db: &Database, ctx: &PassCtx) -> Result<PassCounts> {
     let npc_chain_count = db.populate_quest_chain_npc_giver()?;
     println!("  Quest chain NPC-giver edges: {}", npc_chain_count);
 
+    // Classify all chain edges into a consumer-facing edge_class + confidence
+    // (#266) so huttspawn can filter the story spine from heuristic noise.
+    // Runs after every chain populator so all edges are present.
+    let taxonomy_count = db.populate_quest_chain_taxonomy()?;
+    println!("  Quest chain edges classified: {}", taxonomy_count);
+
     // Eleventh pass: class taxonomy (#94). Origins are hardcoded (no GOM
     // object); combat styles come from class.pc.advanced.* with display
     // names resolved through cdx.advanced_classes.*. Must run before
