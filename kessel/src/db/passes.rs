@@ -60,6 +60,13 @@ pub fn run_passes(db: &Database, ctx: &PassCtx) -> Result<PassCounts> {
     let flag_rows = db.populate_quest_objective_flags()?;
     println!("  Quest objective flags: {} rows", flag_rows);
 
+    // Quest milestones (#265): isolate each quest's qm_*/go_* completion
+    // declaration (its "I'm done" signal) from the flag map, with the
+    // byte-order-last one marked is_terminal -- kessel-warden's done-detection
+    // join target. Derived from quest_objective_flags, so runs right after it.
+    let milestone_rows = db.populate_quest_milestones()?;
+    println!("  Quest milestones: {} rows", milestone_rows);
+
     // Hydra script FQN refs (#214): every counter/track/jrn/qm flag +
     // target NPC/cnv/abl ref pulled from hyd.* payload ASCII strings.
     let hydra_ref_rows = db.populate_hydra_refs()?;
