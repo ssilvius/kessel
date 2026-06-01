@@ -2312,6 +2312,41 @@ mod tests {
     }
 
     #[test]
+    fn quest_milestones_terminal_is_isolated_per_quest() {
+        // The correlated subquery scopes the per-quest max ordinal with
+        // WHERE g.quest_fqn = f.quest_fqn. Prove one quest's higher ordinal
+        // does not steal the terminal flag from another quest in the same DB.
+        let path = temp_db_path("quest_milestones_isolation");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+        // Quest A terminal at ordinal 5; Quest B terminal at ordinal 2 (< A's max).
+        seed_flag(&db, "qst.a", 0, "qm_start", "qm");
+        seed_flag(&db, "qst.a", 5, "qm_done", "qm");
+        seed_flag(&db, "qst.b", 0, "qm_start", "qm");
+        seed_flag(&db, "qst.b", 2, "qm_done", "qm");
+        db.populate_quest_milestones().unwrap();
+
+        let conn = db.conn.lock().unwrap();
+        let b_terminal: String = conn
+            .query_row(
+                "SELECT milestone_name FROM quest_milestones \
+                 WHERE quest_fqn = 'qst.b' AND is_terminal = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(b_terminal, "qm_done");
+        let total_terminals: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM quest_milestones WHERE is_terminal = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(total_terminals, 2, "one terminal per quest, isolated");
+    }
+
+    #[test]
     fn populate_quest_milestones_is_idempotent() {
         let path = temp_db_path("quest_milestones_idem");
         let db = Database::with_grammar(&path, None).unwrap();
