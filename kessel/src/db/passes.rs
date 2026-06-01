@@ -67,6 +67,13 @@ pub fn run_passes(db: &Database, ctx: &PassCtx) -> Result<PassCounts> {
     let milestone_rows = db.populate_quest_milestones()?;
     println!("  Quest milestones: {} rows", milestone_rows);
 
+    // Quest name catalog + activity/difficulty classification (#269/#271):
+    // every named mission (str.qst.88.*) with activity/difficulty/group/cadence
+    // parsed from its bracket tag. Captures heroic/flashpoint/weekly missions
+    // that exist as names but not as extracted qst.* objects.
+    let name_tag_rows = db.populate_quest_name_tags()?;
+    println!("  Quest name tags: {} rows", name_tag_rows);
+
     // Hydra script FQN refs (#214): every counter/track/jrn/qm flag +
     // target NPC/cnv/abl ref pulled from hyd.* payload ASCII strings.
     let hydra_ref_rows = db.populate_hydra_refs()?;
