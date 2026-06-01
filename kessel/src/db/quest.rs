@@ -366,6 +366,44 @@ impl Database {
         Ok(inserted)
     }
 
+    /// Populate `quest_milestones` (#265): isolate the per-quest completion
+    /// signal -- the `qm_*`/`go_*` milestone declaration a quest sets when it
+    /// finishes -- as one clean row, so kessel-warden has an unambiguous
+    /// "this quest is done" target instead of grepping `quest_objective_flags`.
+    ///
+    /// Pure derivation over the already-populated `quest_objective_flags`
+    /// (no payload re-decode): the source rows are every flag with
+    /// `flag_category = 'qm'` plus every `go_*` flag (which classify as
+    /// 'other'). `is_terminal = 1` marks the byte-order-last qm/go flag per
+    /// quest -- `ordinal` already encodes byte position and is unique per
+    /// quest, so exactly one milestone per quest is terminal.
+    ///
+    /// Cross-quest prerequisite matching is deliberately NOT done here: those
+    /// `qm_*`/`has_*` variables are internal per-quest state, proven to yield
+    /// zero cross-quest edges (vault prereq_finding.md). Returns rows written.
+    pub fn populate_quest_milestones(&self) -> Result<u64> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let written = tx.execute(
+            r#"
+            INSERT OR REPLACE INTO quest_milestones (quest_fqn, milestone_name, is_terminal)
+            SELECT f.quest_fqn,
+                   f.flag_name,
+                   CASE WHEN MAX(f.ordinal) = (
+                       SELECT MAX(g.ordinal) FROM quest_objective_flags g
+                       WHERE g.quest_fqn = f.quest_fqn
+                         AND (g.flag_category = 'qm' OR g.flag_name LIKE 'go\_%' ESCAPE '\')
+                   ) THEN 1 ELSE 0 END
+            FROM quest_objective_flags f
+            WHERE f.flag_category = 'qm' OR f.flag_name LIKE 'go\_%' ESCAPE '\'
+            GROUP BY f.quest_fqn, f.flag_name
+            "#,
+            [],
+        )? as u64;
+        tx.commit()?;
+        Ok(written)
+    }
+
     /// Populate `hydra_refs` (#214) by scanning hyd.* payloads for inline
     /// ASCII FQN references. Hydra scripts encode their references (counter
     /// flags, target NPCs, conversations, etc.) as length-prefixed ASCII
@@ -1819,6 +1857,20 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
             CREATE INDEX IF NOT EXISTS idx_qof_flag ON quest_objective_flags(flag_name);
             CREATE INDEX IF NOT EXISTS idx_qof_quest ON quest_objective_flags(quest_fqn);
             CREATE INDEX IF NOT EXISTS idx_qof_category ON quest_objective_flags(flag_category);
+            -- Quest milestones (#265): the qm_*/go_* declaration a quest sets on
+            -- completion -- its "I'm done" signal. Derived from quest_objective_flags
+            -- (no payload re-decode). is_terminal=1 marks the byte-order-last qm/go
+            -- flag per quest, the unambiguous completion-detection target kessel-warden
+            -- matches against the live combat log. Cross-quest prereq matching is NOT
+            -- done here -- those variables are internal per-quest state (prereq_finding.md).
+            CREATE TABLE IF NOT EXISTS quest_milestones (
+                quest_fqn       TEXT NOT NULL,
+                milestone_name  TEXT NOT NULL,
+                is_terminal     INTEGER NOT NULL,
+                PRIMARY KEY (quest_fqn, milestone_name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_quest_milestones_quest ON quest_milestones(quest_fqn);
+            CREATE INDEX IF NOT EXISTS idx_quest_milestones_terminal ON quest_milestones(is_terminal);
             -- Quest clusters: derived groupings to support bulk curation.
             -- Each quest gets one row per cluster_kind it matches; a quest can
             -- belong to multiple clusters (e.g. "class_act" and "class_planet"
@@ -2183,5 +2235,143 @@ mod tests {
         // Re-run is idempotent
         let n2 = db.populate_quest_npcs_direct().unwrap();
         assert_eq!(n2, 0);
+    }
+
+    /// Seed quest_objective_flags rows for the milestone tests.
+    fn seed_flag(db: &Database, quest_fqn: &str, ordinal: i64, flag: &str, cat: &str) {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO quest_objective_flags (quest_fqn, ordinal, flag_name, flag_category) \
+             VALUES (?1, ?2, ?3, ?4)",
+            params![quest_fqn, ordinal, flag, cat],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn populate_quest_milestones_marks_exactly_one_terminal_per_quest_with_qm() {
+        let path = temp_db_path("quest_milestones_terminal");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+        // qm_started(0), qm_phase2(2), go_final(3, the byte-order-last qm/go).
+        // track/counter rows are not milestones and must be ignored, even
+        // though counter_y(4) has a higher ordinal than the terminal milestone.
+        let q = "qst.test.milestone";
+        seed_flag(&db, q, 0, "qm_started", "qm");
+        seed_flag(&db, q, 1, "track_progress", "track");
+        seed_flag(&db, q, 2, "qm_phase2", "qm");
+        seed_flag(&db, q, 3, "go_final", "other");
+        seed_flag(&db, q, 4, "counter_kills", "counter");
+
+        let n = db.populate_quest_milestones().unwrap();
+        assert_eq!(n, 3, "qm_started, qm_phase2, go_final are the 3 milestones");
+
+        let conn = db.conn.lock().unwrap();
+        let total: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM quest_milestones WHERE quest_fqn = ?1",
+                params![q],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(total, 3);
+        let terminals: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM quest_milestones WHERE quest_fqn = ?1 AND is_terminal = 1",
+                params![q],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(terminals, 1, "exactly one terminal milestone per quest");
+    }
+
+    #[test]
+    fn quest_milestones_terminal_matches_last_qm_by_ordinal() {
+        let path = temp_db_path("quest_milestones_lastord");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+        let q = "qst.test.lastord";
+        seed_flag(&db, q, 0, "qm_started", "qm");
+        seed_flag(&db, q, 2, "qm_phase2", "qm");
+        seed_flag(&db, q, 3, "go_final", "other");
+        db.populate_quest_milestones().unwrap();
+
+        let conn = db.conn.lock().unwrap();
+        let terminal: String = conn
+            .query_row(
+                "SELECT milestone_name FROM quest_milestones \
+                 WHERE quest_fqn = ?1 AND is_terminal = 1",
+                params![q],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            terminal, "go_final",
+            "terminal milestone is the max-ordinal qm/go flag"
+        );
+    }
+
+    #[test]
+    fn quest_milestones_terminal_is_isolated_per_quest() {
+        // The correlated subquery scopes the per-quest max ordinal with
+        // WHERE g.quest_fqn = f.quest_fqn. Prove one quest's higher ordinal
+        // does not steal the terminal flag from another quest in the same DB.
+        let path = temp_db_path("quest_milestones_isolation");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+        // Quest A terminal at ordinal 5; Quest B terminal at ordinal 2 (< A's max).
+        seed_flag(&db, "qst.a", 0, "qm_start", "qm");
+        seed_flag(&db, "qst.a", 5, "qm_done", "qm");
+        seed_flag(&db, "qst.b", 0, "qm_start", "qm");
+        seed_flag(&db, "qst.b", 2, "qm_done", "qm");
+        db.populate_quest_milestones().unwrap();
+
+        let conn = db.conn.lock().unwrap();
+        let b_terminal: String = conn
+            .query_row(
+                "SELECT milestone_name FROM quest_milestones \
+                 WHERE quest_fqn = 'qst.b' AND is_terminal = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(b_terminal, "qm_done");
+        let total_terminals: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM quest_milestones WHERE is_terminal = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(total_terminals, 2, "one terminal per quest, isolated");
+    }
+
+    #[test]
+    fn populate_quest_milestones_is_idempotent() {
+        let path = temp_db_path("quest_milestones_idem");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+        let q = "qst.test.idem";
+        seed_flag(&db, q, 0, "qm_started", "qm");
+        seed_flag(&db, q, 1, "go_done", "other");
+
+        let first = db.populate_quest_milestones().unwrap();
+        let second = db.populate_quest_milestones().unwrap();
+        assert_eq!(first, 2);
+        assert_eq!(second, 2, "INSERT OR REPLACE rewrites the same 2 rows");
+
+        // Idempotent state: row count and the single terminal are unchanged.
+        let conn = db.conn.lock().unwrap();
+        let (total, terminals): (i64, i64) = conn
+            .query_row(
+                "SELECT \
+                    (SELECT COUNT(*) FROM quest_milestones WHERE quest_fqn = ?1), \
+                    (SELECT COUNT(*) FROM quest_milestones WHERE quest_fqn = ?1 AND is_terminal = 1)",
+                params![q],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(terminals, 1);
     }
 }
