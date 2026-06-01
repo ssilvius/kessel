@@ -2115,6 +2115,43 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
             );
             CREATE INDEX IF NOT EXISTS idx_quest_text_string ON quest_text(string_id);
             CREATE INDEX IF NOT EXISTS idx_quest_text_kind ON quest_text(kind);
+            -- Unified mission catalog (#268): every named mission as one
+            -- first-class, queryable row -- keyed by string_id (the stable
+            -- identity that exists for all ~6761 missions, vs the ~1514
+            -- extracted as quest objects). Joins the name/activity/difficulty
+            -- classification (quest_name_tags) to the quest object (FQN, planet,
+            -- mission_type) WHERE one exists, and flags whether objective/journal
+            -- text is present. Correlated subqueries keep it one row per mission
+            -- (no join fan-out). Missions that exist only as named strings
+            -- (heroics, flashpoints, weeklies) are first-class here even without
+            -- an extracted object.
+            CREATE VIEW IF NOT EXISTS mission_catalog AS
+                SELECT
+                    t.string_id,
+                    t.name_clean AS name,
+                    t.activity_type,
+                    t.difficulty,
+                    t.group_size,
+                    t.cadence,
+                    (SELECT o.fqn FROM objects o
+                       WHERE o.string_id = t.string_id AND o.kind = 'Quest'
+                         AND o.is_canonical = 1 LIMIT 1) AS quest_fqn,
+                    (SELECT o.game_id FROM objects o
+                       WHERE o.string_id = t.string_id AND o.kind = 'Quest'
+                         AND o.is_canonical = 1 LIMIT 1) AS quest_game_id,
+                    (SELECT d.planet FROM objects o
+                       JOIN quest_details d ON d.fqn = o.fqn
+                       WHERE o.string_id = t.string_id AND o.kind = 'Quest'
+                         AND o.is_canonical = 1 LIMIT 1) AS planet,
+                    (SELECT d.mission_type FROM objects o
+                       JOIN quest_details d ON d.fqn = o.fqn
+                       WHERE o.string_id = t.string_id AND o.kind = 'Quest'
+                         AND o.is_canonical = 1 LIMIT 1) AS mission_type,
+                    EXISTS(SELECT 1 FROM quest_text x
+                       WHERE x.string_id = t.string_id AND x.kind = 'objective') AS has_objectives,
+                    EXISTS(SELECT 1 FROM quest_text x
+                       WHERE x.string_id = t.string_id AND x.kind = 'journal') AS has_journal
+                FROM quest_name_tags t;
             -- Quest clusters: derived groupings to support bulk curation.
             -- Each quest gets one row per cluster_kind it matches; a quest can
             -- belong to multiple clusters (e.g. "class_act" and "class_planet"
@@ -2780,5 +2817,64 @@ mod tests {
             )
             .unwrap();
         assert_eq!(jrn, "journal");
+    }
+
+    #[test]
+    fn mission_catalog_unifies_linked_and_string_only_missions() {
+        let path = temp_db_path("mission_catalog");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+        {
+            let conn = db.conn.lock().unwrap();
+            // Mission 700: has an extracted quest object + objective text (linked).
+            conn.execute(
+                "INSERT INTO strings (fqn, locale, id1, id2, text) VALUES ('str.qst.88.700','en-us',88,700,'[HEROIC 2+] Linked Mission')",
+                [],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO strings (fqn, locale, id1, id2, text) VALUES ('str.qst.103.700','en-us',103,700,'Speak to the Handler')",
+                [],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, json, is_canonical, string_id) \
+                 VALUES ('g700','sid','ph','guid','qst.heroic.linked','Quest','{}',1,700)",
+                [],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO quest_details (fqn, mission_type, planet) VALUES ('qst.heroic.linked','heroic','hoth')",
+                [],
+            ).unwrap();
+            // Mission 800: name only, NO object (string-only heroic).
+            conn.execute(
+                "INSERT INTO strings (fqn, locale, id1, id2, text) VALUES ('str.qst.88.800','en-us',88,800,'[HEROIC 4] String-Only Mission')",
+                [],
+            ).unwrap();
+        }
+        db.populate_quest_name_tags().unwrap();
+        db.populate_quest_text().unwrap();
+
+        let conn = db.conn.lock().unwrap();
+        // Linked mission: has FQN, planet, objective text.
+        let (fqn, planet, has_obj): (Option<String>, Option<String>, i64) = conn
+            .query_row(
+                "SELECT quest_fqn, planet, has_objectives FROM mission_catalog WHERE string_id=700",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(fqn.as_deref(), Some("qst.heroic.linked"));
+        assert_eq!(planet.as_deref(), Some("hoth"));
+        assert_eq!(has_obj, 1);
+        // String-only mission: first-class row, classified, but no object.
+        let (fqn2, act, gsize): (Option<String>, Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT quest_fqn, activity_type, group_size FROM mission_catalog WHERE string_id=800",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(fqn2, None, "string-only mission has no object FQN");
+        assert_eq!(act.as_deref(), Some("heroic"));
+        assert_eq!(gsize, Some(4));
     }
 }
