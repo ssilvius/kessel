@@ -12,6 +12,7 @@ pub(crate) use crate::grammar::Grammar;
 pub(crate) use crate::schema::{decode_payload_schema_aware, GameObject};
 pub(crate) use crate::stb::StbEntry;
 mod ability;
+mod cnv;
 mod conquest;
 mod item;
 mod npc;
@@ -161,6 +162,7 @@ impl Database {
             schematic::create_tables(&tx)?;
             conquest::create_tables(&tx)?;
             world::create_tables(&tx)?;
+            cnv::create_tables(&tx)?;
             npc::create_tables(&tx)?;
             ability::create_tables(&tx)?;
             item::create_tables(&tx)?;

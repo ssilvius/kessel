@@ -221,6 +221,16 @@ pub fn should_extract_stb(path: &str) -> bool {
             return ROOT_TARGETS.contains(&after_str);
         }
 
+        // Conversation dialogue tables. The spoken/subtitle lines for every
+        // conversation live in per-conversation nested STBs under /str/cnv/
+        // (e.g. /str/cnv/location/taris/class/jedi_knight/rora_seake.stb).
+        // 5,768 en-us tables -- the largest /str/ category. The path maps
+        // straight onto the cnv.* object FQN (extract_fqn_from_path), so the
+        // strings link back to conversations (and through them, quests).
+        if after_str.starts_with("cnv/") {
+            return true;
+        }
+
         // Selected nested STBs that contain category labels not in the
         // root-level kind tables. planetaryconquest carries conquest theme
         // names; galacticcommand carries Eternal Empire reward-track labels.
@@ -290,8 +300,14 @@ mod tests {
         assert!(!should_extract_stb(
             "/resources/en-us/str/gui/disciplinewindow.stb"
         ));
-        assert!(!should_extract_stb(
+
+        // Conversation dialogue tables (nested under /str/cnv/) ARE extracted --
+        // they hold the spoken/subtitle lines for every conversation.
+        assert!(should_extract_stb(
             "/resources/en-us/str/cnv/some_convo.stb"
+        ));
+        assert!(should_extract_stb(
+            "/resources/en-us/str/cnv/location/taris/class/jedi_knight/rora_seake.stb"
         ));
 
         // Should NOT extract other root files
