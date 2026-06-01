@@ -216,7 +216,7 @@ cargo build --release -p kessel-discovery --bin catalog_singletons
 | `fr-fr/` | 14,497 | Out of scope (per Sean: filter non-English) |
 | `de-de/` | 14,497 | Out of scope |
 
-kessel extracts **all** `/resources/{locale}/str/*.stb` (no prefix filter); only `en-us` assets are installed, so the `strings` table is 558,196 rows, all `en-us`. The `locale` is read from the path, so dropping the `fr-fr`/`de-de` `.tor` archives in and re-extracting would populate them with no code change.
+kessel selects STB files via `stb::should_extract_stb` (root-level kind tables `abl/tal/itm/npc/qst/cdx/ach/schem`, the two `gui` category tables, and — as of #281 — all nested `/str/cnv/` dialogue tables). Only `en-us` assets are installed, so the `strings` table is **~973k rows**, all `en-us` (≈558k pre-#281 + ~415k conversation lines). The `locale` is read from the path, so dropping the `fr-fr`/`de-de` `.tor` archives in and re-extracting would populate them with no code change.
 
 ### 6a. The strings table is where quest/mission CONTENT lives (verified 2026-06-01)
 
@@ -235,7 +235,15 @@ The link to a quest object is `strings.id2 = objects.string_id` (same join `ques
 
 ### 6b. str namespaces (top)
 
-`str.itm` 241,606 · `str.abl` 182,842 · `str.qst` 45,379 · `str.npc` 40,328 (NPC names/titles, not dialogue) · `str.ach` 37,819 · `str.cdx` 7,671 · `str.tal` 2,341 · `str.gui` 210. **No `str.cnv`/`str.dlg` namespace exists** — conversation dialogue text is not in `/str/` at all (nor in the cnv NODE; see §3).
+`str.cnv` **414,893** (conversation dialogue lines — see §6d) · `str.itm` 241,606 · `str.abl` 182,842 · `str.qst` 45,379 · `str.npc` 40,328 (NPC names/titles, not dialogue) · `str.ach` 37,819 · `str.cdx` 7,671 · `str.tal` 2,341 · `str.gui` 210.
+
+### 6d. Conversation dialogue lives in `/str/cnv/` (extracted as of #281)
+
+The spoken/subtitle text for every conversation is in **per-conversation STBs under `/str/cnv/`** — 16,551 tables in the archive (5,768 en-us), the largest `/str/` category. The path maps onto the `cnv.*` object FQN (`extract_fqn_from_path`), so a line is `str.cnv.<conv path>.<id1>.<id2>`.
+
+**Earlier (wrong) note corrected:** a prior revision of this atlas said "no `str.cnv` namespace; dialogue is not in `/str/`." That was an extraction artifact, not a fact — `should_extract_stb` only accepted root-level tables and rejected every nested one, so `/str/cnv/` was silently dropped. It is now extracted (the `cnv` module enables it). Real numbers: **414,893 dialogue lines across 5,671 conversations**, surfaced by the `conversation_lines` view (strips `str.` + trailing `.id1.id2` to recover `cnv_fqn`), joinable to conversations → quests via `conversation_quest_refs`.
+
+The cnv **NODE** still has no dialogue — that's cinematics only (§3). Dialogue is in the `/str/cnv/` STBs, not the NODE.
 
 ### 6c. Quest classification: in the NAME, not the GOM enum
 
