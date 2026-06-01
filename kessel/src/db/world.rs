@@ -535,39 +535,66 @@ impl Database {
         Ok(counts)
     }
 
-    /// Populate `quest_chain` with `planet_transition` links by scanning every
-    /// `leaving_{planet}` quest for strings that name the destination.
+    /// Populate `quest_chain` with `planet_transition` links: for each class-story
+    /// quest that emits a `travel_to_{planet}` / `traveled_to_{planet}` string, link
+    /// it to that destination planet's same-class story anchor (the character's class
+    /// story continues on the next planet).
     ///
-    /// Pattern: strings containing `_to_{planet}` (e.g. `jrn_start_take_the_shuttle_to_dromund_kaas`)
-    /// are used to locate the class intro quest at that planet. Strings that name
-    /// intermediate stops (e.g. `the_imperial_transit_station`) produce no match
-    /// and are silently skipped.
+    /// The previous implementation keyed off a `leaving_{planet}` -> `.class.%.intro`
+    /// FQN convention that barely exists in current data (2 leaving quests, 1 intro
+    /// quest) and produced a single edge. This version uses the real signal: the
+    /// explicit travel verbs (296 quests carry one), validated against the per-planet
+    /// class-anchor map. Source quests that are not class story, or whose destination
+    /// has no same-class anchor, are skipped -- we under-claim rather than fabricate a
+    /// target (the `0xCF` GUID-chain over-claim of PR #11 is the cautionary tale).
+    ///
+    /// Anchor per `(planet, class)`: the `qst.location.{planet}.class.{class}.intro`
+    /// quest if present, else the lowest-`game_id` quest under
+    /// `qst.location.{planet}.class.{class}.%` (deterministic).
     pub fn populate_planet_transitions(&self) -> Result<u64> {
         let conn = self.conn.lock().unwrap();
 
-        // Build lookup: fqn -> game_id for all intro quests.
-        let mut intro_map: std::collections::HashMap<String, String> =
+        // Build the (planet, class) -> anchor game_id map. Prefer an `.intro`
+        // quest; otherwise keep the lexicographically smallest game_id.
+        let mut anchor: std::collections::HashMap<(String, String), (String, bool)> =
             std::collections::HashMap::new();
         {
             let mut stmt = conn.prepare(
-                "SELECT fqn, game_id FROM objects WHERE fqn LIKE 'qst.location.%.class.%.intro' AND is_canonical = 1",
+                "SELECT fqn, game_id FROM objects \
+                 WHERE fqn LIKE 'qst.location.%.class.%' AND is_canonical = 1",
             )?;
             let rows = stmt.query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?;
-            for row in rows.filter_map(|r| r.ok()) {
-                intro_map.insert(row.0, row.1);
+            for (fqn, game_id) in rows.filter_map(|r| r.ok()) {
+                // qst.location.{planet}.class.{class}.{rest...}
+                let parts: Vec<&str> = fqn.split('.').collect();
+                if parts.len() < 5 || parts[1] != "location" || parts[3] != "class" {
+                    continue;
+                }
+                let key = (parts[2].to_string(), parts[4].to_string());
+                let is_intro = parts.last() == Some(&"intro");
+                anchor
+                    .entry(key)
+                    .and_modify(|cur| {
+                        // intro always wins; otherwise smaller game_id wins.
+                        if (is_intro && !cur.1) || (is_intro == cur.1 && game_id < cur.0) {
+                            *cur = (game_id.clone(), is_intro);
+                        }
+                    })
+                    .or_insert((game_id.clone(), is_intro));
             }
         }
 
-        let mut leaving_quests: Vec<(String, String, String)> = Vec::new();
+        // Source quests: every canonical class-story Quest carrying strings.
+        let mut sources: Vec<(String, String, String)> = Vec::new();
         {
             let mut stmt = conn.prepare(
                 "SELECT fqn, game_id, json_extract(json, '$.strings') \
                  FROM objects \
-                 WHERE fqn LIKE 'qst.location.%.class.%.leaving_%' \
-                   AND json_extract(json, '$.strings') IS NOT NULL \
-                   AND is_canonical = 1",
+                 WHERE kind = 'Quest' AND is_canonical = 1 \
+                   AND fqn LIKE 'qst.location.%.class.%' \
+                   AND json_extract(json, '$.strings') IS NOT NULL",
             )?;
             let rows = stmt.query_map([], |row| {
                 Ok((
@@ -577,42 +604,50 @@ impl Database {
                 ))
             })?;
             for row in rows.filter_map(|r| r.ok()) {
-                leaving_quests.push(row);
+                sources.push(row);
             }
         }
 
         let tx = conn.unchecked_transaction()?;
         let mut count: u64 = 0;
+        let mut seen: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
 
-        for (fqn, game_id, strings_json) in &leaving_quests {
-            // Extract class segment: qst.location.{planet}.class.{class}.leaving_{planet}
+        for (fqn, game_id, strings_json) in &sources {
             let parts: Vec<&str> = fqn.split('.').collect();
-            let class_pos = parts.iter().position(|&p| p == "class");
-            let class = match class_pos {
-                Some(i) if i + 1 < parts.len() => parts[i + 1],
-                _ => continue,
-            };
+            // qst.location.{src_planet}.class.{class}.*
+            if parts.len() < 5 {
+                continue;
+            }
+            let src_planet = parts[2];
+            let class = parts[4];
 
             let strings: Vec<String> = match serde_json::from_str(strings_json) {
                 Ok(v) => v,
                 Err(_) => continue,
             };
 
-            // Scan strings for `_to_{dest}` patterns; try each as a planet FQN component.
             for s in &strings {
-                if let Some(dest) = extract_transit_dest(s) {
-                    let intro_fqn = format!("qst.location.{}.class.{}.intro", dest, class);
-                    if let Some(target_game_id) = intro_map.get(&intro_fqn) {
-                        tx.execute(
-                            "INSERT OR IGNORE INTO quest_chain \
-                             (source_game_id, target_game_id, link_type) \
-                             VALUES (?1, ?2, 'planet_transition')",
-                            params![game_id, target_game_id],
-                        )?;
-                        count += 1;
-                        break;
-                    }
+                let Some(dest) = planet_transit_dest(s) else {
+                    continue;
+                };
+                if dest == src_planet {
+                    continue; // not a transition
                 }
+                let Some((target_game_id, _)) = anchor.get(&(dest.clone(), class.to_string()))
+                else {
+                    continue; // destination has no same-class anchor -> skip
+                };
+                if !seen.insert((game_id.clone(), target_game_id.clone())) {
+                    continue;
+                }
+                tx.execute(
+                    "INSERT OR IGNORE INTO quest_chain \
+                     (source_game_id, target_game_id, link_type) \
+                     VALUES (?1, ?2, 'planet_transition')",
+                    params![game_id, target_game_id],
+                )?;
+                count += 1;
             }
         }
 
@@ -864,6 +899,7 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::testutil::temp_db_path;
     #[test]
     fn find_planet_code_after_cc_reads_pla_suffix() {
         // CC marker + cc_id, then a `_pla_<planet>` run terminated by a
@@ -889,5 +925,119 @@ mod tests {
         let mut record = vec![0xCC, 0x0B, 0xAC, 0x73, 0xFD];
         record.extend_from_slice(b"no planet here");
         assert_eq!(find_planet_code_after_cc(&record, &cc), None);
+    }
+
+    #[test]
+    fn planet_transit_dest_matches_travel_verbs_only() {
+        assert_eq!(
+            planet_transit_dest("qm_traveled_to_yavin_4"),
+            Some("yavin_4".to_string())
+        );
+        assert_eq!(
+            planet_transit_dest("qm_travel_to_korriban"),
+            Some("korriban".to_string())
+        );
+        // Known abbreviation expands.
+        assert_eq!(
+            planet_transit_dest("go_travel_to_dk"),
+            Some("dromund_kaas".to_string())
+        );
+        // Generic `_to_` is NOT a transit -- these must not match.
+        assert_eq!(planet_transit_dest("qm_spoke_to_darth_marr"), None);
+        assert_eq!(planet_transit_dest("go_to_library"), None);
+        assert_eq!(planet_transit_dest("track_return_to_ship"), None);
+    }
+
+    fn seed_quest(db: &Database, game_id: &str, fqn: &str, strings: &[&str]) {
+        let json = serde_json::json!({ "strings": strings }).to_string();
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, json, is_canonical) \
+             VALUES (?1, 'sid', 'ph', ?1, ?2, 'Quest', ?3, 1)",
+            params![game_id, fqn, json],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn populate_planet_transitions_links_class_story_to_destination_anchor() {
+        let path = temp_db_path("planet_transitions");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+
+        // Destination anchor: korriban sith_warrior intro.
+        seed_quest(
+            &db,
+            "kor_intro",
+            "qst.location.korriban.class.sith_warrior.intro",
+            &[],
+        );
+        // Source on hutta that travels to korriban (same class) -> 1 edge.
+        seed_quest(
+            &db,
+            "hutta_src",
+            "qst.location.hutta.class.sith_warrior.depart",
+            &["qm_travel_to_korriban"],
+        );
+        // Generic `_to_` string only -> no edge.
+        seed_quest(
+            &db,
+            "noise_src",
+            "qst.location.hutta.class.sith_warrior.chatter",
+            &["qm_spoke_to_overseer"],
+        );
+        // Travels to a planet with no same-class anchor -> skipped (under-claim).
+        seed_quest(
+            &db,
+            "noanchor_src",
+            "qst.location.hutta.class.sith_warrior.rumor",
+            &["qm_travel_to_voss"],
+        );
+
+        let n = db.populate_planet_transitions().unwrap();
+        assert_eq!(n, 1, "only the resolvable same-class transition is emitted");
+
+        let conn = db.conn.lock().unwrap();
+        let (src, tgt): (String, String) = conn
+            .query_row(
+                "SELECT source_game_id, target_game_id FROM quest_chain \
+                 WHERE link_type = 'planet_transition'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(src, "hutta_src");
+        assert_eq!(tgt, "kor_intro");
+    }
+
+    #[test]
+    fn populate_planet_transitions_is_idempotent() {
+        let path = temp_db_path("planet_transitions_idem");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+        seed_quest(
+            &db,
+            "kor_intro",
+            "qst.location.korriban.class.sith_warrior.intro",
+            &[],
+        );
+        seed_quest(
+            &db,
+            "hutta_src",
+            "qst.location.hutta.class.sith_warrior.depart",
+            &["qm_traveled_to_korriban"],
+        );
+        let first = db.populate_planet_transitions().unwrap();
+        db.populate_planet_transitions().unwrap();
+        assert_eq!(first, 1);
+        let conn = db.conn.lock().unwrap();
+        let total: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM quest_chain WHERE link_type='planet_transition'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(total, 1, "INSERT OR IGNORE keeps the edge unique on re-run");
     }
 }

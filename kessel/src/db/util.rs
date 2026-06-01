@@ -279,19 +279,31 @@ pub(crate) fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 
-/// Extract the destination planet component from a transit tracking/journal string.
+/// Extract the destination planet from a quest transit string.
 ///
-/// Matches strings containing `_to_{dest}` where `{dest}` consists of lowercase
-/// letters and underscores. Strips a leading `the_` if present. The caller filters
-/// by checking for a matching intro quest, so non-planet results (e.g. `imperial_transit_station`)
-/// are silently dropped.
-pub(crate) fn extract_transit_dest(s: &str) -> Option<String> {
-    let idx = s.find("_to_")?;
-    let after = &s[idx + 4..];
+/// Only fires on the explicit travel verbs `travel_to_{dest}` / `traveled_to_{dest}`
+/// (e.g. `qm_traveled_to_yavin_4`, `qm_travel_to_korriban`, `go_travel_to_dk`). The
+/// generic `_to_` form is deliberately NOT matched -- it is dominated by false
+/// positives (`spoke_to_darth_marr`, `go_to_library`, `return_to_ship`). Known
+/// destination abbreviations are expanded (`dk` -> `dromund_kaas`). The caller
+/// validates `{dest}` against the planet anchor map, so any non-planet remainder
+/// is dropped there.
+pub(crate) fn planet_transit_dest(s: &str) -> Option<String> {
+    // Prefer the longer verb so `traveled_to_` is not truncated by `travel_to_`.
+    let after = s
+        .split_once("traveled_to_")
+        .or_else(|| s.split_once("travel_to_"))
+        .map(|(_, rest)| rest)?;
     let dest = after.strip_prefix("the_").unwrap_or(after);
-    if !dest.is_empty() && dest.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
-        Some(dest.to_string())
-    } else {
-        None
+    if dest.is_empty()
+        || !dest
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit())
+    {
+        return None;
     }
+    Some(match dest {
+        "dk" => "dromund_kaas".to_string(),
+        _ => dest.to_string(),
+    })
 }
