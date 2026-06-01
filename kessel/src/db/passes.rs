@@ -170,8 +170,10 @@ pub fn run_passes(db: &Database, ctx: &PassCtx) -> Result<PassCounts> {
     // Ninth pass: build quest chain links from 0xCF big-endian GUID refs
     db.populate_quest_chain()?;
 
-    // Tenth pass: build planet_transition chain links from leaving_ quest strings
-    db.populate_planet_transitions()?;
+    // Tenth pass: build planet_transition chain links from class-story
+    // travel_to_{planet} strings -> the destination planet's same-class anchor.
+    let planet_transition_count = db.populate_planet_transitions()?;
+    println!("  Planet transition edges: {}", planet_transition_count);
 
     // Tenth-and-a-half pass: derive arc-order chain edges from FQN structure
     // (act_N -> act_(N+1) class story, hub_N -> hub_(N+1) world_arc).
