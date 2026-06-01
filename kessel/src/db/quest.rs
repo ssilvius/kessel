@@ -465,6 +465,52 @@ impl Database {
         Ok(written)
     }
 
+    /// Populate `quest_text` (#262): the per-mission objective / journal /
+    /// description text, sourced from the strings table (quest text is not in
+    /// the GOM payload). Every `str.qst` string is keyed (id1 = field slot,
+    /// id2 = the mission's string_id); id1=88 is the name (see
+    /// `quest_name_tags`) and is skipped here. Each remaining slot becomes one
+    /// row classified by `quest_text_kind`. Captures the objective/journal text
+    /// for all ~6761 named missions, not just the ~1514 extracted as objects.
+    /// Returns rows written.
+    pub fn populate_quest_text(&self) -> Result<u64> {
+        let rows: Vec<(i64, i64, String)> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT id2, id1, text FROM strings \
+                 WHERE fqn LIKE 'str.qst.%' AND id1 <> 88 AND locale = 'en-us' \
+                   AND text IS NOT NULL AND text <> ''",
+            )?;
+            let collected: Vec<(i64, i64, String)> = stmt
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            collected
+        };
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut written = 0u64;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR REPLACE INTO quest_text (string_id, slot, kind, text) \
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for (string_id, slot, text) in &rows {
+                stmt.execute(params![string_id, slot, quest_text_kind(*slot), text])?;
+                written += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(written)
+    }
+
     /// Populate `hydra_refs` (#214) by scanning hyd.* payloads for inline
     /// ASCII FQN references. Hydra scripts encode their references (counter
     /// flags, target NPCs, conversations, etc.) as length-prefixed ASCII
@@ -1870,6 +1916,17 @@ fn apply_name_tag(tag: &str, t: &mut NameTags) {
     // DATE NIGHT/HIDDEN/PVP-misc: no activity classification (left None).
 }
 
+/// Classify a `str.qst` text slot (STB id1) into a coarse text kind. id1=88 is
+/// the name (handled by `quest_name_tags`); 89-199 are objective lines, 200-699
+/// journal/description narrative, and the rest reference text.
+pub(crate) fn quest_text_kind(slot: i64) -> &'static str {
+    match slot {
+        89..=199 => "objective",
+        200..=699 => "journal",
+        _ => "reference",
+    }
+}
+
 /// Strip every leading bracket tag from a mission name, returning the clean
 /// title (e.g. a `HEROIC 2+`-tagged "The Hate Machine" becomes "The Hate Machine").
 pub(crate) fn strip_name_tags(name: &str) -> String {
@@ -2039,6 +2096,25 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
             );
             CREATE INDEX IF NOT EXISTS idx_quest_name_tags_activity ON quest_name_tags(activity_type);
             CREATE INDEX IF NOT EXISTS idx_quest_name_tags_cadence ON quest_name_tags(cadence);
+            -- Quest text catalog (#262): the per-mission objective / journal /
+            -- description text, sourced from the strings table (NOT the GOM
+            -- payload -- quest text is not in the binary). Every str.qst string
+            -- is keyed (id1 = field slot, id2 = the mission's string_id); id1=88
+            -- is the name (see quest_name_tags), and the other slots hold the
+            -- step text. Slot bands: 89-199 objective lines ("Speak to X",
+            -- "Slay the Beast"), 200-699 journal/description narrative, >699
+            -- reference. 38k+ rows across all ~6761 named missions -- far beyond
+            -- the ~1514 quests extracted as objects. Join objects.string_id =
+            -- quest_text.string_id to attach a quest FQN; order by slot.
+            CREATE TABLE IF NOT EXISTS quest_text (
+                string_id INTEGER NOT NULL,
+                slot      INTEGER NOT NULL,   -- STB id1 field slot (ordering)
+                kind      TEXT NOT NULL,      -- objective | journal | reference
+                text      TEXT NOT NULL,
+                PRIMARY KEY (string_id, slot)
+            );
+            CREATE INDEX IF NOT EXISTS idx_quest_text_string ON quest_text(string_id);
+            CREATE INDEX IF NOT EXISTS idx_quest_text_kind ON quest_text(kind);
             -- Quest clusters: derived groupings to support bulk curation.
             -- Each quest gets one row per cluster_kind it matches; a quest can
             -- belong to multiple clusters (e.g. "class_act" and "class_planet"
@@ -2644,5 +2720,65 @@ mod tests {
             )
             .unwrap();
         assert_eq!(clean, "The Hate Machine");
+    }
+
+    #[test]
+    fn quest_text_kind_bands() {
+        assert_eq!(quest_text_kind(103), "objective");
+        assert_eq!(quest_text_kind(199), "objective");
+        assert_eq!(quest_text_kind(200), "journal");
+        assert_eq!(quest_text_kind(259), "journal");
+        assert_eq!(quest_text_kind(699), "journal");
+        assert_eq!(quest_text_kind(800), "reference");
+    }
+
+    #[test]
+    fn populate_quest_text_catalogs_objective_and_journal() {
+        let path = temp_db_path("quest_text");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+        {
+            let conn = db.conn.lock().unwrap();
+            // string_id 500: name (slot 88, skipped), objective (103), journal (259)
+            for (slot, text) in [
+                (88, "[HEROIC 2+] The Hate Machine"),
+                (103, "Speak to Fieler Dan"),
+                (259, "Darth Baras has decreed your final trial..."),
+            ] {
+                conn.execute(
+                    "INSERT INTO strings (fqn, locale, id1, id2, text) VALUES (?1, 'en-us', ?2, 500, ?3)",
+                    params![format!("str.qst.{slot}.500"), slot, text],
+                )
+                .unwrap();
+            }
+            // empty text must be skipped
+            conn.execute(
+                "INSERT INTO strings (fqn, locale, id1, id2, text) VALUES ('str.qst.104.500', 'en-us', 104, 500, '')",
+                [],
+            )
+            .unwrap();
+        }
+        let n = db.populate_quest_text().unwrap();
+        assert_eq!(
+            n, 2,
+            "objective + journal cataloged; name (88) and empty skipped"
+        );
+        let conn = db.conn.lock().unwrap();
+        let kind: String = conn
+            .query_row(
+                "SELECT kind FROM quest_text WHERE string_id=500 AND slot=103",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kind, "objective");
+        let jrn: String = conn
+            .query_row(
+                "SELECT kind FROM quest_text WHERE string_id=500 AND slot=259",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(jrn, "journal");
     }
 }
