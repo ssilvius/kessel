@@ -164,6 +164,11 @@ fn main() -> Result<()> {
     let mut total_objects = 0usize;
     let mut total_icons = 0usize;
     let mut seen_hashes: HashSet<u64> = HashSet::new();
+    // PROT-magic entry hashes discovered during the single archive sweep. The
+    // NODE-object pass gates on this self-discovered set instead of the
+    // dictionary's `/prototypes/` paths, so new-patch prototypes (conversations
+    // etc.) are extracted even when the community hash dictionary is stale.
+    let mut prot_hashes: HashSet<u64> = HashSet::new();
     // Per-FQN best-variant score so far. Many FQNs appear multiple times
     // across archives -- some as canonical objects with full payload, some as
     // stub references. Picking first-seen (the prior HashSet behaviour)
@@ -228,6 +233,14 @@ fn main() -> Result<()> {
                     Ok(d) => d,
                     Err(_) => continue,
                 };
+
+                // Self-discover PROT-magic entries (NODE prototypes) by sniffing
+                // the already-decompressed data. Records only the hash here; the
+                // actual NODE-object pass runs later in run_passes and gates on
+                // this set instead of the dictionary's prototype paths.
+                if data.len() >= 4 && &data[..4] == b"PROT" {
+                    prot_hashes.insert(entry.filename_hash);
+                }
 
                 // Process STB files
                 if is_stb {
@@ -491,6 +504,7 @@ fn main() -> Result<()> {
         let ctx = db::passes::PassCtx {
             input: &args.input,
             hash_dict: &hash_dict,
+            prot_hashes: &prot_hashes,
         };
         db::passes::run_passes(&db, &ctx)?
     };
