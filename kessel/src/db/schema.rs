@@ -72,7 +72,6 @@ pub(crate) fn create_core_tables(tx: &Transaction) -> Result<()> {
                 version INTEGER DEFAULT 0
             );
 
-            CREATE INDEX IF NOT EXISTS idx_strings_locale ON strings(locale);
             CREATE INDEX IF NOT EXISTS idx_strings_id2 ON strings(id2);
 
             -- Typed views for convenience.
