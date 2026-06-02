@@ -1,6 +1,10 @@
 [workspace]
 members = ["kessel", "kessel-discovery"]
 default-members = ["kessel"]
+# kessel-compare is a standalone local tooling crate (patch-changelog diff) with a
+# sibling-repo path dep on smugglr-core. Excluded so it never enters the kessel
+# crate's build or CI; build it on demand from its own directory.
+exclude = ["kessel-compare"]
 resolver = "2"
 
 [workspace.package]

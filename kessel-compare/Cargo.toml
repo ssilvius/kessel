@@ -1,0 +1,18 @@
+[package]
+name = "kessel-compare"
+version = "0.1.0"
+edition = "2021"
+description = "Cross-patch diff for kessel spice databases -- the SWTOR patch changelog. Imports smugglr-core's content-hash diff engine, re-keyed on kessel's stable_id (game_id shifts every patch)."
+
+# Excluded from the kessel workspace (see root Cargo.toml [workspace.exclude]):
+# this is a local tooling crate with a sibling-repo path dep on smugglr-core, so it
+# must not enter the kessel crate's build/CI. Build it standalone:
+#   cd kessel-compare && cargo build --release
+
+[dependencies]
+# smugglr's pure diff engine (classify_diff / RowMeta / TableDiff). default-features
+# off so we don't pull tokio/rusqlite/reqwest -- we only need the content-hash diff,
+# not the sync/transport layer. Path is relative to the sibling rafters-studio repo.
+smugglr-core = { path = "../../../rafters-studio/smugglr/crates/smugglr-core", default-features = false }
+rusqlite = { version = "0.31", features = ["bundled"] }
+anyhow = "1"
