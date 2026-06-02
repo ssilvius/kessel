@@ -531,8 +531,13 @@ impl Database {
         let rows: Vec<(i64, i64, String)> = {
             let conn = self.conn.lock().unwrap();
             let mut stmt = conn.prepare(
+                // Sargable PK range instead of `fqn LIKE 'str.qst.%'`:
+                // '/' is the byte after '.', and all FQNs are lowercase, so
+                // [str.qst., str.qst/) is exactly the str.qst.* set. With
+                // ANALYZE stats present the planner uses the strings PK index
+                // for a ~45k-row range scan rather than scanning all ~973k rows.
                 "SELECT id2, id1, text FROM strings \
-                 WHERE fqn LIKE 'str.qst.%' AND id1 <> 88 AND locale = 'en-us' \
+                 WHERE fqn >= 'str.qst.' AND fqn < 'str.qst/' AND id1 <> 88 AND locale = 'en-us' \
                    AND text IS NOT NULL AND text <> ''",
             )?;
             let collected: Vec<(i64, i64, String)> = stmt

@@ -178,6 +178,7 @@ fn main() -> Result<()> {
     // Buffer icons until objects are processed (need icon_name → game_id mapping)
     let mut pending_icons: Vec<(Vec<u8>, String)> = Vec::new(); // (dds_data, icon_path)
 
+    let sweep_start = Instant::now();
     for tor_path in &tor_files {
         let filename = tor_path
             .file_name()
@@ -343,8 +344,13 @@ fn main() -> Result<()> {
     }
 
     main_pb.finish_and_clear();
+    println!(
+        "  [timing] archive_sweep: {:.1}s",
+        sweep_start.elapsed().as_secs_f64()
+    );
 
     // Process buffered icons now that we have the icon_name → (game_id, kind) mapping
+    let icons_start = Instant::now();
     if args.icons && !pending_icons.is_empty() {
         println!("\nProcessing {} icons...", pending_icons.len());
 
@@ -366,60 +372,69 @@ fn main() -> Result<()> {
             std::collections::HashMap::new();
         let mut unmapped_icons = 0usize;
 
-        for (dds_data, icon_path) in &pending_icons {
-            if let Ok(mut icon) = dds::convert_to_webp(dds_data, icon_path) {
-                // Deduplicate by content hash
-                if seen_content.contains_key(&icon.content_hash) {
-                    continue;
-                }
+        // Parallelize ONLY the pure DDS->WebP convert (CPU-heavy decode+encode).
+        // par_iter + collect is order-preserving, so `converted` keeps
+        // pending_icons order -- the dedup-by-content_hash winner below is
+        // deterministic and identical to the prior serial pass. Dedup +
+        // mapping + file writes stay serial.
+        use rayon::prelude::*;
+        let converted: Vec<(dds::ConvertedIcon, &String)> = pending_icons
+            .par_iter()
+            .filter_map(|(dds_data, icon_path)| {
+                dds::convert_to_webp(dds_data, icon_path)
+                    .ok()
+                    .map(|icon| (icon, icon_path))
+            })
+            .collect();
 
-                // Extract icon_name from path: "/resources/gfx/icons/abl_foo.dds" → "abl_foo"
-                // Lowercase for case-insensitive matching with DB icon_names
-                let icon_name = icon_path
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(icon_path)
-                    .trim_end_matches(".dds")
-                    .to_lowercase();
+        for (mut icon, icon_path) in converted {
+            // Deduplicate by content hash
+            if seen_content.contains_key(&icon.content_hash) {
+                continue;
+            }
 
-                // Skip if we already processed this exact content
-                if seen_content.contains_key(&icon.content_hash) {
-                    continue;
-                }
-                seen_content.insert(icon.content_hash.clone(), icon_name.clone());
+            // Extract icon_name from path: "/resources/gfx/icons/abl_foo.dds" → "abl_foo"
+            // Lowercase for case-insensitive matching with DB icon_names
+            let icon_name = icon_path
+                .rsplit('/')
+                .next()
+                .unwrap_or(icon_path)
+                .trim_end_matches(".dds")
+                .to_lowercase();
 
-                // Look up all objects that reference this icon
-                if let Some(objects) = icon_mapping.get(&icon_name) {
-                    // Save icon for ALL objects that reference it (handles shared icons)
-                    for (game_id, kind) in objects {
-                        let subdir = match kind.as_str() {
-                            "Ability" => "abilities",
-                            "Item" => "items",
-                            "Npc" => "npcs",
-                            "Quest" => "quests",
-                            "Achievement" => "achievements",
-                            "Codex" => "codex",
-                            "Schematic" => "schematics",
-                            "Talent" => "talents",
-                            _ => "misc",
-                        };
-                        let output_dir = args.icons_output.join(subdir);
-                        icon.icon_id = game_id.clone();
-                        if dds::save_icon(&icon, &output_dir).is_ok() {
-                            total_icons += 1;
-                        }
-                    }
-                } else {
-                    // Unmapped icon - save to misc with original hash
-                    unmapped_icons += 1;
-                    unknowns_writer.record(unknowns::Unknown::UnmappedIcon {
-                        icon_name: icon_name.to_string(),
-                        source_file: icon_path.clone(),
-                    });
-                    let output_dir = args.icons_output.join("misc");
+            seen_content.insert(icon.content_hash.clone(), icon_name.clone());
+
+            // Look up all objects that reference this icon
+            if let Some(objects) = icon_mapping.get(&icon_name) {
+                // Save icon for ALL objects that reference it (handles shared icons)
+                for (game_id, kind) in objects {
+                    let subdir = match kind.as_str() {
+                        "Ability" => "abilities",
+                        "Item" => "items",
+                        "Npc" => "npcs",
+                        "Quest" => "quests",
+                        "Achievement" => "achievements",
+                        "Codex" => "codex",
+                        "Schematic" => "schematics",
+                        "Talent" => "talents",
+                        _ => "misc",
+                    };
+                    let output_dir = args.icons_output.join(subdir);
+                    icon.icon_id = game_id.clone();
                     if dds::save_icon(&icon, &output_dir).is_ok() {
                         total_icons += 1;
                     }
+                }
+            } else {
+                // Unmapped icon - save to misc with original hash
+                unmapped_icons += 1;
+                unknowns_writer.record(unknowns::Unknown::UnmappedIcon {
+                    icon_name: icon_name.to_string(),
+                    source_file: icon_path.clone(),
+                });
+                let output_dir = args.icons_output.join("misc");
+                if dds::save_icon(&icon, &output_dir).is_ok() {
+                    total_icons += 1;
                 }
             }
         }
@@ -428,6 +443,10 @@ fn main() -> Result<()> {
             println!("  Unmapped icons (fallback naming): {}", unmapped_icons);
         }
     }
+    println!(
+        "  [timing] icon_processing: {:.1}s",
+        icons_start.elapsed().as_secs_f64()
+    );
 
     // First post-extraction pass: pick the canonical row per FQN. Same quality
     // heuristic as the old DELETE-based dedup, but lossless -- inferior
@@ -455,7 +474,19 @@ fn main() -> Result<()> {
         );
     }
 
+    // Refresh planner stats once before the derived-table passes. ANALYZE lets
+    // SQLite's query planner pick the PK / column indexes for the ~50 passes'
+    // joins and fqn-prefix range scans instead of falling back to full-table
+    // scans on the ~973k-row strings table.
+    let analyze_start = Instant::now();
+    db.analyze()?;
+    println!(
+        "  [timing] analyze: {:.1}s",
+        analyze_start.elapsed().as_secs_f64()
+    );
+
     // Second pass: populate quest tables from extracted objects
+    let passes_start = Instant::now();
     let pc = {
         let ctx = db::passes::PassCtx {
             input: &args.input,
@@ -463,6 +494,10 @@ fn main() -> Result<()> {
         };
         db::passes::run_passes(&db, &ctx)?
     };
+    println!(
+        "  [timing] run_passes: {:.1}s",
+        passes_start.elapsed().as_secs_f64()
+    );
 
     // Print summary
     let stats = db.stats()?;

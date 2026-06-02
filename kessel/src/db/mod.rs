@@ -385,6 +385,15 @@ impl Database {
         Ok(())
     }
 
+    /// Run `ANALYZE` so the query planner has up-to-date table/index stats.
+    /// Called once after extraction (before the derived-table passes) so the
+    /// ~50 populate passes' joins and fqn-prefix range scans pick the right
+    /// indexes instead of full-table scans.
+    pub fn analyze(&self) -> Result<()> {
+        self.conn.lock().unwrap().execute_batch("ANALYZE;")?;
+        Ok(())
+    }
+
     /// Run `f` inside a flushed write transaction: flush pending objects and
     /// strings, take the connection lock, open a transaction, run `f`, and
     /// commit on success (rolling back if `f` errors). This is the shared
