@@ -11,6 +11,11 @@ use std::path::Path;
 pub struct PassCtx<'a> {
     pub input: &'a Path,
     pub hash_dict: &'a HashDictionary,
+    /// PROT-magic entry hashes self-discovered during the main archive sweep.
+    /// The NODE-object pass gates on this set instead of the dictionary's
+    /// `/prototypes/` paths, so new-patch prototypes extract even when the
+    /// community hash dictionary is stale.
+    pub prot_hashes: &'a std::collections::HashSet<u64>,
 }
 
 /// Per-pass counts that the final run summary in main.rs reports.
@@ -281,7 +286,7 @@ pub fn run_passes(db: &Database, ctx: &PassCtx) -> Result<PassCounts> {
     // node-objects-then-conversation-refs two-pass ordering.
     let node_and_cnv = timed!(
         "node_and_conversation_refs",
-        db.populate_node_and_conversation_refs(ctx.input, ctx.hash_dict)
+        db.populate_node_and_conversation_refs(ctx.input, ctx.prot_hashes)
     )?;
     println!("  NODE objects: {}", node_and_cnv.node_objects);
     let cnv_refs = node_and_cnv.refs;
@@ -296,6 +301,20 @@ pub fn run_passes(db: &Database, ctx: &PassCtx) -> Result<PassCounts> {
             cnv_refs.encounter,
             cnv_refs.alignment_event,
         );
+
+    // Per-conversation dialogue strings, self-discovered (no dict). For every
+    // cnv.* object that now exists, derive its en-us str.cnv STB path, compute
+    // the archive hash, and pull the dialogue lines straight from the archive.
+    // Catches new-patch conversation text even when the hash dictionary lacks
+    // the str.cnv paths. Idempotent with the main loop's dict-driven STB inserts.
+    let cnv_string_rows = timed!(
+        "conversation_strings",
+        db.populate_conversation_strings(ctx.input)
+    )?;
+    println!(
+        "  Conversation strings (self-discovered): {} rows",
+        cnv_string_rows
+    );
 
     // Quest_chain via NPC giver overlap. Must run AFTER both
     // populate_quest_clusters (cluster filter) and populate_conversation_refs

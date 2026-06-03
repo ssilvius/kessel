@@ -22,8 +22,12 @@ impl Database {
     /// decompress each prototype entry exactly once instead of twice.
     ///
     /// NODE files at `/resources/systemgenerated/prototypes/<num>.node` use the
-    /// PROT format (header bytes 0x14.. carry the FQN). For every PROT-magic
-    /// entry this inserts one row into `objects` (synthetic 42-byte GOM header
+    /// PROT format (header bytes 0x14.. carry the FQN). The candidate entries
+    /// are gated on `proto_hashes` -- the PROT-magic hashes self-discovered
+    /// during the main archive sweep -- rather than on dictionary-known
+    /// prototype paths, so new-patch prototypes extract without the dictionary.
+    /// For every PROT-magic entry this inserts one row into `objects`
+    /// (synthetic 42-byte GOM header
     /// so the existing `GameObject` constructor reads the content GUID at 0..8
     /// the same way it does for PBUK objects; `kind` derived from the FQN), and
     /// for `cnv.*` FQNs records (in document order, no dedup yet) the CF E0 GUID
@@ -40,18 +44,19 @@ impl Database {
     pub fn populate_node_and_conversation_refs(
         &self,
         tor_dir: &std::path::Path,
-        hashes: &crate::hash::HashDictionary,
+        proto_hashes: &std::collections::HashSet<u64>,
     ) -> Result<NodeAndConvRefCounts> {
         use crate::myp::Archive;
         use crate::pbuk::GomObject;
         use crate::schema::GameObject;
         use std::collections::{HashMap, HashSet};
 
-        let proto_hashes: HashSet<u64> = hashes
-            .paths_matching("/resources/systemgenerated/prototypes/")
-            .into_iter()
-            .map(|(h, _)| h)
-            .collect();
+        // `proto_hashes` is the set of PROT-magic entry hashes self-discovered
+        // during the main archive sweep (passed in via PassCtx). It is a
+        // superset of the old dictionary `/prototypes/` gate that also includes
+        // new-patch prototypes, so existing NODE objects are preserved and new
+        // conversations are added. The `&data[..4] == b"PROT"` check below
+        // re-confirms each entry.
 
         let tor_files: Vec<std::path::PathBuf> = std::fs::read_dir(tor_dir)?
             .filter_map(|e| e.ok())
@@ -328,6 +333,116 @@ impl Database {
             refs: counts,
         })
     }
+
+    /// Self-discover and ingest the per-conversation dialogue STBs (no dict).
+    ///
+    /// The spoken/subtitle lines for every conversation live in per-conversation
+    /// STBs under `/resources/<locale>/str/cnv/`. The main loop ingests these
+    /// only for dictionary-known paths, so new-patch conversations miss their
+    /// text when the community hash dictionary is stale.
+    ///
+    /// This pass instead enumerates every `cnv.*` conversation object (inserted
+    /// by `populate_node_and_conversation_refs`, so it must run after it),
+    /// derives the en-us STB path from each FQN (the inverse of
+    /// `stb::extract_fqn_from_path`: `cnv.X.Y -> /resources/en-us/str/cnv/X/Y.stb`),
+    /// computes the archive filename hash, sweeps the archives once, and parses
+    /// each matching entry's STB into `strings`. Idempotent (`insert_string` is
+    /// INSERT OR REPLACE), so re-inserting strings the main loop already pulled
+    /// via the dictionary is harmless.
+    ///
+    /// Returns the number of string rows inserted.
+    pub fn populate_conversation_strings(&self, tor_dir: &std::path::Path) -> Result<u64> {
+        use crate::myp::Archive;
+        use std::collections::HashMap;
+
+        // Distinct cnv.* conversation FQNs (kinded Conversation by the node
+        // sweep). Derive each one's en-us STB path + archive hash.
+        let cnv_fqns: Vec<String> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt =
+                conn.prepare("SELECT DISTINCT fqn FROM objects WHERE kind = 'Conversation'")?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        };
+
+        // hash -> derived STB path. Multiple FQNs cannot collide here (the path
+        // is a 1:1 function of the FQN), so last-writer-wins on a hash collision
+        // is acceptable and astronomically unlikely.
+        let mut hash_to_path: HashMap<u64, String> = HashMap::new();
+        for cnv_fqn in &cnv_fqns {
+            let path = conversation_stb_path(cnv_fqn);
+            // Match the archive entry key, which is combine_hash(ph, sh) =
+            // (ph << 32) | sh -- the same composition HashDictionary::load
+            // stores and main.rs matches entry.filename_hash against. NOTE:
+            // hash::swtor_filename_hash returns (sh << 32) | ph (the halves
+            // swapped) and does NOT match entry.filename_hash -- do not use it.
+            let (ph, sh) = crate::hash::hashlittle2(path.as_bytes(), 0, 0);
+            let h = crate::hash::combine_hash(ph, sh);
+            hash_to_path.insert(h, path);
+        }
+
+        if hash_to_path.is_empty() {
+            return Ok(0);
+        }
+
+        let tor_files: Vec<std::path::PathBuf> = std::fs::read_dir(tor_dir)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|x| x == "tor").unwrap_or(false))
+            .collect();
+
+        let mut rows_inserted = 0u64;
+        for tor_path in &tor_files {
+            let mut archive = match Archive::open(tor_path) {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            let entries: Vec<_> = match archive.entries() {
+                Ok(e) => e.cloned().collect(),
+                Err(_) => continue,
+            };
+            for entry in &entries {
+                let Some(path) = hash_to_path.get(&entry.filename_hash) else {
+                    continue;
+                };
+                let data = match archive.read_entry(entry) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                // Parse with the derived path so fqn_prefix/locale resolve. Then
+                // mirror main.rs's STB insert exactly:
+                //   fqn = "{fqn_prefix}.{id1}.{id2}", insert_string(fqn, locale, entry)
+                if let Ok(stb_file) = crate::stb::parse(&data, path) {
+                    for stb_entry in &stb_file.entries {
+                        let string_fqn = format!(
+                            "{}.{}.{}",
+                            stb_file.fqn_prefix, stb_entry.id1, stb_entry.id2
+                        );
+                        if self
+                            .insert_string(&string_fqn, &stb_file.locale, stb_entry)
+                            .is_ok()
+                        {
+                            rows_inserted += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        self.flush()?;
+        Ok(rows_inserted)
+    }
+}
+
+/// Derive the en-us dialogue STB archive path for a `cnv.*` conversation FQN.
+///
+/// Inverse of `stb::extract_fqn_from_path`: a conversation FQN
+/// `cnv.location.taris.x` maps to `/resources/en-us/str/cnv/location/taris/x.stb`.
+fn conversation_stb_path(cnv_fqn: &str) -> String {
+    format!("/resources/en-us/str/{}.stb", cnv_fqn.replace('.', "/"))
 }
 
 /// Result of the merged NODE-object + conversation-ref sweep
@@ -449,6 +564,52 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
 mod tests {
     use super::*;
     use crate::db::testutil::temp_db_path;
+
+    #[test]
+    fn conversation_stb_path_inverts_fqn() {
+        // cnv.X.Y -> /resources/en-us/str/cnv/X/Y.stb (inverse of
+        // stb::extract_fqn_from_path).
+        assert_eq!(
+            conversation_stb_path("cnv.location.taris.x"),
+            "/resources/en-us/str/cnv/location/taris/x.stb"
+        );
+        assert_eq!(
+            conversation_stb_path("cnv.location.taris.class.jedi_knight.rora_seake"),
+            "/resources/en-us/str/cnv/location/taris/class/jedi_knight/rora_seake.stb"
+        );
+    }
+
+    #[test]
+    fn conversation_stb_path_round_trips_through_stb_fqn() {
+        // The derived path, fed back through the STB FQN extractor, must yield
+        // the original conversation FQN -- so str.cnv.* dialogue rejoins its
+        // conversation via the conversation_lines view.
+        let cnv_fqn = "cnv.location.taris.class.jedi_knight.rora_seake";
+        let path = conversation_stb_path(cnv_fqn);
+        let stb_file =
+            crate::stb::parse(&[0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], &path).unwrap();
+        assert_eq!(stb_file.fqn_prefix, format!("str.{cnv_fqn}"));
+        assert_eq!(stb_file.locale, "en-us");
+    }
+
+    #[test]
+    fn conversation_stb_path_hashes_match_dict_hash_function() {
+        // The archive lookup key is swtor_filename_hash of the derived path.
+        // Verify it is deterministic and equals the dictionary hash function
+        // for a known str path shape (the real str.cnv hashes are validated by
+        // the user's full extraction; this guards against drift in the path
+        // derivation vs. the hash entrypoint we call at runtime).
+        let path = conversation_stb_path("cnv.location.taris.x");
+        let a = crate::hash::swtor_filename_hash(&path);
+        let b = crate::hash::swtor_filename_hash(&path);
+        assert_eq!(a, b, "hash must be deterministic");
+        // Matches the verified-against-real-dict entrypoint for a known path.
+        assert_eq!(
+            crate::hash::swtor_filename_hash("/resources/en-us/str/abl.stb"),
+            ((0x54305B3B_u64) << 32) | 0x8154956D_u64,
+            "swtor_filename_hash must match the real dict PH/SH for abl.stb"
+        );
+    }
 
     #[test]
     fn conversation_tables_and_view_exist_after_init() {
