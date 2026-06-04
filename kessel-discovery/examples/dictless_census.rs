@@ -171,7 +171,11 @@ fn main() -> anyhow::Result<()> {
         let mut archive = match Archive::open(path) {
             Ok(a) => a,
             Err(e) => {
-                eprintln!("  [{:>3}/{}] SKIP {fname}: open failed: {e}", i + 1, tor_files.len());
+                eprintln!(
+                    "  [{:>3}/{}] SKIP {fname}: open failed: {e}",
+                    i + 1,
+                    tor_files.len()
+                );
                 continue;
             }
         };
@@ -179,7 +183,11 @@ fn main() -> anyhow::Result<()> {
         let entries: Vec<_> = match archive.entries() {
             Ok(it) => it.cloned().collect(),
             Err(e) => {
-                eprintln!("  [{:>3}/{}] SKIP {fname}: entries failed: {e}", i + 1, tor_files.len());
+                eprintln!(
+                    "  [{:>3}/{}] SKIP {fname}: entries failed: {e}",
+                    i + 1,
+                    tor_files.len()
+                );
                 continue;
             }
         };
@@ -213,7 +221,10 @@ fn main() -> anyhow::Result<()> {
     // -------------------------------------------------------------------
     println!("=== ANALYSIS 1: MAGIC CENSUS (zero dict) ===");
     println!("Total entries decompressed + classified: {total_entries}");
-    println!("Unique entry hashes seen:                 {}", all_hashes.len());
+    println!(
+        "Unique entry hashes seen:                 {}",
+        all_hashes.len()
+    );
     println!("Read/decompress errors (skipped):         {read_errors}");
     println!("Per-class counts:");
     let order = [
@@ -228,7 +239,12 @@ fn main() -> anyhow::Result<()> {
     ];
     for c in order {
         let n = class_counts.get(&c).copied().unwrap_or(0);
-        println!("  {:<10} {:>9}  ({:>6.2}%)", c.label(), n, pct(n, total_entries));
+        println!(
+            "  {:<10} {:>9}  ({:>6.2}%)",
+            c.label(),
+            n,
+            pct(n, total_entries)
+        );
     }
     let identified: usize = order
         .iter()
@@ -425,7 +441,10 @@ fn main() -> anyhow::Result<()> {
                     pct(b_present, b_distinct)
                 );
                 if dict_loaded {
-                    println!("    dict /gfx/icons/ entries (for reference): {}", dict_icon_hashes.len());
+                    println!(
+                        "    dict /gfx/icons/ entries (for reference): {}",
+                        dict_icon_hashes.len()
+                    );
                     println!(
                         "    HEADLINE -- present icons MISSING from stale dict (day-one recoveries): {b_new_vs_dict}"
                     );
@@ -441,7 +460,10 @@ fn main() -> anyhow::Result<()> {
     let mut c_present = 0usize;
     if let Some(conn) = &conn {
         println!("(c) Conversation STBs from spice:");
-        match query_distinct(conn, "SELECT DISTINCT fqn FROM objects WHERE kind='Conversation'") {
+        match query_distinct(
+            conn,
+            "SELECT DISTINCT fqn FROM objects WHERE kind='Conversation'",
+        ) {
             Ok(fqns) => {
                 c_distinct = fqns.len();
                 for fqn in &fqns {
@@ -474,18 +496,12 @@ fn main() -> anyhow::Result<()> {
     let dds_n = class_counts.get(&FileClass::Dds).copied().unwrap_or(0);
     let xml_n = class_counts.get(&FileClass::Utf16Xml).copied().unwrap_or(0);
 
-    println!(
-        "PROT      : {}",
-        verdict_magic(prot_n, "magic PROT@0")
-    );
+    println!("PROT      : {}", verdict_magic(prot_n, "magic PROT@0"));
     println!(
         "PBUK/DBLB : {}",
         verdict_magic(pbuk_n + dblb_n, "magic PBUK/DBLB@0")
     );
-    println!(
-        "SCPT      : {}",
-        verdict_magic(scpt_n, "magic SCPT@0")
-    );
+    println!("SCPT      : {}", verdict_magic(scpt_n, "magic SCPT@0"));
     println!(
         "DDS       : DICT-FREE: yes (magic DDS@0; {dds_n} entries) + yes (derive: spice icon_name -> /resources/gfx/icons/<name>.dds, {b_present}/{b_distinct} present, {b_new_vs_dict} beyond stale dict)"
     );
