@@ -1,0 +1,172 @@
+================================================================
+  DICTLESS CENSUS -- proving kessel discovers file types with no
+  community hash dictionary.
+================================================================
+Found 101 *.tor archives in /Users/seansilvius/swtor/assets
+
+=== SWEEP: decompressing + classifying every entry ===
+  [  1/101] swtor_en-us_6_0_areas_1.tor: 104 entries classified
+  [  2/101] swtor_en-us_7_0_areas_1.tor: 54 entries classified
+  [  3/101] swtor_en-us_alliance_1.tor: 404 entries classified
+  [  4/101] swtor_en-us_base_areas_b_1.tor: 3204 entries classified
+  [  5/101] swtor_en-us_base_areas_c_1.tor: 1468 entries classified
+  [  6/101] swtor_en-us_base_flashpoint_areas_1.tor: 235 entries classified
+  [  7/101] swtor_en-us_base_ow_areas_a_1.tor: 595 entries classified
+  [  8/101] swtor_en-us_base_raid_areas_1.tor: 28 entries classified
+  [  9/101] swtor_en-us_cnv_comp_chars_imp_1.tor: 98 entries classified
+  [ 10/101] swtor_en-us_cnv_comp_chars_rep_1.tor: 88 entries classified
+  [ 11/101] swtor_en-us_cnv_flashpoint_1.tor: 286 entries classified
+  [ 12/101] swtor_en-us_cnv_misc_1.tor: 361 entries classified
+  [ 13/101] swtor_en-us_cnv_operation_1.tor: 81 entries classified
+  [ 14/101] swtor_en-us_cnv_transitions_1.tor: 57 entries classified
+  [ 15/101] swtor_en-us_daily_area_1.tor: 310 entries classified
+  [ 16/101] swtor_en-us_event_1.tor: 158 entries classified
+  [ 17/101] swtor_en-us_exp_01_1.tor: 182 entries classified
+  [ 18/101] swtor_en-us_exp_seasons_01_1.tor: 366 entries classified
+  [ 19/101] swtor_en-us_exp_seasons_02_1.tor: 250 entries classified
+  [ 20/101] swtor_en-us_global_1.tor: 5977 entries classified
+  [ 21/101] swtor_en-us_qtr_1.tor: 84 entries classified
+  [ 22/101] swtor_en-us_spvp_1.tor: 96 entries classified
+  [ 23/101] swtor_en-us_tutorials_1.tor: 198 entries classified
+  [ 24/101] swtor_en-us_zed_1.tor: 207 entries classified
+  [ 25/101] swtor_main_4_0_areas_1.tor: 10710 entries classified
+  [ 26/101] swtor_main_5_0_areas_1.tor: 9454 entries classified
+  [ 27/101] swtor_main_6_0_areas_1.tor: 5962 entries classified
+  [ 28/101] swtor_main_7_0_areas_1.tor: 5457 entries classified
+  [ 29/101] swtor_main_7_2_areas_1.tor: 2240 entries classified
+  [ 30/101] swtor_main_anim_1.tor: 82628 entries classified
+  [ 31/101] swtor_main_anim_creature_a_1.tor: 2366 entries classified
+  [ 32/101] swtor_main_anim_creature_b_1.tor: 8554 entries classified
+  [ 33/101] swtor_main_anim_creature_c_1.tor: 9817 entries classified
+  [ 34/101] swtor_main_anim_creature_npc_1.tor: 21976 entries classified
+  [ 35/101] swtor_main_area_epsilon_1.tor: 1087 entries classified
+  [ 36/101] swtor_main_art_area_all_arch_1.tor: 1208 entries classified
+  [ 37/101] swtor_main_art_area_all_item_1.tor: 16352 entries classified
+  [ 38/101] swtor_main_art_area_all_misc_1.tor: 273 entries classified
+  [ 39/101] swtor_main_art_area_bothawui_1.tor: 1194 entries classified
+  [ 40/101] swtor_main_art_area_strongholds_1.tor: 5487 entries classified
+  [ 41/101] swtor_main_art_creature_a_1.tor: 3375 entries classified
+  [ 42/101] swtor_main_art_creature_b_1.tor: 3252 entries classified
+  [ 43/101] swtor_main_art_creature_body_type_1.tor: 1599 entries classified
+  [ 44/101] swtor_main_art_creature_c_1.tor: 4095 entries classified
+  [ 45/101] swtor_main_art_creature_npc_1.tor: 3566 entries classified
+  [ 46/101] swtor_main_art_decoration_frames_1.tor: 2112 entries classified
+  [ 47/101] swtor_main_art_dynamic_boot_1.tor: 26514 entries classified
+  [ 48/101] swtor_main_art_dynamic_bracer_1.tor: 18611 entries classified
+  [ 49/101] swtor_main_art_dynamic_cape_1.tor: 17806 entries classified
+  [ 50/101] swtor_main_art_dynamic_chest_1.tor: 3 entries classified
+  [ 51/101] swtor_main_art_dynamic_chest_a_1.tor: 5776 entries classified
+  [ 52/101] swtor_main_art_dynamic_chest_b_1.tor: 11349 entries classified
+  [ 53/101] swtor_main_art_dynamic_chest_textures_1.tor: 6176 entries classified
+  [ 54/101] swtor_main_art_dynamic_chest_tight_1.tor: 12719 entries classified
+  [ 55/101] swtor_main_art_dynamic_face_a_1.tor: 14301 entries classified
+  [ 56/101] swtor_main_art_dynamic_face_b_1.tor: 10905 entries classified
+  [ 57/101] swtor_main_art_dynamic_face_c_1.tor: 6292 entries classified
+  [ 58/101] swtor_main_art_dynamic_face_d_1.tor: 3566 entries classified
+  [ 59/101] swtor_main_art_dynamic_hand_1.tor: 26349 entries classified
+  [ 60/101] swtor_main_art_dynamic_head_1.tor: 11800 entries classified
+  [ 61/101] swtor_main_art_dynamic_leg_1.tor: 3 entries classified
+  [ 62/101] swtor_main_art_dynamic_leg_a_1.tor: 6562 entries classified
+  [ 63/101] swtor_main_art_dynamic_leg_b_1.tor: 17986 entries classified
+  [ 64/101] swtor_main_art_dynamic_mags_1.tor: 1347 entries classified
+  [ 65/101] swtor_main_art_dynamic_waist_1.tor: 33472 entries classified
+  [ 66/101] swtor_main_art_fx_1.tor: 76020 entries classified
+  [ 67/101] swtor_main_art_harvesting_1.tor: 1579 entries classified
+  [ 68/101] swtor_main_art_misc_1.tor: 4630 entries classified
+  [ 69/101] swtor_main_art_space_combat_1.tor: 752 entries classified
+  [ 70/101] swtor_main_art_spvp_1.tor: 2934 entries classified
+  [ 71/101] swtor_main_art_vehicle_1.tor: 11223 entries classified
+  [ 72/101] swtor_main_art_weapon_1.tor: 12039 entries classified
+  [ 73/101] swtor_main_art_zed_1.tor: 18453 entries classified
+  [ 74/101] swtor_main_base_areas_a_1.tor: 1776 entries classified
+  [ 75/101] swtor_main_base_areas_b_1.tor: 34268 entries classified
+  [ 76/101] swtor_main_base_areas_c_1.tor: 30251 entries classified
+  [ 77/101] swtor_main_base_flashpoint_areas_1.tor: 13281 entries classified
+  [ 78/101] swtor_main_base_ow_areas_a_1.tor: 516 entries classified
+  [ 79/101] swtor_main_base_ow_areas_b_1.tor: 406 entries classified
+  [ 80/101] swtor_main_base_ow_areas_c_1.tor: 897 entries classified
+  [ 81/101] swtor_main_base_raid_areas_1.tor: 2131 entries classified
+  [ 82/101] swtor_main_base_ship_areas_1.tor: 203 entries classified
+  [ 83/101] swtor_main_base_space_areas_1.tor: 17241 entries classified
+  [ 84/101] swtor_main_bnk_audio_1.tor: 12 entries classified
+  [ 85/101] swtor_main_bnk_audiodata_1.tor: 152 entries classified
+  [ 86/101] swtor_main_bnk_location_1.tor: 102 entries classified
+  [ 87/101] swtor_main_bnk_location_b_1.tor: 34 entries classified
+  [ 88/101] swtor_main_bnk_streamed_a_1.tor: 844 entries classified
+  [ 89/101] swtor_main_bnk_streamed_b_1.tor: 511 entries classified
+  [ 90/101] swtor_main_bnk_streamed_c_1.tor: 467 entries classified
+  [ 91/101] swtor_main_bnk_streamed_d_1.tor: 590 entries classified
+  [ 92/101] swtor_main_bnk_voc_1.tor: 537 entries classified
+  [ 93/101] swtor_main_bnk_zed_1.tor: 14 entries classified
+  [ 94/101] swtor_main_cnv_alien_1.tor: 201 entries classified
+  [ 95/101] swtor_main_gamedata_1.tor: 20857 entries classified
+  [ 96/101] swtor_main_gfx_assets_1.tor: 93597 entries classified
+  [ 97/101] swtor_main_global_1.tor: 12953 entries classified
+  [ 98/101] swtor_main_pvp_areas_1.tor: 720 entries classified
+  [ 99/101] swtor_main_stronghold_areas_1.tor: 1375 entries classified
+  [100/101] swtor_main_system_generated_area1.tor: 46 entries classified
+  [101/101] swtor_main_zed_1.tor: 212 entries classified
+
+=== ANALYSIS 1: MAGIC CENSUS (zero dict) ===
+Total entries decompressed + classified: 811016
+Unique entry hashes seen:                 810815
+Read/decompress errors (skipped):         0
+Per-class counts:
+  PROT           10752  (  1.33%)
+  STB             6055  (  0.75%)
+  SCPT            1196  (  0.15%)
+  PBUK             997  (  0.12%)
+  DBLB               1  (  0.00%)
+  DDS           308861  ( 38.08%)
+  UTF16_XML      20741  (  2.56%)
+  OTHER         462413  ( 57.02%)
+Self-identifying (non-OTHER): 348603 / 811016 (42.98%)
+
+=== ANALYSIS 2: MAGIC vs DICT COVERAGE ===
+Loaded dict: 884303 entries from /Users/seansilvius/swtor/data/hashes_filename.txt
+Per type (dict-path-implied vs content magic):
+  TYPE       DICT-KNOWN IN-ARCHIVE   MAGIC-OK    AGREE%
+  PROT            17514      10735      10735   100.00%
+  SCPT             1340       1196       1196   100.00%
+  DDS             69671      69594      69594   100.00%
+  STB             17387       5957       5957   100.00%
+  UTF16_XML       43003      42474      20406    48.04%
+(AGREE% is over IN-ARCHIVE -- i.e. of dict entries that really
+ exist in the archive, how many does content magic classify the
+ same way the dict's path convention would.)
+
+=== ANALYSIS 3: HASH-DERIVATION HARVEST (dict-free reconstruction) ===
+(a) Root STBs from convention:
+    [HIT ] /resources/en-us/str/abl.stb
+    [HIT ] /resources/en-us/str/tal.stb
+    [HIT ] /resources/en-us/str/itm.stb
+    [HIT ] /resources/en-us/str/npc.stb
+    [HIT ] /resources/en-us/str/qst.stb
+    [HIT ] /resources/en-us/str/cdx.stb
+    [HIT ] /resources/en-us/str/ach.stb
+    [MISS] /resources/en-us/str/schem.stb
+    [HIT ] /resources/en-us/str/gui/planetaryconquest.stb
+    [HIT ] /resources/en-us/str/gui/galacticcommand.stb
+    => 9/10 present (90.00%)
+
+(b) Icons from spice self-references:
+    distinct icon_names in spice: 4861
+    hash to a PRESENT archive entry (dict-free recoverable): 4439 (91.32%)
+    dict /gfx/icons/ entries (for reference): 69671
+    HEADLINE -- present icons MISSING from stale dict (day-one recoveries): 35
+
+(c) Conversation STBs from spice:
+    distinct Conversation fqns: 10752
+    hash to a PRESENT archive entry: 5686 (52.88%)
+
+=== VERDICTS (per file type) ===
+PROT      : DICT-FREE: yes (magic PROT@0; 10752 entries)
+PBUK/DBLB : DICT-FREE: yes (magic PBUK/DBLB@0; 998 entries)
+SCPT      : DICT-FREE: yes (magic SCPT@0; 1196 entries)
+DDS       : DICT-FREE: yes (magic DDS@0; 308861 entries) + yes (derive: spice icon_name -> /resources/gfx/icons/<name>.dds, 4439/4861 present, 35 beyond stale dict)
+STB       : DICT-FREE: yes (derive: convention root STBs 9/10 + spice Conversation fqns 5686/10752); magic STB@byte0 is weak (6055 entries) -- discovery should lead with derivation
+UTF16_XML : DICT-FREE: yes (magic BOM FFFE@0 (epp/fxspec); 20741 entries)
+
+================================================================
+  END dictless_census
+================================================================
