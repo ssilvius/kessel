@@ -379,17 +379,60 @@ quest rewards (every `qst.*` reward appears here under its `mission_fqn`).
 
 ---
 
+## Class and combat-style tables
+
+The class system has three levels: an **origin** (the eight base classes / story
+arcs), a **combat style** (the advanced-class specialization a character plays),
+and a **discipline** (the spec tree within a combat style). `origins` →
+`combat_styles` → `disciplines` is the spine; the junction tables below hang off
+the combat style or discipline.
+
+### origins
+
+The eight origin classes (formerly "base classes"). One row each.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `fqn_segment` | TEXT PK | Internal class segment, e.g. `sith_warrior`, `agent`. Matches the class segment in ability/talent FQNs. |
+| `faction` | TEXT | `empire` or `republic`. |
+| `attack_type` | TEXT | `force` or `tech`. |
+| `string_id` | INTEGER | Links to `strings.id2` for the localized class name. NULL until a source string is confirmed. |
+
+### combat_styles
+
+The 16 advanced classes / combat styles. One row each, keyed on the
+`class.pc.advanced.<style>` object's `game_id`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `combat_style_id` | TEXT PK | `game_id` of the `class.pc.advanced.<style>` object (FK → `objects.game_id`). |
+| `fqn` | TEXT | The combat-style object FQN (UNIQUE). |
+| `fqn_segment` | TEXT | Internal name, e.g. `force_wizard`, `specialist` (UNIQUE). This is the join key the discipline/utility junction tables reference as `combat_style_codename`. |
+| `display_segment` | TEXT | Canonical player-facing name, e.g. `sage`, `vanguard`. |
+| `faction` | TEXT | `empire` or `republic` (legacy advanced-class faction). |
+| `attack_type` | TEXT | `force` or `tech`. |
+| `string_id` | INTEGER | Links to `strings.id2` from `cdx.advanced_classes.<display>`. |
+
+---
+
 ## Discipline tables
 
 ### disciplines
 
-One row per discipline (advanced class specialization).
+One row per discipline (the spec tree within a combat style). 48 rows.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `class_code` | TEXT | e.g. `sith_inquisitor`, `jedi_knight` |
-| `discipline_name` | TEXT | e.g. `hatred`, `deception`, `darkness` |
-| `fqn_prefix` | TEXT | Ability FQN prefix for this discipline, e.g. `abl.sith_inquisitor.skill.hatred` |
+| `origin_codename` | TEXT | Origin class segment, e.g. `sith_inquisitor`, `jedi_knight`. PK part 1. |
+| `discipline_name` | TEXT | e.g. `hatred`, `deception`, `darkness`. PK part 2. |
+| `fqn_prefix` | TEXT | Ability FQN prefix for this discipline, e.g. `abl.sith_inquisitor.skill.hatred` (UNIQUE). Join key for `discipline_abilities` / `discipline_mods` / `discipline_talents`. |
+| `combat_style_codename` | TEXT | FK → `combat_styles.fqn_segment`. The combat style this discipline belongs to. |
+| `codename` | TEXT | Internal discipline codename. |
+| `icon_apc_game_id` | TEXT | `game_id` of the discipline's icon-source object (icon-APC fallback path). |
+| `mod_tree_apc_game_id` | TEXT | `game_id` of the discipline's mod-tree (utility/mod) APC object. |
+| `signature_ability_game_id` | TEXT | `game_id` of the discipline's signature ability. |
+
+Primary key is the compound `(origin_codename, discipline_name)`.
 
 ### discipline_abilities
 
@@ -402,6 +445,54 @@ Ability slots within a discipline, ordered by tier.
 | `ability_fqn` | TEXT | Ability FQN for direct lookup. |
 | `tier_level` | INTEGER | Unlock level within the discipline (15, 23, 39, 43, 51, 64, 68, 73). |
 | `slot_type` | TEXT | `active`, `passive`, `stance`, `buff` |
+
+### discipline_mods
+
+The mod (utility/tactical) tree for each discipline — the selectable nodes a
+player picks within a spec. 1,152 rows.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `discipline_fqn_prefix` | TEXT | FK → `disciplines.fqn_prefix`. PK part 1. |
+| `mod_index` | INTEGER | Mod node index within the discipline. PK part 2. |
+| `tier_ordinal` | INTEGER | Which tier row this node sits in. |
+| `ui_position` | INTEGER | Position within the tier (UI column). |
+| `level_required` | INTEGER | Character level the node unlocks at. |
+| `target_guid` | TEXT | Raw GUID the node grants/modifies. |
+| `target_game_id` | TEXT | Resolved `game_id` for `target_guid` when it matches an extracted object. NULL otherwise. |
+| `is_default` | INTEGER | 1 if the node is selected by default. |
+
+### discipline_talents
+
+Talents (passive nodes) belonging to a discipline. 407 rows.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `discipline_fqn_prefix` | TEXT | FK → `disciplines.fqn_prefix`. PK part 1. |
+| `talent_game_id` | TEXT | FK → `objects.game_id` for the `tal.*` object. PK part 2. |
+| `talent_fqn` | TEXT | Talent FQN for direct lookup. |
+
+### class_utility_talents
+
+Utility talents shared across a combat style (not discipline-specific). 498 rows.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `combat_style_codename` | TEXT | FK → `combat_styles.fqn_segment`. PK part 1. |
+| `talent_game_id` | TEXT | FK → `objects.game_id`. PK part 2. |
+| `talent_fqn` | TEXT | Talent FQN. |
+
+### combat_style_shared_abilities
+
+Abilities every discipline of a combat style shares (the base advanced-class
+kit). 1,266 rows.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `combat_style_codename` | TEXT | FK → `combat_styles.fqn_segment`. PK part 1. |
+| `ability_game_id` | TEXT | FK → `objects.game_id`. PK part 2. |
+| `ability_fqn` | TEXT | Ability FQN. |
+| `slot_type` | TEXT | `active`, `passive`, `stance`, `buff`. PK part 3. |
 
 ### talent_abilities
 
@@ -424,6 +515,20 @@ Per-talent classification + payload tail-string decode. One row per `tal.*` obje
 | `resource_pool` | TEXT | Same vocabulary as `ability_stats.resource_pool` (`force` / `rage` / `focus` / `heat` / `ammo` / `energy` / `gsf` / NULL). Derived from the FQN class segment — `tal.sith_warrior.*` resolves to `rage`, `tal.spvp.*` resolves to `gsf`, etc. |
 | `tier` | TEXT | The FQN's last segment. Discipline talents use `tier1` / `tier2` / `tier3a` / `tier3b` / `base` / `passive` / etc; GSF talents use `tier1` / `tier_2` / `tier_3a` / `tier_3b` / `tier_4a` / `tier_5b`. Both forms appear in source data; the column preserves whatever the FQN carries. |
 | `script_hook` | TEXT | Length-prefixed ASCII identifier at the payload tail (vault MAPPINGS.md lines 339-365). Identifies the underlying ability mod the talent triggers. Examples: `abl_bh_me_kolto_shot`, `spvp_reducedcooldown`, `spvp_increasedsystemsdamagechance`, `iamilitaryofficer`. ~94% of talents have one; NULL for the rest. Useful as a join key when the same hook is referenced by multiple talents (cross-class proc identifiers). |
+
+### talent_stat_effects
+
+Numeric stat modifiers a talent applies, decoded from the `tal.*` payload's stat
+block. 1,167 rows. The talent analogue of `item_stats` — one row per
+(talent, stat) in payload order.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `talent_fqn` | TEXT | Talent FQN. PK part 1. (Keyed by FQN, not game_id — survives a patch.) |
+| `ordinal` | INTEGER | Payload-order index for this talent. PK part 2; preserves duplicate-stat / rank ordering. |
+| `stat_index` | INTEGER | STAT enum index (same enum as `item_stats.stat_index`). |
+| `stat_name` | TEXT | STAT enum member, e.g. `STAT_att_mastery`. |
+| `magnitude` | REAL | Decoded stat magnitude. |
 
 ### ability_stats
 
@@ -502,6 +607,23 @@ Coverage: 112/131 GSF abilities (85%). Uncovered abilities are passive auras who
 
 **Index:** `idx_gsf_ability_stats_label` on `(label)` for stat-keyed pivots.
 
+### gsf_requisition_costs
+
+Requisition (currency) costs to unlock GSF ship components and upgrade them per
+tier, decoded from the GSF prototype tree. 2,481 rows. huttspawn reconstructs
+ship loadout trees from this table via `component_kind` / `art_path`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `target_guid` | TEXT | GUID of the component / upgrade the cost applies to. PK part 1. |
+| `cost_kind` | TEXT | `component_unlock` or `tier_upgrade`. PK part 2. |
+| `tier` | INTEGER | Upgrade tier the cost applies to. PK part 3. |
+| `cost` | INTEGER | Requisition cost. |
+| `target_game_id` | TEXT | Resolved `game_id` for `target_guid` when it matches an extracted object. NULL otherwise. |
+| `target_fqn` | TEXT | Resolved FQN. NULL when unresolved. |
+| `art_path` | TEXT | Component art-resource path (used to group components by ship/slot). |
+| `component_kind` | TEXT | Component category derived from the art path. |
+
 ---
 
 ## Item tables
@@ -523,7 +645,32 @@ Per-item classification derived from FQN segments. One row per `kind = 'Item'` o
 | `is_schematic` | INTEGER | 1 for `itm.schem.*`. |
 | `crew_skill` | TEXT | `armormech`, `armstech`, `artifice`, `biochem`, `cybertech`, `synthweaving`. NULL if not detectable from FQN. |
 
-**Known gaps:** set name and set bonus require GOM payload parsing and are not yet extracted. ~6,800 items classify as `item_kind='other'` because their top-level FQN segment is outside the known shape (e.g. `itm.setbonus.*`, `itm.endgame_pvp.*`, `itm.legendary.*`, `itm.alliance.*`, `itm.event.*`, `itm.galactic_seasons.*`).
+**Known gaps:** ~6,800 items classify as `item_kind='other'` because their top-level FQN segment is outside the known shape (e.g. `itm.setbonus.*`, `itm.endgame_pvp.*`, `itm.legendary.*`, `itm.alliance.*`, `itm.event.*`, `itm.galactic_seasons.*`). Set membership (which items form a gear set) is now captured in `item_sets` / `item_set_members` below; per-set bonus *effect text* still requires further payload decode.
+
+### item_sets
+
+Gear sets — the named collections that grant a set bonus when worn together.
+135 rows.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `set_fqn` | TEXT PK | The set's FQN. |
+| `source` | TEXT | Where the set comes from (content source), when derivable. NULL otherwise. |
+| `class_group` | TEXT | The class/role grouping the set targets. NULL when not class-scoped. |
+| `name_string_id` | INTEGER | Links to `strings.id2` for the localized set name. |
+
+### item_set_members
+
+Which items belong to which set, and in which slot. 1,003 rows.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `item_game_id` | TEXT | FK → `objects.game_id` for the member item. PK part 1. |
+| `set_fqn` | TEXT | FK → `item_sets.set_fqn`. PK part 2. |
+| `slot` | TEXT | The gear slot this member fills (`head`, `chest`, ...). |
+
+**Note:** `item_set_members.item_game_id` is a `game_id`, which shifts on patch.
+To join set membership across extractions, resolve to `objects.stable_id` first.
 
 ### schematics
 
@@ -841,3 +988,35 @@ Icons are stored as `{game_id}.webp` under a per-kind subdirectory. Given an obj
 Where `kind_slug` is the lowercase kind: `abilities`, `items`, `talents`, `npcs`, etc.
 
 **Icon filenames shift on patch.** `game_id` is unique per object-instance per extraction; it changes whenever the underlying GUID changes (which patches do routinely). Icon CDN syncs after every extraction must be treated as a republish, not an additive layer. If you need a stable cross-extraction identity for an object — e.g. for a frontend cache key that survives patches — use `stable_id` (`sha256(fqn)[0:16]`) instead. `game_id` is the right key for icon filenames within a single shipped spice; `stable_id` is the right key for "the same logical object across extractions."
+
+---
+
+## Tables not yet fully documented
+
+These tables are live and populated but not yet given a full column reference
+here. None are part of the current documented consumer contract (huttspawn does
+not read them); they back ability-effect detail, quest-detail, and forensic /
+internal subsystems. Listed so downstreams know they exist — full docs are a
+tracked follow-up. Inspect with `PRAGMA table_info(<name>)` for the live shape.
+
+| Table | Rows | Subsystem |
+|-------|------|-----------|
+| `ability_effects` | 23,039 | Ability effect graph — per-ability effect entries. |
+| `ability_effect_blocks` | 13,203 | Ability effect graph — grouped effect blocks. |
+| `ability_effect_params` | 1,434 | Ability effect graph — effect parameters. |
+| `ability_action_params` | 21,692 | Per-effAction numeric values (see #206). |
+| `ability_damage_params` | 12,463 | effAction_Damage CC parameters (see #207). |
+| `ability_tags` / `talent_tags` / `tags` | 6,354 / 246 / 6,785 | Object tag system (`tags` is the dictionary; the others are junctions). |
+| `npc_details` | 41,574 | Per-NPC classification / metadata. |
+| `quest_text` | 38,647 | Quest journal / objective text rows (keyed by `string_id` + `kind`; backs `mission_catalog`). |
+| `quest_objectives` | 15,727 | Per-quest objective rows. |
+| `quest_objective_flags` | 52,191 | Objective flag bits (see #212). |
+| `quest_milestones` | 7,431 | Quest milestone markers. |
+| `quest_name_tags` | 6,767 | Quest name/activity classification (backs `mission_catalog`). |
+| `schematic_details` | 16,641 | Per-schematic classification (own populator). |
+| `appearance_specs` | 20,404 | Appearance/customization specs. |
+| `fx_specs` | 22,061 | FX/visual-effect specs. |
+| `scripts` | 1,196 | Script-hook object metadata. |
+| `singletons` | 382 | Decoded singleton-prototype registry. |
+| `hydra_refs` | 54,579 | Hydra payload ASCII-scan cross-refs (see #214). |
+| `object_cc_refs` | 829,630 | Object → CF-GUID cross-reference edges (forensic join layer). |
