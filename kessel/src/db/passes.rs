@@ -362,6 +362,16 @@ pub fn run_passes(db: &Database, ctx: &PassCtx) -> Result<PassCounts> {
     let gsf_cost_targets = timed!("gsf_cost_targets", db.populate_gsf_cost_targets())?;
     println!("  GSF cost targets resolved: {} rows", gsf_cost_targets);
 
+    // GSF ship roster + loadout slot templates (#115 lineage). gsf_ships is the
+    // 10 premium starter ships; gsf_loadout_slots is the component-slot taxonomy
+    // decoded from the conSpec_scff_equip_* singletons.
+    let gsf_ships = timed!("gsf_ships", db.populate_gsf_ships())?;
+    let gsf_loadout_slots = timed!("gsf_loadout_slots", db.populate_gsf_loadout_slots())?;
+    println!(
+        "  GSF ships: {} rows, loadout slots: {} rows",
+        gsf_ships, gsf_loadout_slots
+    );
+
     // Twelfth-and-seven-eighths pass: ability/talent → effect block linkage
     // (issue #173). One row per indexed CF E0 sub-record in each abl.*/tal.*
     // payload. Unresolved block GUIDs (versioned-only ability category, #179)

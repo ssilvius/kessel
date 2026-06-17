@@ -7,6 +7,7 @@ pub mod epp;
 pub mod fxspec;
 pub mod gsf_ability;
 pub mod gsf_costs;
+pub mod gsf_loadout;
 pub mod gsf_talent;
 pub mod item;
 pub mod tag_table;

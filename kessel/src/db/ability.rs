@@ -844,6 +844,129 @@ impl Database {
         Ok((component_rows, tier_rows))
     }
 
+    /// Populate `gsf_ships` -- the GSF premium starter-ship roster, the 10
+    /// `itm.spvp.ships.premium.*` objects with display name, faction, and class.
+    /// Pure relational pass (no byte decode); the ship -> loadout-template
+    /// binding is client-side and not stored in these payloads. Issue #115
+    /// lineage. Returns the row count.
+    pub fn populate_gsf_ships(&self) -> Result<u64> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut rows = 0u64;
+        {
+            // (fqn, game_id, name, string_id) for the 10 premium ships.
+            let ships: Vec<(String, String, Option<String>)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT o.fqn, o.game_id, \
+                            (SELECT s.text FROM strings s \
+                              WHERE s.id2 = o.string_id AND s.locale = 'en-us' AND s.id1 = 0 \
+                              LIMIT 1) AS name \
+                       FROM objects o \
+                      WHERE o.is_canonical = 1 \
+                        AND o.fqn LIKE 'itm.spvp.ships.premium.%'",
+                )?;
+                let ships: Vec<(String, String, Option<String>)> = stmt
+                    .query_map([], |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, Option<String>>(2)?,
+                        ))
+                    })?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                ships
+            };
+
+            let mut insert = tx.prepare_cached(
+                "INSERT OR REPLACE INTO gsf_ships \
+                   (fqn, game_id, name, faction, ship_class) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for (fqn, game_id, name) in ships {
+                // Segment after 'itm.spvp.ships.premium.', e.g. 'imp_gunship_02'.
+                let seg = fqn.rsplit('.').next().unwrap_or("").to_string();
+                let (faction, rest) = if let Some(r) = seg.strip_prefix("imp_") {
+                    (Some("empire"), r)
+                } else if let Some(r) = seg.strip_prefix("rep_") {
+                    (Some("republic"), r)
+                } else {
+                    (None, seg.as_str())
+                };
+                // Class = `rest` minus a trailing `_NN` variant suffix.
+                let ship_class = rest
+                    .rsplit_once('_')
+                    .map(|(c, _)| c)
+                    .unwrap_or(rest)
+                    .to_string();
+                insert.execute(params![fqn, game_id, name, faction, ship_class,])?;
+                rows += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(rows)
+    }
+
+    /// Populate `gsf_loadout_slots` from the `conSpec_scff_equip_*` slot-template
+    /// singletons. One row per distinct component slot a template declares.
+    /// Issue #115 lineage. Returns the row count.
+    pub fn populate_gsf_loadout_slots(&self) -> Result<u64> {
+        use crate::schema::gsf_loadout::decode_loadout_slots;
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
+        // Load every loadout-template singleton payload.
+        let templates: Vec<(String, Vec<u8>)> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT fqn, payload_b64 FROM singletons \
+                  WHERE fqn LIKE 'conSpec_scff_equip_%'",
+            )?;
+            let templates: Vec<(String, Vec<u8>)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .filter_map(|(fqn, b64)| BASE64.decode(&b64).ok().map(|b| (fqn, b)))
+                .collect();
+            templates
+        };
+
+        let mut rows = 0u64;
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        {
+            let mut insert = tx.prepare_cached(
+                "INSERT OR REPLACE INTO gsf_loadout_slots \
+                   (template_code, slot_kind, slot_type, slot_ordinal) \
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for (fqn, payload) in templates {
+                let template_code = fqn
+                    .strip_prefix("conSpec_scff_equip_")
+                    .unwrap_or(&fqn)
+                    .to_string();
+                let slot_kind = if template_code.starts_with("maj_") {
+                    "major"
+                } else if template_code.starts_with("min_") {
+                    "minor"
+                } else {
+                    continue; // skip quickslot / other shapes (no slots)
+                };
+                for slot in decode_loadout_slots(&payload) {
+                    insert.execute(params![
+                        template_code,
+                        slot_kind,
+                        slot.slot_type,
+                        slot.slot_ordinal,
+                    ])?;
+                    rows += 1;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(rows)
+    }
+
     /// Resolve `gsf_requisition_costs.target_guid` to art_path + component_kind
     /// via the `data` singleton (#217). Each cost target_guid (8 bytes) is
     /// `<6-byte content_guid_tail><0x04><0x03>`. The 6-byte tail appears in
@@ -2626,6 +2749,29 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
             );
             CREATE INDEX IF NOT EXISTS idx_gsf_req_costs_target ON gsf_requisition_costs(target_game_id);
             CREATE INDEX IF NOT EXISTS idx_gsf_req_costs_kind ON gsf_requisition_costs(component_kind);
+            -- GSF premium starter-ship roster (#115 lineage). The 10
+            -- itm.spvp.ships.premium.* objects with display name, faction, and
+            -- class. The ship -> loadout-template binding is NOT in the archive
+            -- (client-side); consumers map it by ship_class.
+            CREATE TABLE IF NOT EXISTS gsf_ships (
+                fqn         TEXT PRIMARY KEY,
+                game_id     TEXT,
+                name        TEXT,
+                faction     TEXT,
+                ship_class  TEXT
+            );
+            -- GSF loadout slot templates (#115 lineage). Decoded from the
+            -- conSpec_scff_equip_* singletons; one row per distinct component
+            -- slot a template declares. Major templates carry the
+            -- weapon/shield/engine slots, minor templates the four
+            -- armor/capacitor/magazine/reactor/sensor/thruster-class slots.
+            CREATE TABLE IF NOT EXISTS gsf_loadout_slots (
+                template_code  TEXT NOT NULL,
+                slot_kind      TEXT NOT NULL CHECK (slot_kind IN ('major', 'minor')),
+                slot_type      TEXT NOT NULL,
+                slot_ordinal   INTEGER NOT NULL,
+                PRIMARY KEY (template_code, slot_type, slot_ordinal)
+            );
             -- Ability/talent -> effect block linkage (#173). One row per
             -- indexed CF E0 sub-record in the parent's payload. The parent
             -- self-reference is NOT included; this table is the structural
