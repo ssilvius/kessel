@@ -359,25 +359,33 @@ notes      = "barrel_roll = 30, power_dive = 15"
 label      = "scaling_factor"
 unit       = "ratio"
 confidence = "guess"
-notes      = "Always 1.0 in samples; meaning unverified"
+notes      = "53 of 55 rows are a vacuous 1.0 default (crew / shield / engine / mine / missile -- the prop is semantically empty there). The 2 real values are cooldown-gated drone weapons: drone.sentry_sniper.railgun=2.0 matches its summon text '...has a 2 second cooldown' exactly (and is distinct from 0x0402=180 lifetime and 0x041a=4.0 charge on the same ability); drone.sentry_missile.missile=12.0 is unconfirmable (blank text). So on those 2 abilities 0x0403 reads as a weapon cooldown in seconds -- but relabeling the prop to weapon_cooldown_seconds would FALSELY assert '1 second cooldown' on the 53 default rows, so the generic label is kept pending a per-FQN override that scopes the real meaning to the drone weapons. Finding 2026-06-16 (oracle pass)."
 
-[ability_stats.0x0401]
-label      = "cast_time_seconds"
-unit       = "s"
-confidence = "guess"
-notes      = "Range observed -1.0..75.0; -1.0 likely passive marker"
+# 0x0401 (GSF) -- DOWNGRADED to unknown 2026-06-16 (was guess 'cast_time_seconds').
+# Rank-1 (38 rows) is 100% sentinel: 20x 6.46924018859863 + 18x -1.0, zero real
+# values (6.46924018859863 occurs ONLY on 0x0401, never cross-prop -- it is a
+# 0x0401-local animation/uninit constant, not a shared marker). Rank-2 (13 rows) IS a
+# distinct real stat (30/45/60/75 on systems abilities, confirmed != cooldown 0x0402)
+# that resembles value/3 = duration seconds (60->20s, 45->15s, 75->25s, 30->10s) but is
+# UNCONFIRMABLE: every rank-2 carrier ends in a blank duration token, no description
+# number matches value or value/3. No entry -> populate emits unknown_0x0401. The
+# rank-2 real stat is a tracked follow-up (anchor needs a non-blank duration source).
 
 [ability_stats.0x0421]
-label      = "range_meters"
-unit       = "m"
-confidence = "guess"
-notes      = "Range observed 15..150"
+label      = "range_units"
+unit       = "100m"
+confidence = "verified"
+notes      = "Effect/proximity/trigger range in 100m units (value*100 = meters), same convention as verified 0x0407 -- but 0x0421 is the effect range and 0x0407 the weapon range, and no ability carries both. Text-anchored across 9 abilities (description-string oracle, verified 2026-06-16): mine.{concussion,interdiction,ion,seismic}_mine 15 -> 'explode if an enemy gets within 1500m' (4x convergence on the proximity-trigger number, not the larger blast radius); seeker_mine 40 -> 'within 4000m'; emp_field 45 -> '4500m radius'; face_target 150 -> 'within 15,000m' (decisive comma-formatted anchor); running_interference / wingman 30 -> 'within 3000m'. The 50.0 cluster (single-target crew debuffs, ion_burst / plasma_lance, remote_slicing) prints no range number -> 5000m plausible, unconfirmable, never contradictory. Lone outlier: shield_projector 0x0421=30 -> 3000m while its text prints a 5500m heal radius (55 is carried by no prop on that ability) -- scale-consistent, not a contradiction. Was 'range_meters' (off by 100x); corrected via adversarial oracle refutation."
 
-[ability_stats.0x0423]
-label      = "duration_seconds"
-unit       = "s"
-confidence = "guess"
-notes      = "Range observed 100..500"
+# 0x0423 -- DOWNGRADED to unknown 2026-06-16 (was guess 'duration_seconds', off).
+# Refuted via the description-string oracle: duration tokens render BLANK in static
+# text and 100-500 are absurd as seconds (railgun .hit / missile .on_fire are
+# instantaneous). Not range either (same value 100 across short- and medium-range
+# missiles; no 0x0407 co-occurs) and not damage (20/21 values absent from their own
+# description text; the lone thermite 150 -> '150% vs hull' is a flagged coincidence).
+# Behaves as a category enum (missiles=100, emp/proton/thermite torpedo class=150,
+# concentrated_fire=180, sustained field/buff=360, all railguns=500) but no in-archive
+# number names a unit. No entry here -> populate emits unknown_0x0423.
 
 
 # --- 2026-05-20 expansion (#117 corpus-anchored ability decodes) ---
@@ -392,9 +400,9 @@ notes      = "Range observed 100..500"
 # CF-content-guid byte sequences misread as f32 records. The decoder now
 # rejects those windows (see src/schema/gsf_ability.rs).
 #
-# 2 real-but-unlabelable prop_ids (0x0407 drone-only, 0x0424 laser-only)
-# carry FQN-class context but the binary does not name them; downstream
-# consumers can route by FQN prefix.
+# 0x0407 (drone-weapon range) is now VERIFIED as range_units/100m (below).
+# 0x0424 is NOT laser-only: a missile (target_painter.impact=50) shares it with
+# the 9 lasers (=5.0). See its downgrade note below.
 
 [ability_stats.0x0410]
 label      = "chargeup_time_seconds"
@@ -427,10 +435,10 @@ confidence = "verified"
 notes      = "Weapon power-pool cost per shot. Compound record `CC 08 4B DA B5 F9 04 <f32>`. Values: railgun.{ion,plasma,slug}.chargeup 0.12, secondary.ion_burst.on_fire 0.30, secondary.plama_lance.on_fire 0.60. Structural twin to talents 0x52 weapon_power_draw_pct (railgun -10%) and 0x56 weapon_power_cost_pct (laser/secondary -10%)"
 
 [ability_stats.0x041a]
-label      = "hard_cast_time_seconds"
+label      = "charge_time_seconds"
 unit       = "s"
 confidence = "guess"
-notes      = "Sentry drone arming + item-consume cast time: drone.sentry_missile.missile 2.5s, drone.sentry_sniper.railgun 4.0s, itemgrant.consume_item 3.0s. Same prop_id and semantic as the ground-ability dictionary entry for 0x041a (hard_cast_time_seconds). Confidence: guess pending ground-truth -- the values are plausible for the activity but the semantic is borrowed from the ground dictionary rather than corpus-confirmed for GSF"
+notes      = "Charge / arming time in raw seconds. 3 rows: drone.sentry_sniper.railgun=4.0 matches its summon text '...takes 4 seconds to charge...' exactly (the only '4' in the string; the 2s cooldown sits on 0x0403, the 180 lifetime on 0x0402 -- every other text number is claimed by another prop, leaving 0x041a holding the charge time); drone.sentry_missile.missile=2.5 and itemgrant.consume_item=3.0 are plausible but unconfirmed (no matching number in their text -- consume_item is not really a 'charge', the lone weak fit). Renamed from hard_cast_time_seconds 2026-06-16 -- 'seconds to charge' is the in-archive wording. Guess: 1 of 3 string-confirmed."
 
 [ability_stats.0x0407]
 label      = "range_units"
@@ -438,11 +446,20 @@ unit       = "100m"
 confidence = "verified"
 notes      = "Drone-weapon range in 100m units (value * 100 = meters). Anchored against in-corpus description strings: drone.sentry_missile.missile = 70 matches sentry_missile.summon description 'range of 7000m'; drone.sentry_sniper.railgun = 100 matches sentry_sniper.summon description '10000m range'. Same 100m-unit convention as 0x0421 (e.g. drone.sentry_interdiction.interdiction_field value 30 = 3000m radius per its summon description)"
 
-[ability_stats.0x0424]
-label      = "weapon_class_marker"
-unit       = "class"
-confidence = "guess"
-notes      = "Position-0 property in the flat block of direct-fire damage/impact sub-abilities. Class-level constant -- NOT per-component variance. GSF values: 5.0 on all 9 abl.spvp.laser.<comp>.damage rows, 50.0 on abl.spvp.missile.target_painter.impact. Wider corpus shows a hierarchy of values for the same prop_id across the legacy space-combat namespace: 100.0 on abl.space_combat.freeflight.primaryweapons.* (heavy primaries), 400.0 on abl.space_combat.player.torpedo, 500.0 on abl.space_combat.freeflight.chargeupweapons.*_onhit. The pattern (5/50/100/400/500) tracks weapon power tier within the SWTOR weapon namespace. CB-token blocks following the property block are IDENTICAL bytes across standard/heavy/quad lasers, confirming the .damage payload carries no per-component variance -- per-laser damage/range/arc lives in a separate scFF*Prototype singleton (out of scope for #117; tracked under #115 / scFFComponentsPrototype). Label is 'guess' because the binary does not name the field; the structural argument is class-marker, not in-game-validated"
+# 0x0424 -- DOWNGRADED to unknown 2026-06-16 (was guess 'weapon_class_marker').
+# 10 rows: 5.0 on all 9 abl.spvp.laser.<comp>.damage, 50.0 on missile.target_painter.impact.
+# The 'weapon class marker' label is refuted by cross-prop evidence: (1) a MISSILE shares
+# the prop with the lasers, so its presence does not isolate a weapon class and 50-vs-5 does
+# not encode one class; (2) the twin prop 0x0423 carries 100/150/180/360/500 across
+# crew.active.* / engine.* / systems.* / railgun / missile -- a generic per-ability quantity
+# spanning NON-weapon abilities, and 0x0423 vs 0x0424 are mutually exclusive on the weapon
+# damage leaves (lasers->0x0424=5; rocket_pod/target_tracker->0x0423=100; target_painter->
+# 0x0424=50), reading as one measured field split across two ids, not a class enum;
+# (3) no id1=1 description string exists for any carrier or its parent, so the oracle cannot
+# anchor a unit/scale for 5 or 50. The earlier structural note (5/50/100/400/500 hierarchy
+# across the space_combat namespace; identical CB-token blocks across lasers; per-laser
+# stats live in a scFF*Prototype singleton, #115) remains useful context but does not name
+# the field. No entry -> populate emits unknown_0x0424. Re-anchor needs the scFF* singleton."
 
 
 # abl.* (ground ability) `0x04xx` prop_id (u16) labels for ability_stats.raw_props.
