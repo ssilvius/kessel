@@ -624,6 +624,39 @@ ship loadout trees from this table via `component_kind` / `art_path`.
 | `art_path` | TEXT | Component art-resource path (used to group components by ship/slot). |
 | `component_kind` | TEXT | Component category derived from the art path. |
 
+### gsf_ships
+
+The GSF premium starter-ship roster -- the 10 `itm.spvp.ships.premium.*` objects,
+five hull classes per faction. Pure relational decode (name + faction + class).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `fqn` | TEXT PK | Ship item FQN, e.g. `itm.spvp.ships.premium.imp_scout_01`. |
+| `game_id` | TEXT | The ship object's `objects.game_id`. |
+| `name` | TEXT | Display name (`strings` id1=0, en-us), e.g. `IL-5 Ocula`, `G-X1 Onslaught`. |
+| `faction` | TEXT | `empire` (`imp_` ships) or `republic` (`rep_` ships). |
+| `ship_class` | TEXT | `bomber`, `gunship`, `scout`, or `striker` (the `_NN` variant suffix is stripped; both `gunship_01` and `gunship_02` map to `gunship`). |
+
+### gsf_loadout_slots
+
+The GSF component-slot taxonomy, decoded from the `conSpec_scff_equip_*` slot-template
+singletons. One row per distinct component slot a template declares. Major templates
+carry the weapon/shield/engine slots; minor templates carry four of the
+armor/capacitor/magazine/reactor/sensor/thruster slots. ~59 rows.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `template_code` | TEXT | Template suffix after `conSpec_scff_equip_`, e.g. `maj_PPSHE`, `min_ACMR`. PK part 1. |
+| `slot_kind` | TEXT | `major` or `minor`. |
+| `slot_type` | TEXT | `PrimaryWeapon`, `SecondaryWeapon`, `ShieldProjector`, `Engine`, `AuxSystem` (major); `Armor`, `Capacitor`, `Magazine`, `Reactor`, `Sensor`, `Thruster` (minor). PK part 2. |
+| `slot_ordinal` | INTEGER | 1-based ordinal within the slot type (e.g. `PrimaryWeapon_1`, `PrimaryWeapon_2`). PK part 3. |
+
+**Ship -> template binding is NOT in the archive.** The `itm.spvp.ships.premium.*`
+payloads reference only shared item templates and the ship's appearance, not a
+loadout template -- the binding is client-side. A consumer maps a ship to its slot
+layout by `ship_class` (the well-defined GSF class -> layout convention), joining
+`gsf_ships.ship_class` to the appropriate `gsf_loadout_slots.template_code`.
+
 ---
 
 ## Item tables
