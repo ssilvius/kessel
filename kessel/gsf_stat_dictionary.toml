@@ -377,15 +377,11 @@ unit       = "100m"
 confidence = "verified"
 notes      = "Effect/proximity/trigger range in 100m units (value*100 = meters), same convention as verified 0x0407 -- but 0x0421 is the effect range and 0x0407 the weapon range, and no ability carries both. Text-anchored across 9 abilities (description-string oracle, verified 2026-06-16): mine.{concussion,interdiction,ion,seismic}_mine 15 -> 'explode if an enemy gets within 1500m' (4x convergence on the proximity-trigger number, not the larger blast radius); seeker_mine 40 -> 'within 4000m'; emp_field 45 -> '4500m radius'; face_target 150 -> 'within 15,000m' (decisive comma-formatted anchor); running_interference / wingman 30 -> 'within 3000m'. The 50.0 cluster (single-target crew debuffs, ion_burst / plasma_lance, remote_slicing) prints no range number -> 5000m plausible, unconfirmable, never contradictory. Lone outlier: shield_projector 0x0421=30 -> 3000m while its text prints a 5500m heal radius (55 is carried by no prop on that ability) -- scale-consistent, not a contradiction. Was 'range_meters' (off by 100x); corrected via adversarial oracle refutation."
 
-# 0x0423 -- DOWNGRADED to unknown 2026-06-16 (was guess 'duration_seconds', off).
-# Refuted via the description-string oracle: duration tokens render BLANK in static
-# text and 100-500 are absurd as seconds (railgun .hit / missile .on_fire are
-# instantaneous). Not range either (same value 100 across short- and medium-range
-# missiles; no 0x0407 co-occurs) and not damage (20/21 values absent from their own
-# description text; the lone thermite 150 -> '150% vs hull' is a flagged coincidence).
-# Behaves as a category enum (missiles=100, emp/proton/thermite torpedo class=150,
-# concentrated_fire=180, sustained field/buff=360, all railguns=500) but no in-archive
-# number names a unit. No entry here -> populate emits unknown_0x0423.
+[ability_stats.0x0423]
+label      = "effect_archetype_id"
+unit       = "enum"
+confidence = "guess"
+notes      = "GUESS (structural, 2026-06-16): an effect/weapon ARCHETYPE enum, NOT a magnitude. Value is constant per ability archetype, spans weapons AND non-weapon field abilities, and matches no stat (duration refuted -- tokens render blank, values absurd as seconds; range refuted -- same value across range tiers, no 0x0407 co-occurs; damage refuted -- 20/21 values absent from own description text). Same ladder as 0x0424, split across two prop slots by sub-ability template. Observed: missile=100, emp/proton/thermite torpedo class=150, crew buff (concentrated_fire)=180, sustained field/system (interdiction_drive,tensor_field,aoe_def/off_boost,blaster_overcharge,hard_reset)=360, railgun=500. Labeled from internal pattern, not a description-string anchor -- hence guess, not verified."
 
 
 # --- 2026-05-20 expansion (#117 corpus-anchored ability decodes) ---
@@ -402,7 +398,7 @@ notes      = "Effect/proximity/trigger range in 100m units (value*100 = meters),
 #
 # 0x0407 (drone-weapon range) is now VERIFIED as range_units/100m (below).
 # 0x0424 is NOT laser-only: a missile (target_painter.impact=50) shares it with
-# the 9 lasers (=5.0). See its downgrade note below.
+# the 9 lasers (=5.0). Labeled effect_archetype_id (guess) below, same enum as 0x0423.
 
 [ability_stats.0x0410]
 label      = "chargeup_time_seconds"
@@ -446,20 +442,11 @@ unit       = "100m"
 confidence = "verified"
 notes      = "Drone-weapon range in 100m units (value * 100 = meters). Anchored against in-corpus description strings: drone.sentry_missile.missile = 70 matches sentry_missile.summon description 'range of 7000m'; drone.sentry_sniper.railgun = 100 matches sentry_sniper.summon description '10000m range'. Same 100m-unit convention as 0x0421 (e.g. drone.sentry_interdiction.interdiction_field value 30 = 3000m radius per its summon description)"
 
-# 0x0424 -- DOWNGRADED to unknown 2026-06-16 (was guess 'weapon_class_marker').
-# 10 rows: 5.0 on all 9 abl.spvp.laser.<comp>.damage, 50.0 on missile.target_painter.impact.
-# The 'weapon class marker' label is refuted by cross-prop evidence: (1) a MISSILE shares
-# the prop with the lasers, so its presence does not isolate a weapon class and 50-vs-5 does
-# not encode one class; (2) the twin prop 0x0423 carries 100/150/180/360/500 across
-# crew.active.* / engine.* / systems.* / railgun / missile -- a generic per-ability quantity
-# spanning NON-weapon abilities, and 0x0423 vs 0x0424 are mutually exclusive on the weapon
-# damage leaves (lasers->0x0424=5; rocket_pod/target_tracker->0x0423=100; target_painter->
-# 0x0424=50), reading as one measured field split across two ids, not a class enum;
-# (3) no id1=1 description string exists for any carrier or its parent, so the oracle cannot
-# anchor a unit/scale for 5 or 50. The earlier structural note (5/50/100/400/500 hierarchy
-# across the space_combat namespace; identical CB-token blocks across lasers; per-laser
-# stats live in a scFF*Prototype singleton, #115) remains useful context but does not name
-# the field. No entry -> populate emits unknown_0x0424. Re-anchor needs the scFF* singleton."
+[ability_stats.0x0424]
+label      = "effect_archetype_id"
+unit       = "enum"
+confidence = "guess"
+notes      = "GUESS (structural, 2026-06-16): effect/weapon archetype enum, SAME family as 0x0423 (continued ladder, emitted at this prop slot by the direct-fire damage/impact sub-ability template). 10 rows: laser (all 9 abl.spvp.laser.<comp>.damage)=5, target_painter.impact=50. A missile sharing the prop is consistent with an archetype enum (a different category value), not a contradiction. Constant per archetype, no per-component variance (identical CB-token blocks across lasers); not a magnitude. No id1=1 description string anchors 5 or 50, so labeled from internal pattern -- guess, not verified. Full ladder context with 0x0423: laser=5, target_painter=50, missile=100, torpedo=150, crew_buff=180, field=360, railgun=500. Per-component laser stats (damage/range/arc) would live in an scFF*Prototype singleton (#115), not here."
 
 
 # abl.* (ground ability) `0x04xx` prop_id (u16) labels for ability_stats.raw_props.
