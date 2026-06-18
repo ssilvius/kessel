@@ -68,7 +68,8 @@ pub(crate) fn create_core_tables(tx: &Transaction) -> Result<()> {
                 locale TEXT NOT NULL,          -- Locale: "en-us"
                 id1 INTEGER NOT NULL,          -- STB ID1
                 id2 INTEGER NOT NULL,          -- STB ID2 (links to objects.string_id)
-                text TEXT NOT NULL,            -- Display text
+                text TEXT NOT NULL,            -- Display text (grammar-cleaned: <<N>> templates stripped)
+                text_raw TEXT,                 -- Raw STB text before grammar.clean(); NULL when identical to `text`. Preserves <<N>> positional templates for stat-value/label anchoring.
                 version INTEGER DEFAULT 0
             );
 

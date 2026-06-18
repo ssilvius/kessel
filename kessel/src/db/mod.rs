@@ -96,7 +96,28 @@ struct PendingString {
     id1: u32,
     id2: u32,
     text: String,
+    /// Raw STB text before grammar cleaning. `Some` only when cleaning changed
+    /// the text (preserving `<<N>>` templates); `None` when identical to `text`
+    /// so unchanged strings aren't stored twice.
+    text_raw: Option<String>,
     version: u32,
+}
+
+/// Apply grammar cleaning to a raw STB string and return
+/// `(cleaned_text, raw_text_if_changed)`. The raw form is returned only when
+/// cleaning altered the text, so the `strings.text_raw` column stays NULL for
+/// the common case where the display text and raw text are identical.
+fn prepare_string(grammar: Option<&Grammar>, raw: &str) -> (String, Option<String>) {
+    let cleaned = match grammar {
+        Some(g) => g.clean(raw),
+        None => raw.to_string(),
+    };
+    let text_raw = if cleaned != raw {
+        Some(raw.to_string())
+    } else {
+        None
+    };
+    (cleaned, text_raw)
 }
 
 pub struct Database {
@@ -251,12 +272,9 @@ impl Database {
     /// Queue a string for batch insert
     /// If grammar rules are configured, applies them to clean the text
     pub fn insert_string(&self, fqn: &str, locale: &str, entry: &StbEntry) -> Result<()> {
-        // Apply grammar rules if configured
-        let cleaned_text = if let Some(ref grammar) = self.grammar {
-            grammar.clean(&entry.text)
-        } else {
-            entry.text.clone()
-        };
+        // Apply grammar rules if configured, keeping the raw form when cleaning
+        // changed the text (so <<N>> templates survive in `text_raw`).
+        let (cleaned_text, text_raw) = prepare_string(self.grammar.as_deref(), &entry.text);
 
         let pending = PendingString {
             fqn: fqn.to_string(),
@@ -264,6 +282,7 @@ impl Database {
             id1: entry.id1,
             id2: entry.id2,
             text: cleaned_text,
+            text_raw,
             version: entry.version,
         };
 
@@ -345,20 +364,23 @@ impl Database {
         {
             let mut stmt = tx.prepare_cached(
                 r#"
-                INSERT INTO strings (fqn, locale, id1, id2, text, version)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                INSERT INTO strings (fqn, locale, id1, id2, text, text_raw, version)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                 ON CONFLICT(fqn) DO UPDATE SET
                     locale = excluded.locale,
                     id1 = excluded.id1,
                     id2 = excluded.id2,
                     text = excluded.text,
+                    text_raw = excluded.text_raw,
                     version = excluded.version
                 WHERE excluded.version > strings.version
                 "#,
             )?;
 
             for s in &batch {
-                stmt.execute(params![s.fqn, s.locale, s.id1, s.id2, s.text, s.version])?;
+                stmt.execute(params![
+                    s.fqn, s.locale, s.id1, s.id2, s.text, s.text_raw, s.version
+                ])?;
             }
         }
 
@@ -861,6 +883,39 @@ const ABILITY_PROP_SENTINEL: [u8; 6] = [0x01, 0x04, 0x00, 0x00, 0x80, 0xBF];
 mod tests {
     use super::*;
     use crate::db::testutil::*;
+
+    #[test]
+    fn prepare_string_preserves_template_when_clean_changes_text() {
+        let grammar = Grammar::from_embedded().unwrap();
+        let raw = "lasts for <<1>> seconds";
+        let (cleaned, text_raw) = prepare_string(Some(&grammar), raw);
+        assert!(
+            !cleaned.contains("<<"),
+            "display text must be cleaned: {cleaned}"
+        );
+        assert_ne!(cleaned, raw);
+        assert_eq!(text_raw.as_deref(), Some(raw));
+    }
+
+    #[test]
+    fn prepare_string_is_none_when_clean_is_noop() {
+        let grammar = Grammar::from_embedded().unwrap();
+        let raw = "Power Surge";
+        let (cleaned, text_raw) = prepare_string(Some(&grammar), raw);
+        assert_eq!(cleaned, raw);
+        assert_eq!(
+            text_raw, None,
+            "identical text must not be duplicated into text_raw"
+        );
+    }
+
+    #[test]
+    fn prepare_string_without_grammar_never_stores_raw() {
+        let raw = "lasts for <<1>> seconds";
+        let (cleaned, text_raw) = prepare_string(None, raw);
+        assert_eq!(cleaned, raw);
+        assert_eq!(text_raw, None);
+    }
 
     #[test]
     fn parse_spn_triple_extracts_all_three_parts() {
