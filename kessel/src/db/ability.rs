@@ -323,8 +323,8 @@ impl Database {
         let tx = conn.unchecked_transaction()?;
         let mut stmt = tx.prepare_cached(
             "INSERT OR REPLACE INTO gsf_ability_stats \
-             (ability_game_id, label, unit, rank, value, confidence, prop_id) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             (ability_game_id, label, unit, rank, value, confidence, prop_id, payload_ordinal) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )?;
 
         let mut count: u64 = 0;
@@ -347,6 +347,7 @@ impl Database {
                     rec.value as f64,
                     label.confidence,
                     rec.prop_id as i64,
+                    rec.ordinal as i64,
                 ])?;
                 count += 1;
             }
@@ -2716,6 +2717,7 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
                 value           REAL NOT NULL,
                 confidence      TEXT NOT NULL,
                 prop_id         INTEGER NOT NULL,  -- raw u16 for forensics
+                payload_ordinal INTEGER,           -- 0-based payload emission order of this record; the index a <<N>> description template anchors to (distinct from per-label `rank`). #309.
                 PRIMARY KEY (ability_game_id, label, rank),
                 FOREIGN KEY (ability_game_id) REFERENCES objects(game_id)
             );
