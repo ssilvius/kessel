@@ -3,6 +3,36 @@
 use super::*;
 
 impl Database {
+    /// Fetch and base64-decode the payloads of canonical objects whose `fqn`
+    /// matches `fqn_like` (an SQL LIKE pattern such as `"abl.%"`). Returns
+    /// `(game_id, fqn, payload)` so each caller keys by whichever it needs;
+    /// rows missing `payload_b64` or with undecodable base64 are skipped. This
+    /// is the shared replacement for the SELECT-payload_b64 + BASE64.decode
+    /// scaffold the per-prefix populate passes used to hand-roll (#316).
+    pub(crate) fn object_payloads(&self, fqn_like: &str) -> Result<Vec<(String, String, Vec<u8>)>> {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT game_id, fqn, json_extract(json, '$.payload_b64') \
+             FROM objects WHERE fqn LIKE ?1 AND is_canonical = 1",
+        )?;
+        let rows = stmt
+            .query_map([fqn_like], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .filter_map(|(gid, fqn, b64)| {
+                b64.and_then(|b| BASE64.decode(b).ok())
+                    .map(|p| (gid, fqn, p))
+            })
+            .collect();
+        Ok(rows)
+    }
+
     /// Add columns to `disciplines` populated from authoritative `dis.*`
     /// records (issue #170): the discipline's short codename
     /// (`power_pyrotech`), icon + mod-tree apc.* refs as game_ids, and the
@@ -86,28 +116,9 @@ impl Database {
     /// Starfighter) have no sentinel-anchored block; they get a row only if
     /// their FQN resolves a `resource_pool` and no stats fields populate.
     pub fn populate_ability_stats(&self) -> Result<u64> {
-        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        let payloads = self.object_payloads("abl.%")?;
 
         let conn = self.conn.lock().unwrap();
-
-        let payloads: Vec<(String, String, String)> = {
-            let mut stmt = conn.prepare(
-                "SELECT game_id, fqn, json_extract(json, '$.payload_b64') \
-                 FROM objects WHERE fqn LIKE 'abl.%' AND is_canonical = 1",
-            )?;
-            let rows: Vec<(String, String, String)> = stmt
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                })?
-                .filter_map(|r| r.ok())
-                .collect();
-            rows
-        };
-
         let tx = conn.unchecked_transaction()?;
         let mut stmt = tx.prepare_cached(
             "INSERT OR REPLACE INTO ability_stats \
@@ -118,11 +129,8 @@ impl Database {
         )?;
 
         let mut count: u64 = 0;
-        for (game_id, fqn, payload_b64) in &payloads {
-            let Ok(payload) = BASE64.decode(payload_b64) else {
-                continue;
-            };
-            let stats = scan_ability_props(&payload);
+        for (game_id, fqn, payload) in &payloads {
+            let stats = scan_ability_props(payload);
             let pool = resource_pool_from_fqn(fqn);
             if stats.any_hit() || pool.is_some() {
                 stmt.execute(params![
@@ -219,29 +227,11 @@ impl Database {
     pub fn populate_gsf_talent_stats(&self) -> Result<u64> {
         use crate::gsf_stat_dictionary::StatDictionary;
         use crate::schema::gsf_talent::decode_gsf_stats;
-        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
         let dict = StatDictionary::from_embedded()?;
+        let payloads = self.object_payloads("tal.spvp.%")?;
+
         let conn = self.conn.lock().unwrap();
-
-        let payloads: Vec<(String, String, Option<String>)> = {
-            let mut stmt = conn.prepare(
-                "SELECT game_id, fqn, json_extract(json, '$.payload_b64') \
-                 FROM objects WHERE fqn LIKE 'tal.spvp.%' AND is_canonical = 1",
-            )?;
-            let rows: Vec<(String, String, Option<String>)> = stmt
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                    ))
-                })?
-                .filter_map(|r| r.ok())
-                .collect();
-            rows
-        };
-
         let tx = conn.unchecked_transaction()?;
         let mut stmt = tx.prepare_cached(
             "INSERT OR REPLACE INTO gsf_talent_stats \
@@ -250,17 +240,13 @@ impl Database {
         )?;
 
         let mut count: u64 = 0;
-        for (game_id, fqn, payload_b64) in &payloads {
-            let Some(b64) = payload_b64 else { continue };
-            let Ok(payload) = BASE64.decode(b64) else {
-                continue;
-            };
+        for (game_id, fqn, payload) in &payloads {
             // Per-talent rank counter so multiple records of the same stat
             // (e.g. +4/+8/+12 rank progression) get rank=1,2,3 in payload
             // order. Different stats start at rank 1 independently.
             let mut rank_per_label: std::collections::HashMap<String, i64> =
                 std::collections::HashMap::new();
-            for rec in decode_gsf_stats(&payload) {
+            for rec in decode_gsf_stats(payload) {
                 // FQN-aware lookup so context-overloaded stat_ids (0x40 acting
                 // as comm_range_units on minor_sensors.com_range.*, etc.) ship
                 // with the domain-correct label instead of the generic default.
@@ -301,25 +287,11 @@ impl Database {
     pub fn populate_gsf_ability_stats(&self) -> Result<u64> {
         use crate::gsf_stat_dictionary::StatDictionary;
         use crate::schema::gsf_ability::decode_gsf_ability_stats;
-        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
         let dict = StatDictionary::from_embedded()?;
+        let payloads = self.object_payloads("abl.spvp.%")?;
+
         let conn = self.conn.lock().unwrap();
-
-        let payloads: Vec<(String, Option<String>)> = {
-            let mut stmt = conn.prepare(
-                "SELECT game_id, json_extract(json, '$.payload_b64') \
-                 FROM objects WHERE fqn LIKE 'abl.spvp.%' AND is_canonical = 1",
-            )?;
-            let rows: Vec<(String, Option<String>)> = stmt
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
-                })?
-                .filter_map(|r| r.ok())
-                .collect();
-            rows
-        };
-
         let tx = conn.unchecked_transaction()?;
         let mut stmt = tx.prepare_cached(
             "INSERT OR REPLACE INTO gsf_ability_stats \
@@ -328,14 +300,10 @@ impl Database {
         )?;
 
         let mut count: u64 = 0;
-        for (game_id, payload_b64) in &payloads {
-            let Some(b64) = payload_b64 else { continue };
-            let Ok(payload) = BASE64.decode(b64) else {
-                continue;
-            };
+        for (game_id, _fqn, payload) in &payloads {
             let mut rank_per_label: std::collections::HashMap<String, i64> =
                 std::collections::HashMap::new();
-            for rec in decode_gsf_ability_stats(&payload) {
+            for rec in decode_gsf_ability_stats(payload) {
                 let label = dict.ability_label(rec.prop_id);
                 let rank = rank_per_label.entry(label.label.clone()).or_insert(0);
                 *rank += 1;
@@ -363,35 +331,18 @@ impl Database {
     /// Returns (abilities_with_tokens, total_tokens).
     pub fn populate_ability_desc_tokens(&self) -> Result<(u64, u64)> {
         use crate::schema::desc_tokens::decode_desc_tokens;
-        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
+        let payloads = self.object_payloads("abl.%")?;
 
         let conn = self.conn.lock().unwrap();
-        let payloads: Vec<(String, Option<String>)> = {
-            let mut stmt = conn.prepare(
-                "SELECT fqn, json_extract(json, '$.payload_b64') \
-                 FROM objects WHERE fqn LIKE 'abl.%' AND is_canonical = 1",
-            )?;
-            let rows: Vec<(String, Option<String>)> = stmt
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
-                })?
-                .filter_map(|r| r.ok())
-                .collect();
-            rows
-        };
-
         let tx = conn.unchecked_transaction()?;
         let mut stmt = tx.prepare_cached(
             "INSERT OR REPLACE INTO ability_desc_tokens \
              (ability_fqn, token_index, token_type) VALUES (?1, ?2, ?3)",
         )?;
         let (mut abilities, mut tokens) = (0u64, 0u64);
-        for (fqn, payload_b64) in &payloads {
-            let Some(b64) = payload_b64 else { continue };
-            let Ok(payload) = BASE64.decode(b64) else {
-                continue;
-            };
-            let decoded = decode_desc_tokens(&payload);
+        for (_game_id, fqn, payload) in &payloads {
+            let decoded = decode_desc_tokens(payload);
             if decoded.is_empty() {
                 continue;
             }
