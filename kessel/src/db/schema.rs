@@ -75,6 +75,18 @@ pub(crate) fn create_core_tables(tx: &Transaction) -> Result<()> {
 
             CREATE INDEX IF NOT EXISTS idx_strings_id2 ON strings(id2);
 
+            -- guid -> string_id bridge for objects SEEN during extraction but
+            -- DROPPED (unnamed / non-whitelisted FQN) and so absent from
+            -- `objects`. Items reference such objects by guid (e.g. a relic's
+            -- proc-buff ability via field 0x2d7b8786) and the objects' effect
+            -- strings exist in `strings`; this table is the missing link from
+            -- the referencing item to that string. #308.
+            CREATE TABLE IF NOT EXISTS object_string_refs (
+                guid      TEXT PRIMARY KEY,
+                string_id INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_object_string_refs_sid ON object_string_refs(string_id);
+
             -- Typed views for convenience.
             -- Post-#23: kind='Quest' includes only qst.* objects.
             -- Mission phases (mpn.*) are kind='Phase' -- see `phases` view.
