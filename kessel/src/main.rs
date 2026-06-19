@@ -290,9 +290,12 @@ fn main() -> Result<()> {
                                 }
                                 if should_extract_object(&game_obj.fqn, args.unfiltered)
                                     && !game_obj.fqn.is_empty()
-                                    && db.insert_object(&game_obj).is_ok()
                                 {
-                                    total_objects += 1;
+                                    if db.insert_object(&game_obj).is_ok() {
+                                        total_objects += 1;
+                                    }
+                                } else {
+                                    capture_string_ref(&db, &game_obj);
                                 }
                             }
                         }
@@ -331,9 +334,12 @@ fn main() -> Result<()> {
                             }
                             if should_extract_object(&game_obj.fqn, args.unfiltered)
                                 && !game_obj.fqn.is_empty()
-                                && db.insert_object(&game_obj).is_ok()
                             {
-                                total_objects += 1;
+                                if db.insert_object(&game_obj).is_ok() {
+                                    total_objects += 1;
+                                }
+                            } else {
+                                capture_string_ref(&db, &game_obj);
                             }
                         }
                     }
@@ -912,10 +918,26 @@ fn process_pbuk(
         if should_extract_object(&game_obj.fqn, unfiltered) && !game_obj.fqn.is_empty() {
             db.insert_object(&game_obj)?;
             count += 1;
+        } else {
+            capture_string_ref(db, &game_obj);
         }
     }
 
     Ok(count)
+}
+
+/// Record a guid -> string_id bridge row for an object that was parsed but
+/// dropped from `objects` (unnamed / non-whitelisted FQN). Only objects that
+/// carry both a guid and a string_id are useful as a bridge (e.g. relic
+/// proc-buff abilities). Best-effort: a failed insert never aborts extraction.
+/// #308.
+fn capture_string_ref(db: &db::Database, game_obj: &schema::GameObject) {
+    if game_obj.guid.is_empty() {
+        return;
+    }
+    if let Some(sid) = game_obj.string_id {
+        let _ = db.insert_string_ref(&game_obj.guid, sid);
+    }
 }
 
 /// Score a candidate object: prefer those that extracted a string_id, then

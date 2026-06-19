@@ -125,6 +125,8 @@ pub struct Database {
     batch_size: usize,
     pending_objects: Mutex<Vec<PendingObject>>,
     pending_strings: Mutex<Vec<PendingString>>,
+    /// guid -> string_id for SEEN-but-DROPPED objects (#308 bridge).
+    pending_string_refs: Mutex<Vec<(String, u32)>>,
     grammar: Option<Arc<Grammar>>,
 }
 
@@ -166,6 +168,7 @@ impl Database {
             batch_size: 5000,
             pending_objects: Mutex::new(Vec::with_capacity(5000)),
             pending_strings: Mutex::new(Vec::with_capacity(5000)),
+            pending_string_refs: Mutex::new(Vec::with_capacity(5000)),
             grammar,
         })
     }
@@ -298,6 +301,23 @@ impl Database {
         Ok(())
     }
 
+    /// Queue a guid -> string_id bridge row for an object that was seen during
+    /// extraction but dropped (unnamed / non-whitelisted FQN, so absent from
+    /// `objects`). Lets items resolve referenced-by-guid effect objects (e.g.
+    /// relic proc buffs) to their `strings` rows. #308.
+    pub fn insert_string_ref(&self, guid: &str, string_id: u32) -> Result<()> {
+        let mut refs = self.pending_string_refs.lock().unwrap();
+        refs.push((guid.to_string(), string_id));
+
+        if refs.len() >= self.batch_size {
+            let batch: Vec<_> = refs.drain(..).collect();
+            drop(refs); // Release lock before flushing
+            self.flush_string_refs(batch)?;
+        }
+
+        Ok(())
+    }
+
     /// Flush pending objects to database in a single transaction
     fn flush_objects(&self, batch: Vec<PendingObject>) -> Result<()> {
         if batch.is_empty() {
@@ -388,6 +408,27 @@ impl Database {
         Ok(())
     }
 
+    /// Flush pending guid -> string_id bridge rows (#308). `INSERT OR IGNORE`
+    /// keeps the first guid seen (dropped objects carry a stable guid).
+    fn flush_string_refs(&self, batch: Vec<(String, u32)>) -> Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR IGNORE INTO object_string_refs (guid, string_id) VALUES (?1, ?2)",
+            )?;
+            for (guid, string_id) in &batch {
+                stmt.execute(params![guid, string_id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Flush any remaining pending inserts
     pub fn flush(&self) -> Result<()> {
         // Flush objects
@@ -403,6 +444,13 @@ impl Database {
             pending.drain(..).collect()
         };
         self.flush_strings(strings)?;
+
+        // Flush guid -> string_id bridge rows (#308)
+        let string_refs: Vec<_> = {
+            let mut pending = self.pending_string_refs.lock().unwrap();
+            pending.drain(..).collect()
+        };
+        self.flush_string_refs(string_refs)?;
 
         Ok(())
     }
