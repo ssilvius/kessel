@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::schema::item;
+use regex::Regex;
 
 impl Database {
     pub fn populate_item_tables(&self) -> Result<u64> {
@@ -444,10 +445,25 @@ impl Database {
                 })?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
 
+            // Resolve a proc-ability guid -> its (name, effect) strings. The
+            // proc-buff object is unnamed (absent from `objects`); the
+            // object_string_refs bridge (#308) maps guid->string_id. Fall back
+            // to objects.guid for the minority that ARE extracted. id1=0 is the
+            // buff name, id1=1 the effect description (literals survive cleaning).
+            let mut resolve = tx.prepare(
+                "WITH m(sid) AS (SELECT COALESCE( \
+                    (SELECT string_id FROM object_string_refs WHERE guid = ?1), \
+                    (SELECT string_id FROM objects WHERE guid = ?1 AND is_canonical = 1 LIMIT 1))) \
+                 SELECT \
+                   (SELECT text FROM strings, m WHERE id2 = m.sid AND id1 = 0 AND locale = 'en-us'), \
+                   (SELECT text FROM strings, m WHERE id2 = m.sid AND id1 = 1 AND locale = 'en-us')",
+            )?;
+
             let mut insert = tx.prepare_cached(
                 "INSERT OR REPLACE INTO relic_procs \
-                    (relic_fqn, relic_game_id, trigger_kind, proc_stat, proc_ability_guid) \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                    (relic_fqn, relic_game_id, trigger_kind, proc_stat, proc_ability_guid, \
+                     proc_buff_name, proc_chance_pct, proc_magnitude, proc_icd_seconds) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             )?;
             for (fqn, game_id, guid) in relics {
                 let trigger = relic_trigger_kind(&fqn);
@@ -461,7 +477,31 @@ impl Database {
                 if trigger.is_none() && stat.is_none() {
                     unclassified += 1;
                 }
-                insert.execute(params![fqn, game_id, trigger, stat, guid])?;
+                // Resolve the proc effect numbers when the relic references a
+                // proc ability we can reach (via the bridge or objects).
+                let (mut name, mut chance, mut mag, mut icd) = (None, None, None, None);
+                if let Some(ref g) = guid {
+                    let resolved = resolve
+                        .query_row([g], |r| {
+                            Ok((
+                                r.get::<_, Option<String>>(0)?,
+                                r.get::<_, Option<String>>(1)?,
+                            ))
+                        })
+                        .ok();
+                    if let Some((n, effect)) = resolved {
+                        name = n;
+                        if let Some(effect) = effect {
+                            let pe = parse_proc_effect(&effect);
+                            chance = pe.chance_pct;
+                            mag = pe.magnitude;
+                            icd = pe.icd_seconds;
+                        }
+                    }
+                }
+                insert.execute(params![
+                    fqn, game_id, trigger, stat, guid, name, chance, mag, icd
+                ])?;
                 rows += 1;
             }
             if unclassified > 0 {
@@ -516,6 +556,42 @@ pub(crate) fn relic_trigger_kind(fqn: &str) -> Option<&'static str> {
         Some("proc")
     } else {
         None
+    }
+}
+
+/// Structured numbers parsed from a relic proc-ability effect string.
+/// Every field is optional: an absent capture stays `None` (never guessed).
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct ProcEffect {
+    pub chance_pct: Option<i64>,
+    pub magnitude: Option<i64>,
+    pub icd_seconds: Option<i64>,
+}
+
+/// Parse the literal numbers from a relic proc effect description (STB id1=1).
+/// Recovers chance / magnitude / internal-cooldown -- all literals that survive
+/// `grammar.clean()`. The proc DURATION is a `<<N>>` template (its value lives
+/// in the unextracted proc-buff payload) and is intentionally NOT recovered
+/// here. Pure -- unit-tested. #308.
+pub(crate) fn parse_proc_effect(effect: &str) -> ProcEffect {
+    use std::sync::OnceLock;
+    static RES: OnceLock<(Regex, Regex, Regex)> = OnceLock::new();
+    let (chance_re, grant_re, icd_re) = RES.get_or_init(|| {
+        (
+            Regex::new(r"(\d+)%\s+chance").unwrap(),
+            Regex::new(r"grant\s+(\d+)\s+\w").unwrap(),
+            Regex::new(r"once every\s+(\d+)\s+second").unwrap(),
+        )
+    });
+    let cap1 = |re: &Regex| -> Option<i64> {
+        re.captures(effect)
+            .and_then(|c| c.get(1))
+            .and_then(|m| m.as_str().parse().ok())
+    };
+    ProcEffect {
+        chance_pct: cap1(chance_re),
+        magnitude: cap1(grant_re),
+        icd_seconds: cap1(icd_re),
     }
 }
 
@@ -639,21 +715,26 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
             -- (the proc/onuse ability the relic references via field
             -- 0x2d7b8786). See proc_stat() for the full set of stat labels.
             --
-            -- IMPORTANT static-data ceiling: the EXACT proc magnitude,
-            -- duration, and internal cooldown are NOT in the .tor archive.
-            -- Proc-ability objects are shared across rating tiers while the
-            -- proc value scales with the relic's rating at runtime, so the
-            -- number is computed live (the str.abl.* proc strings carry blank
-            -- duration/ICD tokens). The relic's STATIC equipped stats ARE
-            -- captured (in item_stats). So this table answers "what kind of
-            -- relic is this" deterministically; the live proc burst value is
-            -- client-side residual (cf. #111).
+            -- Proc magnitude / chance / internal-cooldown are parsed from the
+            -- proc-ability effect string (literals that survive grammar.clean,
+            -- e.g. "30% chance to grant 510 Power ... once every 20 seconds").
+            -- The relic reaches that string via proc_ability_guid -> the
+            -- object_string_refs bridge (the proc-buff object is unnamed and
+            -- absent from `objects`, so it is captured guid->string_id during
+            -- extraction) -> strings. (#308; overturns the old #242/#111
+            -- "client-side residual" verdict.) The proc DURATION remains NULL:
+            -- it is a <<N>> template whose value lives in the unextracted
+            -- proc-buff payload, not a literal in the text.
             CREATE TABLE IF NOT EXISTS relic_procs (
                 relic_fqn         TEXT PRIMARY KEY,
                 relic_game_id     TEXT,
                 trigger_kind      TEXT,   -- 'proc' (passive) or 'onuse' (activated); NULL if neither
                 proc_stat         TEXT,   -- see proc_stat(): power/critical/mastery/defense/healing/absorb/alacrity/damage, or NULL
-                proc_ability_guid TEXT    -- granted-ability guid (item field 0x2d7b8786)
+                proc_ability_guid TEXT,   -- granted-ability guid (item field 0x2d7b8786)
+                proc_buff_name    TEXT,   -- proc-buff ability name (strings id1=0), e.g. "Power Surge"
+                proc_chance_pct   INTEGER,-- "(\\d+)% chance" from the effect string
+                proc_magnitude    INTEGER,-- "grant (\\d+) <stat>" from the effect string
+                proc_icd_seconds  INTEGER -- "once every (\\d+) seconds" from the effect string
             );
             CREATE INDEX IF NOT EXISTS idx_relic_procs_stat ON relic_procs(proc_stat);
             -- Item set membership (#105 part 1).
@@ -696,6 +777,26 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
 mod tests {
     use super::*;
     use crate::db::testutil::*;
+
+    #[test]
+    fn parse_proc_effect_extracts_power_surge_literals() {
+        // The Power Surge relic proc string (abl.stb id2=755312, id1=1).
+        let e = parse_proc_effect(
+            "Healing an ally or performing a damaging attack on an enemy both have a 30% \
+             chance to grant 510 Power for seconds. This effect can only occur once every \
+             20 seconds, and shares this limit with similar effects.",
+        );
+        assert_eq!(e.chance_pct, Some(30));
+        assert_eq!(e.magnitude, Some(510));
+        assert_eq!(e.icd_seconds, Some(20));
+    }
+
+    #[test]
+    fn parse_proc_effect_missing_fields_are_none() {
+        let e = parse_proc_effect("On use, vents heat. No proc.");
+        assert_eq!(e, ProcEffect::default());
+    }
+
     #[test]
     fn relic_classifiers_cover_real_fqn_tails() {
         // Real relic FQN tails (from the v24 extract) -> expected classification.
