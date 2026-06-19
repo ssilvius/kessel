@@ -256,6 +256,15 @@ pub fn run_passes(db: &Database, ctx: &PassCtx) -> Result<PassCounts> {
     let gsf_ability_stats_count = timed!("gsf_ability_stats", db.populate_gsf_ability_stats())?;
     println!("  GSF ability stats: {}", gsf_ability_stats_count);
 
+    // Ability description tokens (#309): the type of each <<N>> token in an
+    // ability's description, from the payload SpecParam list.
+    let (desc_tok_abilities, desc_tok_total) =
+        timed!("ability_desc_tokens", db.populate_ability_desc_tokens())?;
+    println!(
+        "  Ability description tokens: {} abilities, {} tokens",
+        desc_tok_abilities, desc_tok_total
+    );
+
     // EPP appearance specs + FX specs (#183). UTF-16-LE XML files. epp
     // carries appearance action lists + fxSpec refs; fxspec carries node
     // class lists. The two tables JOIN via appearance_specs.fx_spec_refs

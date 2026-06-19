@@ -1,6 +1,7 @@
 //! Schema definitions for SWTOR game objects
 
 pub mod appearance;
+pub mod desc_tokens;
 pub mod discipline;
 pub mod effect_block;
 pub mod epp;

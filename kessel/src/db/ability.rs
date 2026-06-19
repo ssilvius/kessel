@@ -358,6 +358,54 @@ impl Database {
         Ok(count)
     }
 
+    /// Populate `ability_desc_tokens` -- the type of each `<<N>>` token in every
+    /// ability's description, decoded from the payload SpecParam list (#309).
+    /// Returns (abilities_with_tokens, total_tokens).
+    pub fn populate_ability_desc_tokens(&self) -> Result<(u64, u64)> {
+        use crate::schema::desc_tokens::decode_desc_tokens;
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
+        let conn = self.conn.lock().unwrap();
+        let payloads: Vec<(String, Option<String>)> = {
+            let mut stmt = conn.prepare(
+                "SELECT fqn, json_extract(json, '$.payload_b64') \
+                 FROM objects WHERE fqn LIKE 'abl.%' AND is_canonical = 1",
+            )?;
+            let rows: Vec<(String, Option<String>)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        };
+
+        let tx = conn.unchecked_transaction()?;
+        let mut stmt = tx.prepare_cached(
+            "INSERT OR REPLACE INTO ability_desc_tokens \
+             (ability_fqn, token_index, token_type) VALUES (?1, ?2, ?3)",
+        )?;
+        let (mut abilities, mut tokens) = (0u64, 0u64);
+        for (fqn, payload_b64) in &payloads {
+            let Some(b64) = payload_b64 else { continue };
+            let Ok(payload) = BASE64.decode(b64) else {
+                continue;
+            };
+            let decoded = decode_desc_tokens(&payload);
+            if decoded.is_empty() {
+                continue;
+            }
+            abilities += 1;
+            for t in decoded {
+                stmt.execute(params![fqn, t.index as i64, t.token_type])?;
+                tokens += 1;
+            }
+        }
+        drop(stmt);
+        tx.commit()?;
+        Ok((abilities, tokens))
+    }
+
     /// Populate `disciplines` and `discipline_abilities` from `abl.{class}.skill.{discipline}.*` FQNs.
     ///
     /// Discipline FQN structure:
@@ -2723,6 +2771,21 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
             );
             CREATE INDEX IF NOT EXISTS idx_gsf_ability_stats_label
                 ON gsf_ability_stats(label);
+            -- Ability description tokens (#309). One row per <<N>> token in an
+            -- ability's description, naming WHAT the token represents
+            -- (damage / healing / duration / rank / absorption / bindpoint /
+            -- stat), decoded from the payload SpecParam list via the client.gom
+            -- ablDescriptionTokenType enum. token_index is 0-based (<<1>> -> 0).
+            -- The numeric value for damage/healing tokens is runtime-scaled and
+            -- not stored here; this table resolves the durable token MEANING.
+            CREATE TABLE IF NOT EXISTS ability_desc_tokens (
+                ability_fqn TEXT NOT NULL,
+                token_index INTEGER NOT NULL,
+                token_type  TEXT NOT NULL,
+                PRIMARY KEY (ability_fqn, token_index)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ability_desc_tokens_type
+                ON ability_desc_tokens(token_type);
             -- Talent typed columns (#140) -- 7 props from Talent schema.
             CREATE TABLE IF NOT EXISTS talent_details (
                 fqn               TEXT PRIMARY KEY,
