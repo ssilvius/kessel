@@ -243,6 +243,7 @@ Localized text extracted from STB string tables.
 | `id1` | INTEGER | STB row ID. Different id1 values for the same id2 represent different text fields (name, description, etc.). |
 | `id2` | INTEGER | Links to `objects.string_id`. |
 | `text` | TEXT | Display text, cleaned of SWTOR template syntax by grammar rules. |
+| `text_raw` | TEXT | Raw STB text *before* `grammar.clean()`, preserving the `<<N>>` positional template tokens (e.g. `"grant 510 Power for <<1>> seconds"`). `NULL` when cleaning changed nothing (so identical strings aren't duplicated). Use it when you need the template structure — which `<<N>>` token sits where — that the cleaned `text` strips. (#307) |
 
 **Joining objects to strings:**
 
@@ -262,6 +263,24 @@ id1 mapping varies by object kind:
 | Quest (`qst.*` / `mpn.*`) | `id1 = 88` | step descriptions at `id1 = 258`, `259`, `274+` (range ~200–600) |
 
 The `quest_descriptions` view selects the first quest description string in the 200–600 range. For non-quest objects, join on `id1 = 0` for name and `id1 = 1` for description.
+
+### object_string_refs
+
+`guid` → `string_id` bridge for objects that were **seen during extraction but dropped** from `objects` (unnamed / non-whitelisted FQN). Items reference such objects by GUID — most importantly a relic's proc-buff ability via the granted-ability field `0x2d7b8786` — and those objects' effect strings exist in `strings`; this table is the missing link from the referencing item to that string. ~63k rows. (#308)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `guid` | TEXT PK | The dropped object's GUID (same encoding as `objects.guid`). |
+| `string_id` | INTEGER | Its `string_id` → join to `strings.id2`. |
+
+Resolve a granted/proc ability GUID to its string when the ability isn't in `objects`:
+
+```sql
+SELECT s.text
+FROM object_string_refs r
+JOIN strings s ON s.id2 = r.string_id AND s.id1 = 1 AND s.locale = 'en-us'
+WHERE r.guid = ?;   -- e.g. a relic's proc_ability_guid
+```
 
 ---
 
@@ -604,8 +623,24 @@ Coverage: 112/131 GSF abilities (85%). Uncovered abilities are passive auras who
 | `value` | REAL | Decoded f32 LE value. |
 | `confidence` | TEXT | `verified` / `guess` / `unknown`. |
 | `prop_id` | INTEGER | Raw u16 prop ID (kept for forensics). |
+| `payload_ordinal` | INTEGER | 0-based payload emission order of the record (distinct from per-label `rank`). The index a `<<N>>` description token would anchor to. (#309) |
 
 **Index:** `idx_gsf_ability_stats_label` on `(label)` for stat-keyed pivots.
+
+### ability_desc_tokens
+
+The **type** of each `<<N>>` positional token in an ability's description,
+decoded from the payload SpecParam list (GOM field `0x384b793a`, each entry's
+`ablDescriptionTokenType` enum). Names *what* each token represents — the
+durable static signal. 2,353 tokens across 1,753 abilities. (#309)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `ability_fqn` | TEXT | The ability's FQN. PK part 1. |
+| `token_index` | INTEGER | 0-based token index; `<<1>>` → 0. PK part 2. |
+| `token_type` | TEXT | `damage` / `healing` / `duration` / `rank` / `absorption` / `bindpoint` / `stat`. |
+
+**Caveat:** the numeric *value* of `damage` / `healing` tokens is level/stat-scaled and computed at runtime (an effect-graph coefficient, not a static literal) — only the token's *type* is stored. The grammar strips the bare `<<N>>` magnitude by design; this table records what it was.
 
 ### gsf_requisition_costs
 
@@ -828,8 +863,12 @@ Classifies each relic item by what kind of proc it is.
 | `trigger_kind` | TEXT | `proc` (passive on-hit/on-heal) or `onuse` (player-activated). NULL for cosmetic/MTX relics. |
 | `proc_stat` | TEXT | `power` / `critical` / `mastery` / `defense` / `healing` / `absorb` / `alacrity` / `damage`. NULL when unclassifiable. |
 | `proc_ability_guid` | TEXT | The granted proc/onuse ability guid (item field `0x2d7b8786`). |
+| `proc_buff_name` | TEXT | The proc-buff ability's name (e.g. `Power Surge`, `Healing Resonance`), resolved via the `object_string_refs` bridge. NULL when the relic grants no reachable proc ability. ~1,131 relics. (#308) |
+| `proc_chance_pct` | INTEGER | Proc chance, parsed from the effect string (e.g. `30` from "30% chance"). NULL when not stated. ~1,079 relics. |
+| `proc_magnitude` | INTEGER | Proc magnitude when the effect string states it as a literal. Usually NULL — most proc strings template it (`grant <<3>> Power`), and the value is rating-scaled at runtime (see ceiling note). |
+| `proc_icd_seconds` | INTEGER | Internal cooldown when stated as a literal; usually NULL (templated). |
 
-**Static-data ceiling (this is the #242 finding):** the exact proc magnitude, duration, and internal cooldown are **not in the .tor archive**. The 16 proc-ability objects are shared across all rating tiers, but the proc value scales with the relic's rating at runtime, so the number is computed live -- the `str.abl.*` proc effect strings carry blank duration/ICD tokens, confirming it. This table answers "what kind of relic is this" deterministically; the live proc burst is client-side residual (cf. #111). The relic's *static* equipped stats (Endurance, Power, etc.) are captured in `item_stats`.
+**Partial overturn of the #242 "static-data ceiling":** the proc-buff **name** and **chance** ARE recoverable (the proc-buff objects are unnamed and dropped from `objects`, but the `object_string_refs` bridge links the relic's `proc_ability_guid` to its `strings` entry, and chance is a literal in the effect text). What remains genuinely runtime-computed is the proc **magnitude / duration / ICD**: these are `<<N>>` template tokens whose values are rating-scaled and live in the proc-buff payload, not static literals — so they stay NULL by design (cf. #111). The relic's *static* equipped stats (Endurance, Power, etc.) are in `item_stats`.
 
 ---
 
