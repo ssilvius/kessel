@@ -59,7 +59,9 @@ pub fn decode_desc_tokens(payload: &[u8]) -> Vec<DescToken> {
     };
     let mut out = Vec::with_capacity(list.len());
     for (i, entry) in list.iter().enumerate() {
-        let Some(type_idx) = entry.embedded_field(TOKEN_TYPE_FIELD).and_then(GomValue::as_i64)
+        let Some(type_idx) = entry
+            .embedded_field(TOKEN_TYPE_FIELD)
+            .and_then(GomValue::as_i64)
         else {
             continue;
         };
@@ -88,8 +90,14 @@ mod tests {
 
     #[test]
     fn strip_prefix_lowercases() {
-        assert_eq!(strip_token_prefix("ablDescriptionTokenTypeDuration"), "duration");
-        assert_eq!(strip_token_prefix("ablDescriptionTokenTypeDamage"), "damage");
+        assert_eq!(
+            strip_token_prefix("ablDescriptionTokenTypeDuration"),
+            "duration"
+        );
+        assert_eq!(
+            strip_token_prefix("ablDescriptionTokenTypeDamage"),
+            "damage"
+        );
         assert_eq!(strip_token_prefix("weird"), "weird");
     }
 }

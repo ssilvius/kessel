@@ -52,11 +52,19 @@ fn dump(v: &GomValue, path: &str, depth: usize) {
             println!("  {path} = f32 {f}{flag}");
         }
         GomValue::I64(n) | GomValue::Enum(n) => {
-            let flag = if *n == 3 || *n == 200 { "  <== ORACLE" } else { "" };
+            let flag = if *n == 3 || *n == 200 {
+                "  <== ORACLE"
+            } else {
+                ""
+            };
             println!("  {path} = int {n}{flag}");
         }
         GomValue::U64(n) => {
-            let flag = if *n == 3 || *n == 200 { "  <== ORACLE" } else { "" };
+            let flag = if *n == 3 || *n == 200 {
+                "  <== ORACLE"
+            } else {
+                ""
+            };
             println!("  {path} = u64 {n}{flag}");
         }
         _ => {}
@@ -92,7 +100,10 @@ fn main() -> Result<()> {
         println!("  text_raw: {}", raw.as_deref().unwrap_or("(none)"));
         match read_object_fields(&payload) {
             Ok(obj) => {
-                if let Some(list) = obj.embedded_field(SPECPARAM_LIST).and_then(GomValue::as_list) {
+                if let Some(list) = obj
+                    .embedded_field(SPECPARAM_LIST)
+                    .and_then(GomValue::as_list)
+                {
                     for (i, entry) in list.iter().enumerate() {
                         let val = entry.embedded_field(SPECPARAM_VALUE);
                         println!("  SpecParam[{i}] (<<{}>>) = {val:?}", i + 1);
