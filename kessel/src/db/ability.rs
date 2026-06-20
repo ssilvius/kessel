@@ -300,11 +300,11 @@ impl Database {
         )?;
 
         let mut count: u64 = 0;
-        for (game_id, _fqn, payload) in &payloads {
+        for (game_id, fqn, payload) in &payloads {
             let mut rank_per_label: std::collections::HashMap<String, i64> =
                 std::collections::HashMap::new();
             for rec in decode_gsf_ability_stats(payload) {
-                let label = dict.ability_label(rec.prop_id);
+                let label = dict.ability_label_for(rec.prop_id, fqn);
                 let rank = rank_per_label.entry(label.label.clone()).or_insert(0);
                 *rank += 1;
                 stmt.execute(params![
