@@ -30,12 +30,24 @@ pub struct StatDictionary {
     /// the parent talent (e.g. 0x40 is normally `cooldown_delta_seconds` but
     /// `minor_sensors.com_range.*` repurposes it as `comm_range_units`).
     pub talent_stat_overrides: Vec<TalentStatOverride>,
+    /// FQN-prefix overrides for `abl.spvp.*` prop_ids whose meaning depends on
+    /// the ability (e.g. 0x0403 is a vacuous `scaling_factor` default for most
+    /// abilities but a real `weapon_cooldown_seconds` on cooldown-gated drone
+    /// weapons). #301.
+    pub ability_stat_overrides: Vec<AbilityStatOverride>,
 }
 
 #[derive(Debug, Clone)]
 pub struct TalentStatOverride {
     pub fqn_prefix: String,
     pub stat_id: u8,
+    pub label: StatLabel,
+}
+
+#[derive(Debug, Clone)]
+pub struct AbilityStatOverride {
+    pub fqn_prefix: String,
+    pub prop_id: u16,
     pub label: StatLabel,
 }
 
@@ -55,6 +67,19 @@ impl StatDictionary {
             ground_ability_props: HashMap<String, Entry>,
             #[serde(default)]
             talent_stat_overrides: Vec<OverrideEntry>,
+            #[serde(default)]
+            ability_stat_overrides: Vec<AbilityOverrideEntry>,
+        }
+        #[derive(serde::Deserialize)]
+        struct AbilityOverrideEntry {
+            fqn_prefix: String,
+            prop_id: String,
+            label: String,
+            unit: String,
+            confidence: String,
+            #[serde(default)]
+            #[allow(dead_code)]
+            notes: Option<String>,
         }
         #[derive(serde::Deserialize)]
         struct Entry {
@@ -140,11 +165,27 @@ impl StatDictionary {
         // sibling if any future entries overlap.
         talent_stat_overrides.sort_by_key(|ov| std::cmp::Reverse(ov.fqn_prefix.len()));
 
+        let mut ability_stat_overrides = Vec::with_capacity(file.ability_stat_overrides.len());
+        for entry in file.ability_stat_overrides {
+            let prop_id = parse_hex(&entry.prop_id)? as u16;
+            ability_stat_overrides.push(AbilityStatOverride {
+                fqn_prefix: entry.fqn_prefix,
+                prop_id,
+                label: StatLabel {
+                    label: entry.label,
+                    unit: entry.unit,
+                    confidence: entry.confidence,
+                },
+            });
+        }
+        ability_stat_overrides.sort_by_key(|ov| std::cmp::Reverse(ov.fqn_prefix.len()));
+
         Ok(Self {
             talent_stats,
             ability_stats,
             ground_ability_props,
             talent_stat_overrides,
+            ability_stat_overrides,
         })
     }
 
@@ -187,6 +228,20 @@ impl StatDictionary {
             })
     }
 
+    /// FQN-aware label lookup for `abl.spvp.*`. Consults `ability_stat_overrides`
+    /// first (so a prop_id whose meaning is FQN-dependent -- e.g. 0x0403 acting
+    /// as a real weapon cooldown on drone weapons rather than the vacuous
+    /// scaling_factor default -- ships with the right label) then falls back to
+    /// the default `ability_label` mapping. #301.
+    pub fn ability_label_for(&self, prop_id: u16, fqn: &str) -> StatLabel {
+        for ov in &self.ability_stat_overrides {
+            if ov.prop_id == prop_id && fqn.starts_with(&ov.fqn_prefix) {
+                return ov.label.clone();
+            }
+        }
+        self.ability_label(prop_id)
+    }
+
     /// Look up a label for an `abl.*` (ground) prop_id.
     pub fn ground_ability_label(&self, prop_id: u16) -> StatLabel {
         self.ground_ability_props
@@ -219,6 +274,34 @@ mod tests {
         assert_eq!(label.label, "cooldown_delta_seconds");
         assert_eq!(label.unit, "s");
         assert_eq!(label.confidence, "verified");
+    }
+
+    #[test]
+    fn ability_0x0403_override_only_on_drone_weapons() {
+        let dict = StatDictionary::from_embedded().unwrap();
+        // Drone weapons: 0x0403 is the weapon cooldown.
+        assert_eq!(
+            dict.ability_label_for(0x0403, "abl.spvp.drone.sentry_sniper.railgun")
+                .label,
+            "weapon_cooldown_seconds"
+        );
+        assert_eq!(
+            dict.ability_label_for(0x0403, "abl.spvp.drone.sentry_missile.missile")
+                .label,
+            "weapon_cooldown_seconds"
+        );
+        // Everything else keeps the default vacuous scaling_factor.
+        assert_eq!(
+            dict.ability_label_for(0x0403, "abl.spvp.shield.distortion_field")
+                .label,
+            "scaling_factor"
+        );
+        // A non-overridden prop_id is unaffected by FQN.
+        assert_eq!(
+            dict.ability_label_for(0x0402, "abl.spvp.drone.sentry_sniper.railgun")
+                .label,
+            "cooldown_seconds"
+        );
     }
 
     #[test]

@@ -10,7 +10,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use kessel::gom_reader::{read_object_fields, GomValue};
 use rusqlite::{Connection, OpenFlags};
 
-const DB: &str = "/Users/seansilvius/swtor/data/spice-7.9.a-v5.sqlite";
+const DB: &str = "/Users/seansilvius/swtor/data/spice-7.9.a-v7.sqlite";
 const FQNS: &[&str] = &[
     "abl.agent.evasion",
     "abl.agent.corrosive_dart",
@@ -20,56 +20,6 @@ const FQNS: &[&str] = &[
 
 /// SpecParam list field + per-entry value field (located via the evasion oracle).
 const SPECPARAM_LIST: u32 = 0x384b_793a;
-const SPECPARAM_VALUE: u32 = 0x384b_7939;
-
-fn dump(v: &GomValue, path: &str, depth: usize) {
-    if depth > 6 {
-        return;
-    }
-    match v {
-        GomValue::Embedded(fields) => {
-            for (id, val) in fields {
-                let p = format!("{path}.{:08x}", *id as u32);
-                dump(val, &p, depth + 1);
-            }
-        }
-        GomValue::List(items) => {
-            for (i, item) in items.iter().enumerate() {
-                dump(item, &format!("{path}[{i}]"), depth + 1);
-            }
-        }
-        GomValue::Map(entries) => {
-            for (k, val) in entries {
-                dump(val, &format!("{path}{{{k:?}}}"), depth + 1);
-            }
-        }
-        GomValue::F32(f) => {
-            let flag = if (*f - 3.0).abs() < 0.01 || (*f - 200.0).abs() < 0.01 {
-                "  <== ORACLE"
-            } else {
-                ""
-            };
-            println!("  {path} = f32 {f}{flag}");
-        }
-        GomValue::I64(n) | GomValue::Enum(n) => {
-            let flag = if *n == 3 || *n == 200 {
-                "  <== ORACLE"
-            } else {
-                ""
-            };
-            println!("  {path} = int {n}{flag}");
-        }
-        GomValue::U64(n) => {
-            let flag = if *n == 3 || *n == 200 {
-                "  <== ORACLE"
-            } else {
-                ""
-            };
-            println!("  {path} = u64 {n}{flag}");
-        }
-        _ => {}
-    }
-}
 
 fn main() -> Result<()> {
     let conn = Connection::open_with_flags(DB, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -105,8 +55,14 @@ fn main() -> Result<()> {
                     .and_then(GomValue::as_list)
                 {
                     for (i, entry) in list.iter().enumerate() {
-                        let val = entry.embedded_field(SPECPARAM_VALUE);
-                        println!("  SpecParam[{i}] (<<{}>>) = {val:?}", i + 1);
+                        println!("  SpecParam[{i}] (<<{}>>):", i + 1);
+                        if let GomValue::Embedded(fields) = entry {
+                            for (id, v) in fields {
+                                println!("      field {:08x} = {v:?}", *id as u32);
+                            }
+                        } else {
+                            println!("      {entry:?}");
+                        }
                     }
                 } else {
                     println!("  (no SpecParam list field {SPECPARAM_LIST:08x})");
@@ -117,6 +73,3 @@ fn main() -> Result<()> {
     }
     Ok(())
 }
-
-#[allow(dead_code)]
-fn unused() {}

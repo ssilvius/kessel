@@ -529,3 +529,27 @@ notes      = "Class-context-dependent; animation/effect timing"
 label      = "scaling_coefficient"
 unit       = "ratio"
 confidence = "guess"
+
+
+# --- abl.spvp.* prop_id FQN-prefix overrides (#301) ---
+# Some prop_ids carry context-dependent semantics: the default label is right
+# for the common case, but a specific ability family repurposes the slot. When
+# the ability FQN starts with `fqn_prefix`, the populate function replaces the
+# default `ability_stats` label with the override below (matched by SHAPE/FQN,
+# not a single value -- ids drift across patches).
+
+[[ability_stat_overrides]]
+fqn_prefix = "abl.spvp.drone.sentry_sniper.railgun"
+prop_id    = "0x0403"
+label      = "weapon_cooldown_seconds"
+unit       = "s"
+confidence = "verified"
+notes      = "0x0403=2.0 matches the sentry-sniper summon text '...has a 2 second cooldown' exactly (distinct from 0x0402=180 drone lifetime and 0x041a=4.0 charge time). The default 0x0403 label is the vacuous `scaling_factor` (1.0 on 53 non-weapon abilities); this override scopes the real weapon-cooldown meaning to the cooldown-gated drone weapon."
+
+[[ability_stat_overrides]]
+fqn_prefix = "abl.spvp.drone.sentry_missile.missile"
+prop_id    = "0x0403"
+label      = "weapon_cooldown_seconds"
+unit       = "s"
+confidence = "guess"
+notes      = "0x0403=12.0; same compound-record family as the sentry_sniper railgun's 0x0403 cooldown, but the 12s value is unconfirmed by any description number -- guess. Both drone weapons are the only abilities whose 0x0403 carries a non-1.0 value."
