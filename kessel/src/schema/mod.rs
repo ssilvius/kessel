@@ -2,6 +2,7 @@
 
 pub mod appearance;
 pub mod desc_tokens;
+pub mod description_anchor;
 pub mod discipline;
 pub mod effect_block;
 pub mod epp;
