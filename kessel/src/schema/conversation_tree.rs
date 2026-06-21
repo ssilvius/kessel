@@ -30,30 +30,64 @@ pub struct DialogueLine {
     /// The `str.cnv` base FQN the line's text lives under (e.g.
     /// `str.cnv.alliance.nar_shaddaa.misc.public_taxi`).
     pub line_ref: String,
+    /// The `CF E0`-prefixed actor/ref GUIDs (16-char hex) in this node's byte
+    /// range, in order -- the speaker/branch-ref candidates (#286/#287). The
+    /// one resolving to a kind=Npc object is the speaker; one resolving to no
+    /// Npc is the per-conversation player pseudo-actor.
+    pub actor_guids: Vec<String>,
 }
 
 /// Decode every dialogue line from a conversation NODE payload, in byte order
 /// (== dialogue order). Malformed nodes are skipped, not fatal.
 pub fn decode_dialogue_lines(payload: &[u8]) -> Vec<DialogueLine> {
-    let mut out = Vec::new();
-    let mut seq = 0u32;
+    // Collect line-node marker offsets first so each node's byte range
+    // [pos, next) is known for the per-node actor-GUID scan.
+    let mut positions = Vec::new();
     let mut w = 0usize;
     while w + LINE_NODE_MARKER.len() <= payload.len() {
         if payload[w..w + LINE_NODE_MARKER.len()] == LINE_NODE_MARKER {
-            if let Some((line_id, line_ref)) = decode_node(payload, w) {
-                out.push(DialogueLine {
-                    seq,
-                    line_id,
-                    line_ref,
-                });
-                seq += 1;
-            }
+            positions.push(w);
             w += LINE_NODE_MARKER.len();
         } else {
             w += 1;
         }
     }
+
+    let mut out = Vec::new();
+    let mut seq = 0u32;
+    for (i, &pos) in positions.iter().enumerate() {
+        let Some((line_id, line_ref)) = decode_node(payload, pos) else {
+            continue;
+        };
+        let end = positions.get(i + 1).copied().unwrap_or(payload.len());
+        out.push(DialogueLine {
+            seq,
+            line_id,
+            line_ref,
+            actor_guids: scan_e0_guids(payload, pos, end),
+        });
+        seq += 1;
+    }
     out
+}
+
+/// Collect the `CF E0`-prefixed 8-byte GUIDs (as 16-char uppercase hex) within
+/// `[start, end)` -- the node's speaker/branch-ref candidates.
+fn scan_e0_guids(payload: &[u8], start: usize, end: usize) -> Vec<String> {
+    let mut guids = Vec::new();
+    let upper = end.min(payload.len()).saturating_sub(8);
+    let mut w = start;
+    while w < upper {
+        if payload[w] == 0xCF && payload[w + 1] == 0xE0 {
+            // The loop bound guarantees 8 bytes, but no unwrap in library code:
+            // skip cleanly on the impossible short slice.
+            if let Ok(arr) = <[u8; 8]>::try_from(&payload[w + 1..w + 9]) {
+                guids.push(format!("{:016X}", u64::from_be_bytes(arr)));
+            }
+        }
+        w += 1;
+    }
+    guids
 }
 
 /// Decode the (line_id, str.cnv ref) of the node beginning at `pos` (the marker
@@ -116,5 +150,75 @@ mod tests {
     #[test]
     fn no_marker_yields_nothing() {
         assert!(decode_dialogue_lines(b"no conversation markers here").is_empty());
+    }
+
+    #[test]
+    fn captures_node_actor_guid() {
+        let mut p = vec![
+            0xCF, 0x40, 0x00, 0x00, 0x11, 0x5C, 0xE8, 0x74, 0x88, TAG_INT64, 0xC9, 0x03, 0xE8,
+            0x01, TAG_STRING, 0x03,
+        ];
+        p.extend_from_slice(b"abc");
+        // a CF E0 actor GUID within the node's byte range
+        p.extend_from_slice(&[0xCF, 0xE0, 0x00, 0x69, 0x4F, 0x37, 0x29, 0x0D, 0xFF]);
+        let lines = decode_dialogue_lines(&p);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].actor_guids, vec!["E000694F37290DFF".to_string()]);
+    }
+
+    /// A line node with no `CF E0` bytes yields an empty actor list.
+    fn line_node(line_ref: &[u8]) -> Vec<u8> {
+        let mut p = vec![
+            0xCF,
+            0x40,
+            0x00,
+            0x00,
+            0x11,
+            0x5C,
+            0xE8,
+            0x74,
+            0x88,
+            TAG_INT64,
+            0xC9,
+            0x03,
+            0xE8,
+            0x01,
+            TAG_STRING,
+            line_ref.len() as u8,
+        ];
+        p.extend_from_slice(line_ref);
+        p
+    }
+
+    #[test]
+    fn no_actor_guid_yields_empty() {
+        let lines = decode_dialogue_lines(&line_node(b"abc"));
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].actor_guids.is_empty());
+    }
+
+    #[test]
+    fn two_actor_guids_captured_in_order() {
+        let mut p = line_node(b"abc");
+        p.extend_from_slice(&[0xCF, 0xE0, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+        p.extend_from_slice(&[0xCF, 0xE0, 0x00, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+        let lines = decode_dialogue_lines(&p);
+        assert_eq!(
+            lines[0].actor_guids,
+            vec![
+                "E000010203040506".to_string(),
+                "E000AABBCCDDEEFF".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn guid_at_payload_boundary_is_captured() {
+        // the CF E0 GUID occupies the final 9 bytes (CF marker at len-9), the
+        // last byte exactly at payload end -- still captured, no overrun panic.
+        let mut p = line_node(b"abc");
+        p.extend_from_slice(&[0xCF, 0xE0, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+        let lines = decode_dialogue_lines(&p);
+        assert_eq!(lines[0].actor_guids, vec!["E000112233445566".to_string()]);
     }
 }

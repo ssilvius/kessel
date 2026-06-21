@@ -460,13 +460,26 @@ impl Database {
             rows
         };
 
+        // guid -> Npc fqn, to resolve each line's actor GUID to its speaker (#286).
+        let npc_by_guid: std::collections::HashMap<String, String> = {
+            let mut stmt = conn
+                .prepare("SELECT guid, fqn FROM objects WHERE kind = 'Npc' AND is_canonical = 1")?;
+            let map: std::collections::HashMap<String, String> = stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect();
+            map
+        };
+
         let tx = conn.unchecked_transaction()?;
         let mut stmt = tx.prepare_cached(
             "INSERT OR REPLACE INTO conversation_dialogue \
-             (cnv_fqn, seq, line_id, line_ref) VALUES (?1, ?2, ?3, ?4)",
+             (cnv_fqn, seq, line_id, line_ref, speaker_guid, speaker_npc_fqn, speaker_role) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         )?;
 
-        let (mut conversations, mut lines) = (0u64, 0u64);
+        let (mut conversations, mut lines, mut multi_npc, mut unresolved) =
+            (0u64, 0u64, 0u64, 0u64);
         for (fqn, b64) in &convs {
             let Ok(payload) = BASE64.decode(b64) else {
                 continue;
@@ -477,11 +490,42 @@ impl Database {
             }
             conversations += 1;
             for line in decoded {
+                // Speaker = the first actor GUID resolving to an Npc; the rest
+                // are branch/condition/quest refs (and the player pseudo-actor,
+                // which resolves to no Npc). Branch targets live inside the
+                // 8FA60987 List, not as bare CF E0 emissions, so first-wins
+                // targets the actor -- but flag the multi-Npc case so the
+                // assumption stays auditable across patches.
+                let npc_matches: Vec<(&String, &String)> = line
+                    .actor_guids
+                    .iter()
+                    .filter_map(|g| npc_by_guid.get(g).map(|fqn| (g, fqn)))
+                    .collect();
+                if npc_matches.len() > 1 {
+                    if multi_npc < 5 {
+                        eprintln!(
+                            "  [warn] {fqn} seq {}: {} Npc-resolving actor GUIDs (first wins)",
+                            line.seq,
+                            npc_matches.len()
+                        );
+                    }
+                    multi_npc += 1;
+                }
+                let (speaker_guid, speaker_npc_fqn, speaker_role) = match npc_matches.first() {
+                    Some((g, npc_fqn)) => (Some((*g).clone()), Some((*npc_fqn).clone()), "npc"),
+                    None => {
+                        unresolved += 1;
+                        (None, None, "player")
+                    }
+                };
                 stmt.execute(params![
                     fqn,
                     line.seq as i64,
                     line.line_id as i64,
                     line.line_ref,
+                    speaker_guid,
+                    speaker_npc_fqn,
+                    speaker_role,
                 ])?;
                 lines += 1;
             }
@@ -489,6 +533,13 @@ impl Database {
 
         drop(stmt);
         tx.commit()?;
+        if multi_npc > 0 {
+            eprintln!(
+                "  [warn] {multi_npc} dialogue lines had >1 Npc-resolving actor GUID (first-wins applied)"
+            );
+        }
+        // Unresolved (player/non-NPC) line count, per the #286 acceptance note.
+        eprintln!("  Conversation dialogue: {unresolved} non-NPC (player) lines of {lines}");
         Ok((conversations, lines))
     }
 }
@@ -602,14 +653,24 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
             --   JOIN strings s ON s.id1 = d.line_id
             --                  AND s.fqn LIKE d.line_ref || '.%'
             --                  AND s.locale = 'en-us'
+            -- speaker_* (#286): each line node carries CF E0 actor/ref GUIDs;
+            -- the one resolving to a kind=Npc object is the speaker.
+            -- speaker_role='npc' when an Npc speaker resolved (speaker_npc_fqn
+            -- set); 'player' otherwise -- the non-NPC lines, i.e. the player
+            -- character's lines/choices (the player pseudo-actor resolves to no
+            -- Npc; #287 refines which of these are explicit player options).
             CREATE TABLE IF NOT EXISTS conversation_dialogue (
-                cnv_fqn  TEXT NOT NULL,
-                seq      INTEGER NOT NULL,
-                line_id  INTEGER NOT NULL,
-                line_ref TEXT NOT NULL,
+                cnv_fqn         TEXT NOT NULL,
+                seq             INTEGER NOT NULL,
+                line_id         INTEGER NOT NULL,
+                line_ref        TEXT NOT NULL,
+                speaker_guid    TEXT,
+                speaker_npc_fqn TEXT,
+                speaker_role    TEXT NOT NULL DEFAULT 'player',
                 PRIMARY KEY (cnv_fqn, seq)
             );
             CREATE INDEX IF NOT EXISTS idx_cnv_dialogue_line ON conversation_dialogue(line_id);
+            CREATE INDEX IF NOT EXISTS idx_cnv_dialogue_speaker ON conversation_dialogue(speaker_npc_fqn);
         "#,
     )?;
 
@@ -748,5 +809,87 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM conversation_lines", [], |r| r.get(0))
             .unwrap();
         assert_eq!(total, 1, "non-cnv strings excluded from the view");
+    }
+
+    /// Build a DB with one Conversation whose synthetic NODE payload has two
+    /// dialogue lines -- the first carries an Npc actor GUID, the second none --
+    /// plus the matching Npc object and a conversation_npcs row.
+    fn speaker_test_db() -> Database {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        let path = temp_db_path("cnv_speaker");
+        let db = Database::with_grammar(&path, None).unwrap();
+        db.init_schema().unwrap();
+        // node 1: line 1000 + Npc actor GUID E000694F37290DFF; node 2: line 1001, no actor
+        let mut payload = vec![
+            0xCF, 0x40, 0x00, 0x00, 0x11, 0x5C, 0xE8, 0x74, 0x88, 0x02, 0xC9, 0x03, 0xE8, 0x01,
+            0x06, 0x03, b'a', b'b', b'c', 0xCF, 0xE0, 0x00, 0x69, 0x4F, 0x37, 0x29, 0x0D, 0xFF,
+        ];
+        payload.extend_from_slice(&[
+            0xCF, 0x40, 0x00, 0x00, 0x11, 0x5C, 0xE8, 0x74, 0x88, 0x02, 0xC9, 0x03, 0xE9, 0x01,
+            0x06, 0x03, b'd', b'e', b'f',
+        ]);
+        let json = format!("{{\"payload_b64\":\"{}\"}}", BASE64.encode(&payload));
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, is_canonical, json) \
+                 VALUES ('c1','s','p','gc','cnv.test','Conversation',1,?1)",
+                params![json],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO objects (game_id, stable_id, payload_hash, guid, fqn, kind, is_canonical, json) \
+                 VALUES ('n1','s','p','E000694F37290DFF','npc.test.speaker','Npc',1,'{}')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO conversation_npcs (cnv_fqn, npc_fqn) VALUES ('cnv.test','npc.test.speaker')",
+                [],
+            )
+            .unwrap();
+        }
+        db
+    }
+
+    #[test]
+    fn dialogue_speaker_marks_player_vs_npc() {
+        let db = speaker_test_db();
+        let (_convs, lines) = db.populate_conversation_dialogue().unwrap();
+        assert_eq!(lines, 2);
+        let conn = db.conn.lock().unwrap();
+        let npc: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM conversation_dialogue WHERE speaker_role='npc'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let player: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM conversation_dialogue WHERE speaker_role='player'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(npc, 1, "the line with an Npc actor GUID");
+        assert_eq!(player, 1, "the line with no Npc actor");
+    }
+
+    #[test]
+    fn dialogue_npc_speaker_resolves_to_a_conversation_npc() {
+        let db = speaker_test_db();
+        db.populate_conversation_dialogue().unwrap();
+        let conn = db.conn.lock().unwrap();
+        let resolved: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM conversation_dialogue d \
+                 JOIN conversation_npcs n ON n.cnv_fqn = d.cnv_fqn AND n.npc_fqn = d.speaker_npc_fqn \
+                 WHERE d.speaker_role = 'npc'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(resolved, 1, "npc speaker fqn appears in conversation_npcs");
     }
 }
