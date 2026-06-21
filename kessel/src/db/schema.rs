@@ -87,6 +87,27 @@ pub(crate) fn create_core_tables(tx: &Transaction) -> Result<()> {
             );
             CREATE INDEX IF NOT EXISTS idx_object_string_refs_sid ON object_string_refs(string_id);
 
+            -- Typed numeric facts parsed from each object's id1=1 description
+            -- string (description-anchoring epic #322/#324). Domain-agnostic
+            -- landing surface: the displayed values (durations, percentages,
+            -- ranges, counts, named-stat magnitudes) are literals in the
+            -- localized text; `<<N>>` template tokens are recorded with their
+            -- ordinal (value filled later from the payload_ordinal substrate or
+            -- left runtime). One row per parsed fact, in source order.
+            CREATE TABLE IF NOT EXISTS description_values (
+                object_game_id TEXT NOT NULL,    -- objects.game_id of the described object
+                fqn            TEXT NOT NULL,     -- denormalized for query convenience
+                string_id      INTEGER NOT NULL,  -- strings.id2 (id1=1) parsed from
+                seq            INTEGER NOT NULL,   -- 0-based order of the fact in the description
+                kind           TEXT NOT NULL,     -- percent|duration_seconds|range_meters|count|magnitude|template
+                value          REAL,              -- normalized literal value; NULL for template
+                label          TEXT,              -- stat/unit word ("power","seconds","chance")
+                token_ordinal  INTEGER,           -- N for a <<N>> template fact, else NULL
+                PRIMARY KEY (object_game_id, string_id, seq)
+            );
+            CREATE INDEX IF NOT EXISTS idx_description_values_fqn ON description_values(fqn);
+            CREATE INDEX IF NOT EXISTS idx_description_values_kind ON description_values(kind);
+
             -- Typed views for convenience.
             -- Post-#23: kind='Quest' includes only qst.* objects.
             -- Mission phases (mpn.*) are kind='Phase' -- see `phases` view.

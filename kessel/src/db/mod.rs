@@ -14,6 +14,7 @@ pub(crate) use crate::stb::StbEntry;
 mod ability;
 mod cnv;
 mod conquest;
+mod description_values;
 mod item;
 mod npc;
 pub mod passes;

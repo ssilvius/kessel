@@ -7,12 +7,6 @@
 //! literals (and `<<N>>` template ordinals) into typed [`AnchoredFact`]s; the
 //! populate pass (#324) and the per-domain promotions (#325/#326) anchor them
 //! to records. Pure and deterministic -- no DB, no I/O.
-//!
-//! Enabler module: the public API below is consumed by the `description_values`
-//! populate pass (#324). Until that lands there is no in-crate caller, so the
-//! binary target would flag the API as dead -- allow it here and drop the allow
-//! when #324 wires the consumer.
-#![allow(dead_code)]
 
 use regex::Regex;
 use std::sync::OnceLock;
