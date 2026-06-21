@@ -90,7 +90,11 @@ fn dump(v: &GomValue, depth: usize, indent: usize) {
             for (id, fv) in fields {
                 let low = *id as u32;
                 println!("{pad}.{low:08X} = {}", summ(fv));
-                if depth > 0 && matches!(fv, GomValue::Embedded(_) | GomValue::List(_) | GomValue::Map(_))
+                if depth > 0
+                    && matches!(
+                        fv,
+                        GomValue::Embedded(_) | GomValue::List(_) | GomValue::Map(_)
+                    )
                 {
                     dump(fv, depth - 1, indent + 1);
                 }
@@ -103,7 +107,12 @@ fn dump(v: &GomValue, depth: usize, indent: usize) {
                     break;
                 }
                 println!("{pad}[{i}] = {}", summ(it));
-                if depth > 0 && matches!(it, GomValue::Embedded(_) | GomValue::List(_) | GomValue::Map(_)) {
+                if depth > 0
+                    && matches!(
+                        it,
+                        GomValue::Embedded(_) | GomValue::List(_) | GomValue::Map(_)
+                    )
+                {
                     dump(it, depth - 1, indent + 1);
                 }
             }
@@ -115,7 +124,12 @@ fn dump(v: &GomValue, depth: usize, indent: usize) {
                     break;
                 }
                 println!("{pad}{} => {}", summ(k), summ(val));
-                if depth > 0 && matches!(val, GomValue::Embedded(_) | GomValue::List(_) | GomValue::Map(_)) {
+                if depth > 0
+                    && matches!(
+                        val,
+                        GomValue::Embedded(_) | GomValue::List(_) | GomValue::Map(_)
+                    )
+                {
                     dump(val, depth - 1, indent + 1);
                 }
             }
@@ -150,7 +164,13 @@ fn hexdump(bytes: &[u8], base: usize) {
         let hex: String = chunk.iter().map(|b| format!("{b:02X} ")).collect();
         let asc: String = chunk
             .iter()
-            .map(|&b| if (32..127).contains(&b) { b as char } else { '.' })
+            .map(|&b| {
+                if (32..127).contains(&b) {
+                    b as char
+                } else {
+                    '.'
+                }
+            })
             .collect();
         println!("  {:06x}  {hex:<48}  {asc}", base + i);
     }
@@ -231,7 +251,11 @@ fn main() -> Result<()> {
 
             println!("\n\n############################################################");
             println!("# {node_fqn}");
-            println!("#   path={path}  payload={} bytes (PROT total {})", data.len() - e, data.len());
+            println!(
+                "#   path={path}  payload={} bytes (PROT total {})",
+                data.len() - e,
+                data.len()
+            );
             println!("############################################################");
 
             let payload = &data[e..];
@@ -263,13 +287,19 @@ fn main() -> Result<()> {
                     ]);
                     line_ids.push(id);
                     if line_hits < 30 {
-                        println!("  @0x{w:05x}: line_id={id} (0x{id:08X})  ctx={:02X?}", &payload[w.saturating_sub(8)..(w + 12).min(payload.len())]);
+                        println!(
+                            "  @0x{w:05x}: line_id={id} (0x{id:08X})  ctx={:02X?}",
+                            &payload[w.saturating_sub(8)..(w + 12).min(payload.len())]
+                        );
                     }
                     line_hits += 1;
                 }
             }
             println!("  TOTAL '02 CC 11' hits: {line_hits}");
-            println!("  line_ids in payload byte order (first 40): {:?}", &line_ids[..line_ids.len().min(40)]);
+            println!(
+                "  line_ids in payload byte order (first 40): {:?}",
+                &line_ids[..line_ids.len().min(40)]
+            );
 
             let _ = occ;
             // --- BRUTE-FORCE: find the node LIST (a List whose elements are
@@ -354,8 +384,14 @@ fn main() -> Result<()> {
                 let low = *id as u32;
                 match v {
                     Ok(val) => {
-                        println!("  @0x{off:05x} .{low:08X} (full 0x{id:016X}) = {}", summ(val));
-                        if matches!(val, GomValue::Embedded(_) | GomValue::List(_) | GomValue::Map(_)) {
+                        println!(
+                            "  @0x{off:05x} .{low:08X} (full 0x{id:016X}) = {}",
+                            summ(val)
+                        );
+                        if matches!(
+                            val,
+                            GomValue::Embedded(_) | GomValue::List(_) | GomValue::Map(_)
+                        ) {
                             dump(val, 2, 3);
                         }
                     }
@@ -378,18 +414,23 @@ fn main() -> Result<()> {
             // (<script_type><nfields>), and decode the whole node object so we
             // see the line-id, str.cnv ref, speaker, options and branch links.
             println!("\n--- PER-NODE OBJECT DECODE (first 6 nodes) ---");
-            let abs_marker: [u8; 9] =
-                [0xCF, 0x40, 0x00, 0x00, 0x11, 0x5C, 0xE8, 0x74, 0x88];
+            let abs_marker: [u8; 9] = [0xCF, 0x40, 0x00, 0x00, 0x11, 0x5C, 0xE8, 0x74, 0x88];
             let mut node_positions: Vec<usize> = Vec::new();
             for w in 0..payload.len().saturating_sub(9) {
                 if payload[w..w + 9] == abs_marker {
                     node_positions.push(w);
                 }
             }
-            println!("  {} node objects (absolute 5CE87488 markers)", node_positions.len());
+            println!(
+                "  {} node objects (absolute 5CE87488 markers)",
+                node_positions.len()
+            );
             let mut decoded_nodes = 0;
             for (ni, &mpos) in node_positions.iter().enumerate() {
-                let node_cap: usize = std::env::var("NODE_CAP").ok().and_then(|s| s.parse().ok()).unwrap_or(6);
+                let node_cap: usize = std::env::var("NODE_CAP")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(6);
                 if decoded_nodes >= node_cap {
                     break;
                 }
@@ -437,12 +478,18 @@ fn main() -> Result<()> {
                     let val = match r.read_value(tag) {
                         Ok(v) => v,
                         Err(e) => {
-                            println!("      .{:08X} tag={tag:02X} DECODE-ERR {e} @0x{off:05x}", fid as u32);
+                            println!(
+                                "      .{:08X} tag={tag:02X} DECODE-ERR {e} @0x{off:05x}",
+                                fid as u32
+                            );
                             break;
                         }
                     };
                     println!("      .{:08X} (tag {tag:02X}) = {}", fid as u32, summ(&val));
-                    if matches!(val, GomValue::List(_) | GomValue::Map(_) | GomValue::Embedded(_)) {
+                    if matches!(
+                        val,
+                        GomValue::List(_) | GomValue::Map(_) | GomValue::Embedded(_)
+                    ) {
                         dump(&val, 3, 5);
                     }
                     if r.pos() >= end {
@@ -470,7 +517,10 @@ fn main() -> Result<()> {
                 // (Simpler: report whether the 9EB734DC option-fingerprint field
                 // appears in this node's range, and any ASCII transition labels.)
                 let has_9eb = (mpos..end.saturating_sub(4)).any(|w| {
-                    payload[w] == 0x9E && payload[w + 1] == 0xB7 && payload[w + 2] == 0x34 && payload[w + 3] == 0xDC
+                    payload[w] == 0x9E
+                        && payload[w + 1] == 0xB7
+                        && payload[w + 2] == 0x34
+                        && payload[w + 3] == 0xDC
                 });
                 // transition label strings (06 <len> ascii) that look like To_*/branch labels
                 let mut labels: Vec<String> = Vec::new();
@@ -502,7 +552,10 @@ fn main() -> Result<()> {
             for (id, off, v) in &fields {
                 if let Ok(val) = v {
                     if contains_field(val, 0x5CE87488) && shown < 4 {
-                        println!("  >>> top-field @0x{off:05x} .{:08X} contains a 5CE87488 line node:", *id as u32);
+                        println!(
+                            "  >>> top-field @0x{off:05x} .{:08X} contains a 5CE87488 line node:",
+                            *id as u32
+                        );
                         dump(val, 4, 3);
                         shown += 1;
                     }
@@ -541,7 +594,10 @@ fn characterize_field(top_id: u32, v: &GomValue) {
             .filter(|x| matches!(x, GomValue::Embedded(_)))
             .collect();
         if emb.len() >= 2 {
-            println!("  top-field .{top_id:08X} -> list of {} embedded objects", emb.len());
+            println!(
+                "  top-field .{top_id:08X} -> list of {} embedded objects",
+                emb.len()
+            );
             let mut seen: Vec<(Vec<u32>, usize)> = Vec::new();
             for e in &emb {
                 let fp = field_ids(e);
@@ -567,11 +623,16 @@ fn characterize(v: &GomValue, depth: usize) {
         GomValue::Embedded(fields) => {
             for (id, fv) in fields {
                 if let GomValue::List(items) = fv {
-                    let emb: Vec<&GomValue> =
-                        items.iter().filter(|x| matches!(x, GomValue::Embedded(_))).collect();
+                    let emb: Vec<&GomValue> = items
+                        .iter()
+                        .filter(|x| matches!(x, GomValue::Embedded(_)))
+                        .collect();
                     if !emb.is_empty() {
                         let low = *id as u32;
-                        println!("  field .{low:08X} -> list of {} embedded objects", emb.len());
+                        println!(
+                            "  field .{low:08X} -> list of {} embedded objects",
+                            emb.len()
+                        );
                         // distinct fingerprints
                         let mut seen: Vec<(Vec<u32>, usize)> = Vec::new();
                         for e in &emb {
@@ -589,7 +650,13 @@ fn characterize(v: &GomValue, depth: usize) {
                         // dump first 2 of each fingerprint fully
                         for (fp, _) in &seen {
                             if let Some(sample) = emb.iter().find(|e| &field_ids(e) == fp) {
-                                println!("      --- sample for fingerprint [{}] ---", fp.iter().map(|x| format!("{x:08X}")).collect::<Vec<_>>().join(" "));
+                                println!(
+                                    "      --- sample for fingerprint [{}] ---",
+                                    fp.iter()
+                                        .map(|x| format!("{x:08X}"))
+                                        .collect::<Vec<_>>()
+                                        .join(" ")
+                                );
                                 dump(sample, 2, 4);
                             }
                         }
