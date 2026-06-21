@@ -460,10 +460,22 @@ impl Database {
             rows
         };
 
+        // guid -> Npc fqn, to resolve each line's actor GUID to its speaker (#286).
+        let npc_by_guid: std::collections::HashMap<String, String> = {
+            let mut stmt = conn
+                .prepare("SELECT guid, fqn FROM objects WHERE kind = 'Npc' AND is_canonical = 1")?;
+            let map: std::collections::HashMap<String, String> = stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect();
+            map
+        };
+
         let tx = conn.unchecked_transaction()?;
         let mut stmt = tx.prepare_cached(
             "INSERT OR REPLACE INTO conversation_dialogue \
-             (cnv_fqn, seq, line_id, line_ref) VALUES (?1, ?2, ?3, ?4)",
+             (cnv_fqn, seq, line_id, line_ref, speaker_guid, speaker_npc_fqn, is_npc) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         )?;
 
         let (mut conversations, mut lines) = (0u64, 0u64);
@@ -477,11 +489,25 @@ impl Database {
             }
             conversations += 1;
             for line in decoded {
+                // Speaker = the first actor GUID resolving to an Npc; the rest
+                // are branch/condition/quest refs (and the player pseudo-actor,
+                // which resolves to no Npc).
+                let speaker = line
+                    .actor_guids
+                    .iter()
+                    .find_map(|g| npc_by_guid.get(g).map(|fqn| (g.clone(), fqn.clone())));
+                let (speaker_guid, speaker_npc_fqn, is_npc) = match speaker {
+                    Some((g, npc_fqn)) => (Some(g), Some(npc_fqn), 1i64),
+                    None => (None, None, 0i64),
+                };
                 stmt.execute(params![
                     fqn,
                     line.seq as i64,
                     line.line_id as i64,
                     line.line_ref,
+                    speaker_guid,
+                    speaker_npc_fqn,
+                    is_npc,
                 ])?;
                 lines += 1;
             }
@@ -602,14 +628,23 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
             --   JOIN strings s ON s.id1 = d.line_id
             --                  AND s.fqn LIKE d.line_ref || '.%'
             --                  AND s.locale = 'en-us'
+            -- speaker_* (#286): each line node carries CF E0 actor/ref GUIDs;
+            -- the one resolving to a kind=Npc object is the speaker. is_npc=1
+            -- when an Npc speaker resolved; is_npc=0 for player/system lines
+            -- (the player pseudo-actor resolves to no Npc -- #287 marks which
+            -- of those are player options).
             CREATE TABLE IF NOT EXISTS conversation_dialogue (
-                cnv_fqn  TEXT NOT NULL,
-                seq      INTEGER NOT NULL,
-                line_id  INTEGER NOT NULL,
-                line_ref TEXT NOT NULL,
+                cnv_fqn         TEXT NOT NULL,
+                seq             INTEGER NOT NULL,
+                line_id         INTEGER NOT NULL,
+                line_ref        TEXT NOT NULL,
+                speaker_guid    TEXT,
+                speaker_npc_fqn TEXT,
+                is_npc          INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (cnv_fqn, seq)
             );
             CREATE INDEX IF NOT EXISTS idx_cnv_dialogue_line ON conversation_dialogue(line_id);
+            CREATE INDEX IF NOT EXISTS idx_cnv_dialogue_speaker ON conversation_dialogue(speaker_npc_fqn);
         "#,
     )?;
 
