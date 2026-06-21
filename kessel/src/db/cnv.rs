@@ -478,7 +478,7 @@ impl Database {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         )?;
 
-        let (mut conversations, mut lines) = (0u64, 0u64);
+        let (mut conversations, mut lines, mut multi_npc) = (0u64, 0u64, 0u64);
         for (fqn, b64) in &convs {
             let Ok(payload) = BASE64.decode(b64) else {
                 continue;
@@ -491,13 +491,27 @@ impl Database {
             for line in decoded {
                 // Speaker = the first actor GUID resolving to an Npc; the rest
                 // are branch/condition/quest refs (and the player pseudo-actor,
-                // which resolves to no Npc).
-                let speaker = line
+                // which resolves to no Npc). Branch targets live inside the
+                // 8FA60987 List, not as bare CF E0 emissions, so first-wins
+                // targets the actor -- but flag the multi-Npc case so the
+                // assumption stays auditable across patches.
+                let npc_matches: Vec<(&String, &String)> = line
                     .actor_guids
                     .iter()
-                    .find_map(|g| npc_by_guid.get(g).map(|fqn| (g.clone(), fqn.clone())));
-                let (speaker_guid, speaker_npc_fqn, is_npc) = match speaker {
-                    Some((g, npc_fqn)) => (Some(g), Some(npc_fqn), 1i64),
+                    .filter_map(|g| npc_by_guid.get(g).map(|fqn| (g, fqn)))
+                    .collect();
+                if npc_matches.len() > 1 {
+                    if multi_npc < 5 {
+                        eprintln!(
+                            "  [warn] {fqn} seq {}: {} Npc-resolving actor GUIDs (first wins)",
+                            line.seq,
+                            npc_matches.len()
+                        );
+                    }
+                    multi_npc += 1;
+                }
+                let (speaker_guid, speaker_npc_fqn, is_npc) = match npc_matches.first() {
+                    Some((g, npc_fqn)) => (Some((*g).clone()), Some((*npc_fqn).clone()), 1i64),
                     None => (None, None, 0i64),
                 };
                 stmt.execute(params![
@@ -515,6 +529,11 @@ impl Database {
 
         drop(stmt);
         tx.commit()?;
+        if multi_npc > 0 {
+            eprintln!(
+                "  [warn] {multi_npc} dialogue lines had >1 Npc-resolving actor GUID (first-wins applied)"
+            );
+        }
         Ok((conversations, lines))
     }
 }

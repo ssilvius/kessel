@@ -79,8 +79,11 @@ fn scan_e0_guids(payload: &[u8], start: usize, end: usize) -> Vec<String> {
     let mut w = start;
     while w < upper {
         if payload[w] == 0xCF && payload[w + 1] == 0xE0 {
-            let g = u64::from_be_bytes(payload[w + 1..w + 9].try_into().unwrap());
-            guids.push(format!("{g:016X}"));
+            // The loop bound guarantees 8 bytes, but no unwrap in library code:
+            // skip cleanly on the impossible short slice.
+            if let Ok(arr) = <[u8; 8]>::try_from(&payload[w + 1..w + 9]) {
+                guids.push(format!("{:016X}", u64::from_be_bytes(arr)));
+            }
         }
         w += 1;
     }
@@ -161,5 +164,61 @@ mod tests {
         let lines = decode_dialogue_lines(&p);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].actor_guids, vec!["E000694F37290DFF".to_string()]);
+    }
+
+    /// A line node with no `CF E0` bytes yields an empty actor list.
+    fn line_node(line_ref: &[u8]) -> Vec<u8> {
+        let mut p = vec![
+            0xCF,
+            0x40,
+            0x00,
+            0x00,
+            0x11,
+            0x5C,
+            0xE8,
+            0x74,
+            0x88,
+            TAG_INT64,
+            0xC9,
+            0x03,
+            0xE8,
+            0x01,
+            TAG_STRING,
+            line_ref.len() as u8,
+        ];
+        p.extend_from_slice(line_ref);
+        p
+    }
+
+    #[test]
+    fn no_actor_guid_yields_empty() {
+        let lines = decode_dialogue_lines(&line_node(b"abc"));
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].actor_guids.is_empty());
+    }
+
+    #[test]
+    fn two_actor_guids_captured_in_order() {
+        let mut p = line_node(b"abc");
+        p.extend_from_slice(&[0xCF, 0xE0, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+        p.extend_from_slice(&[0xCF, 0xE0, 0x00, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+        let lines = decode_dialogue_lines(&p);
+        assert_eq!(
+            lines[0].actor_guids,
+            vec![
+                "E000010203040506".to_string(),
+                "E000AABBCCDDEEFF".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn guid_at_payload_boundary_is_captured() {
+        // the CF E0 GUID occupies the final 9 bytes (CF marker at len-9), the
+        // last byte exactly at payload end -- still captured, no overrun panic.
+        let mut p = line_node(b"abc");
+        p.extend_from_slice(&[0xCF, 0xE0, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+        let lines = decode_dialogue_lines(&p);
+        assert_eq!(lines[0].actor_guids, vec!["E000112233445566".to_string()]);
     }
 }
