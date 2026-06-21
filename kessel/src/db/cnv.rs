@@ -435,6 +435,62 @@ impl Database {
         self.flush()?;
         Ok(rows_inserted)
     }
+
+    /// Populate `conversation_dialogue` (#285): the ordered dialogue script of
+    /// every conversation, decoded from its NODE payload's line-node markers in
+    /// byte order. Returns (conversations_with_dialogue, total_lines).
+    pub fn populate_conversation_dialogue(&self) -> Result<(u64, u64)> {
+        use crate::schema::conversation_tree::decode_dialogue_lines;
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
+        let conn = self.conn.lock().unwrap();
+
+        let convs: Vec<(String, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT fqn, json_extract(json, '$.payload_b64') \
+                 FROM objects WHERE kind = 'Conversation' AND is_canonical = 1",
+            )?;
+            let rows: Vec<(String, String)> = stmt
+                .query_map([], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .filter_map(|(fqn, b64)| b64.map(|b| (fqn, b)))
+                .collect();
+            rows
+        };
+
+        let tx = conn.unchecked_transaction()?;
+        let mut stmt = tx.prepare_cached(
+            "INSERT OR REPLACE INTO conversation_dialogue \
+             (cnv_fqn, seq, line_id, line_ref) VALUES (?1, ?2, ?3, ?4)",
+        )?;
+
+        let (mut conversations, mut lines) = (0u64, 0u64);
+        for (fqn, b64) in &convs {
+            let Ok(payload) = BASE64.decode(b64) else {
+                continue;
+            };
+            let decoded = decode_dialogue_lines(&payload);
+            if decoded.is_empty() {
+                continue;
+            }
+            conversations += 1;
+            for line in decoded {
+                stmt.execute(params![
+                    fqn,
+                    line.seq as i64,
+                    line.line_id as i64,
+                    line.line_ref,
+                ])?;
+                lines += 1;
+            }
+        }
+
+        drop(stmt);
+        tx.commit()?;
+        Ok((conversations, lines))
+    }
 }
 
 /// Derive the en-us dialogue STB archive path for a `cnv.*` conversation FQN.
@@ -535,6 +591,25 @@ pub(crate) fn create_tables(tx: &Transaction) -> Result<()> {
                 PRIMARY KEY (cnv_fqn, event_kind)
             );
             CREATE INDEX IF NOT EXISTS idx_cnv_align_kind ON conversation_alignment_events(event_kind);
+
+            -- Ordered dialogue script per conversation (#285). Each row is one
+            -- dialogue line, decoded from the conversation NODE payload's
+            -- line-node markers in byte order (== dialogue order, #284 spike).
+            -- `seq` is the playback order; `line_id` is the str.cnv string's
+            -- `id1` (the per-line id; NB the `conversation_lines` view labels
+            -- the shared `id2` as "line_id"). Join to `strings` on id1 + the
+            -- `line_ref` (str.cnv base FQN) prefix for the spoken text:
+            --   JOIN strings s ON s.id1 = d.line_id
+            --                  AND s.fqn LIKE d.line_ref || '.%'
+            --                  AND s.locale = 'en-us'
+            CREATE TABLE IF NOT EXISTS conversation_dialogue (
+                cnv_fqn  TEXT NOT NULL,
+                seq      INTEGER NOT NULL,
+                line_id  INTEGER NOT NULL,
+                line_ref TEXT NOT NULL,
+                PRIMARY KEY (cnv_fqn, seq)
+            );
+            CREATE INDEX IF NOT EXISTS idx_cnv_dialogue_line ON conversation_dialogue(line_id);
         "#,
     )?;
 
