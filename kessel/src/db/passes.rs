@@ -265,6 +265,15 @@ pub fn run_passes(db: &Database, ctx: &PassCtx) -> Result<PassCounts> {
         desc_tok_abilities, desc_tok_total
     );
 
+    // Description-anchoring corpus pass (#324): typed numeric facts (durations,
+    // percentages, ranges, counts, magnitudes, <<N>> templates) parsed from
+    // every canonical object's id1=1 description into description_values.
+    let (dv_objects, dv_facts) = timed!("description_values", db.populate_description_values())?;
+    println!(
+        "  Description values: {} facts from {} objects",
+        dv_facts, dv_objects
+    );
+
     // EPP appearance specs + FX specs (#183). UTF-16-LE XML files. epp
     // carries appearance action lists + fxSpec refs; fxspec carries node
     // class lists. The two tables JOIN via appearance_specs.fx_spec_refs
