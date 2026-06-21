@@ -334,6 +334,15 @@ pub fn run_passes(db: &Database, ctx: &PassCtx) -> Result<PassCounts> {
         cnv_string_rows
     );
 
+    // Ordered dialogue script (#285): decode each Conversation NODE payload's
+    // line-node markers (byte order == dialogue order) into conversation_dialogue.
+    let (cnv_dialogue_convs, cnv_dialogue_lines) =
+        timed!("conversation_dialogue", db.populate_conversation_dialogue())?;
+    println!(
+        "  Conversation dialogue: {} lines across {} conversations",
+        cnv_dialogue_lines, cnv_dialogue_convs
+    );
+
     // Quest_chain via NPC giver overlap. Must run AFTER both
     // populate_quest_clusters (cluster filter) and populate_conversation_refs
     // (the conv_quest_refs / conv_npcs join surface).

@@ -1,6 +1,7 @@
 //! Schema definitions for SWTOR game objects
 
 pub mod appearance;
+pub mod conversation_tree;
 pub mod desc_tokens;
 pub mod description_anchor;
 pub mod discipline;

@@ -132,6 +132,20 @@ impl<'a> Reader<'a> {
         Reader { buf, pos }
     }
 
+    /// Current cursor position within the payload (recon probes use this to
+    /// report byte offsets). Only consumed by `kessel-discovery` recon tools,
+    /// so the production binary sees it as unused.
+    #[allow(dead_code)]
+    pub fn pos(&self) -> usize {
+        self.pos
+    }
+
+    /// Read one raw byte and advance (exposed for recon probes that walk a flat
+    /// sequence of top-level `<field_id><tag><value>` triples and need the tag).
+    pub fn read_tag(&mut self) -> Result<u8> {
+        self.read_u8()
+    }
+
     fn read_u8(&mut self) -> Result<u8> {
         let b = *self
             .buf
