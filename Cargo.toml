@@ -26,7 +26,8 @@ thiserror = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 quick-xml = "0.31"
-rusqlite = { version = "0.31", features = ["bundled"] }
+# 0.40 to share libsqlite3-sys with rannoch-store; fallible_uint keeps u64/usize ToSql/FromSql.
+rusqlite = { version = "0.40", features = ["bundled", "fallible_uint"] }
 clap = { version = "4.4", features = ["derive"] }
 flate2 = "1.0"
 zstd = "0.13"
@@ -42,6 +43,9 @@ indicatif = "0.17"
 rayon = "1.8"
 image = { version = "0.25", features = ["webp"] }
 image_dds = { version = "0.4", default-features = false, features = ["ddsfile", "image", "decode", "strum"] }
+# rannoch v0.5.0 is the control: stay on this tag until told otherwise.
+rannoch-store = { git = "https://github.com/runlegion/rannoch", tag = "v0.5.0" }
+rannoch-queue = { git = "https://github.com/runlegion/rannoch", tag = "v0.5.0" }
 
 [profile.release]
 lto = true
